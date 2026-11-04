@@ -10,35 +10,188 @@ public sealed class BlockLayout(LayoutContext ctx)
 {
     readonly LayoutContext _ctx = ctx;
 
+    /// <summary>Область, занятая плавающими блоками.</summary>
+    public interface IExclusion
+    {
+        /// <summary>Сколько занято слева и справа в полосе [y0, y1).</summary>
+        (double Left, double Right) At(double y0, double y1);
+        /// <summary>Ближайшая нижняя граница плавающего блока ниже y.</summary>
+        double? NextBottom(double y);
+    }
+
+    sealed record FloatBox(string Side, double X0, double X1, double Top, double Bottom);
+
+    /// <summary>Плавающие блоки текущей группы; координаты относительно верха группы.</summary>
+    sealed class FloatArea(double width, double offsetY) : IExclusion
+    {
+        public readonly List<FloatBox> Boxes = [];
+        public double OffsetY = offsetY;   // сдвиг: y абзаца → y группы
+        readonly double _width = width;
+
+        public (double Left, double Right) At(double y0, double y1)
+        {
+            double l = 0, r = 0;
+            y0 += OffsetY; y1 += OffsetY;
+            foreach (var b in Boxes)
+            {
+                if (b.Top >= y1 - 0.01 || b.Bottom <= y0 + 0.01) continue;
+                if (b.Side == "left") l = Math.Max(l, b.X1);
+                else r = Math.Max(r, _width - b.X0);
+            }
+            return (l, r);
+        }
+
+        public double? NextBottom(double y)
+        {
+            y += OffsetY;
+            double? best = null;
+            foreach (var b in Boxes)
+                if (b.Bottom > y + 0.01 && (best == null || b.Bottom < best)) best = b.Bottom;
+            return best - OffsetY;
+        }
+
+        public double MaxBottom(string side = "both") =>
+            Boxes.Where(b => side == "both" || b.Side == side).Select(b => b.Bottom).DefaultIfEmpty(0).Max();
+    }
+
     public List<Frag> LayoutBlocks(IReadOnlyList<Block> blocks, double width)
     {
         var frags = new List<Frag>();
         Paragraph? prev = null;
         LineFrag? prevLast = null;
-        foreach (var block in blocks)
+
+        GroupFrag? group = null;
+        FloatArea? area = null;
+        double gy = 0;   // текущая позиция внутри группы
+
+        void EndGroup()
         {
-            if (block is Paragraph p)
+            if (group == null) return;
+            group.Height = Math.Max(gy, area!.MaxBottom());
+            frags.Add(group);
+            group = null; area = null; gy = 0;
+        }
+
+        void Emit(Frag f)
+        {
+            if (group != null && gy >= area!.MaxBottom() - 0.01) EndGroup();
+            if (group == null) { frags.Add(f); return; }
+            gy += f.SpaceBefore;
+            group.Items.Add((f, 0, gy));
+            gy += f.Height + f.SpaceAfter;
+        }
+
+        void Clear(string? side)
+        {
+            if (group == null || side == null) return;
+            gy = Math.Max(gy, area!.MaxBottom(side == "both" ? "both" : side));
+        }
+
+        for (int bi = 0; bi < blocks.Count; bi++)
+        {
+            var block = blocks[bi];
+            switch (block)
             {
-                var lines = LayoutParagraph(p, width);
-                if (prev != null && prev.StyleId == p.StyleId && lines.Count > 0)
+                case Paragraph p:
                 {
-                    if (p.ContextualSpacing) lines[0].SpaceBefore = 0;
-                    if (prev.ContextualSpacing && prevLast != null) prevLast.SpaceAfter = 0;
+                    Clear(p.Clear);
+                    if (group != null && gy >= area!.MaxBottom() - 0.01) EndGroup();
+                    double sb = p.SpaceBefore;
+                    bool contextual = prev != null && prev.StyleId == p.StyleId;
+                    if (contextual && p.ContextualSpacing) sb = 0;
+                    IExclusion? excl = null;
+                    if (group != null) { area!.OffsetY = gy + sb; excl = area; }
+                    var lines = LayoutParagraph(p, width, excl);
+                    if (lines.Count > 0)
+                    {
+                        lines[0].SpaceBefore = sb;
+                        if (contextual && prev!.ContextualSpacing && prevLast != null && group == null) prevLast.SpaceAfter = 0;
+                    }
+                    foreach (var l in lines) Emit(l);
+                    prev = p;
+                    prevLast = lines.Count > 0 ? lines[^1] : null;
+                    break;
                 }
-                frags.AddRange(lines);
-                prev = p;
-                prevLast = lines.Count > 0 ? lines[^1] : null;
-            }
-            else if (block is Table t)
-            {
-                var rows = LayoutTable(t, width);
-                // Абзац с "не отрывать от следующего" перед таблицей — держим с первой строкой
-                frags.AddRange(rows);
-                prev = null; prevLast = null;
+                case Table t:
+                {
+                    if (t.Clear != null) Clear(t.Clear);
+                    // Таблица рядом с float не сужается — размещаем ниже плавающих блоков
+                    if (group != null) { Clear("both"); EndGroup(); }
+                    frags.AddRange(LayoutTable(t, width));
+                    prev = null; prevLast = null;
+                    break;
+                }
+                case FloatBlock fb:
+                {
+                    double w = fb.Width + fb.MarginLeft + fb.MarginRight;
+                    var box = BuildBox(fb.Blocks, fb.Width, fb.Box);
+                    double h = box.Height + fb.MarginTop + fb.MarginBottom;
+                    if (w > width + 0.5 || h > _ctx.MaxImageHeight * 0.9)
+                    {
+                        // Слишком большой для обтекания — выводим в потоке
+                        if (group != null) { Clear("both"); EndGroup(); }
+                        frags.Add(box);
+                        break;
+                    }
+                    if (group == null) { group = new GroupFrag(); area = new FloatArea(width, 0); gy = 0; }
+                    double top = gy;
+                    if (bi + 1 < blocks.Count && blocks[bi + 1] is Paragraph np && np.Clear == null) top += np.SpaceBefore;
+                    double x;
+                    while (true)
+                    {
+                        area!.OffsetY = 0;
+                        var (l, r) = area.At(top, top + h);
+                        if (l + w + r <= width + 0.5) { x = fb.Side == "right" ? width - r - w : l; break; }
+                        var nb = area.NextBottom(top);
+                        if (nb == null) { x = 0; break; }
+                        top = nb.Value;
+                    }
+                    group.Items.Add((box, x + fb.MarginLeft, top + fb.MarginTop));
+                    area.Boxes.Add(new FloatBox(fb.Side, x, x + w, top, top + h));
+                    break;
+                }
+                case PositionedBlock pb:
+                    Emit(MakeAbs(pb, 0, width, relative: false));
+                    break;
+                case AnchorBlock ab:
+                    foreach (var child in ab.Children)
+                    {
+                        var af = MakeAbs(child, ab.X, ab.Width, relative: true);
+                        af.TopOffset = ab.TopOffset;
+                        Emit(af);
+                    }
+                    break;
             }
         }
+        EndGroup();
         return frags;
     }
+
+    /// <summary>Вёрстка содержимого блока с фоном/рамкой/отступами.</summary>
+    public BoxFrag BuildBox(List<Block> blocks, double outerWidth, BoxStyle box)
+    {
+        double inner = Math.Max(5, outerWidth - box.HorizontalExtra);
+        var frags = LayoutBlocks(blocks, inner);
+        var bf = new BoxFrag { Box = box, Width = outerWidth };
+        double y = 0;
+        for (int i = 0; i < frags.Count; i++)
+        {
+            var f = frags[i];
+            if (i > 0) y += f.SpaceBefore;
+            bf.Items.Add((f, y));
+            y += f.Height + (i < frags.Count - 1 ? f.SpaceAfter : 0);
+        }
+        bf.Height = Math.Max(box.MinHeight, y + box.PadTop + box.PadBottom + (box.BorderTop?.Width ?? 0) + (box.BorderBottom?.Width ?? 0));
+        return bf;
+    }
+
+    AbsFrag MakeAbs(PositionedBlock pb, double anchorX, double anchorWidth, bool relative) => new()
+    {
+        Content = BuildBox(pb.Blocks, pb.Width, pb.Box),
+        Left = pb.Left, Top = pb.Top, Right = pb.Right, Bottom = pb.Bottom,
+        Fixed = pb.Mode == "fixed", RelativeToFlow = relative, AnchorX = anchorX, AnchorWidth = anchorWidth,
+        ZIndex = pb.ZIndex, Height = 0,
+    };
 
     // =================================================================
     //  Абзац
@@ -187,6 +340,8 @@ public sealed class BlockLayout(LayoutContext ctx)
     sealed class RawLine
     {
         public List<Piece> Pieces = [];
+        public double OffL, OffR;      // сужение строки плавающими блоками
+        public double ExtraTop;        // сдвиг вниз (строка не поместилась рядом с float)
         public bool First;
         public PieceKind? EndBreak;   // LineBreak / PageBreak, если строка закончилась разрывом
     }
@@ -208,11 +363,11 @@ public sealed class BlockLayout(LayoutContext ctx)
         return (pos, new TabStop(pos, "left", "none"));
     }
 
-    public List<LineFrag> LayoutParagraph(Paragraph p, double width)
+    public List<LineFrag> LayoutParagraph(Paragraph p, double width, IExclusion? excl = null)
     {
         _contentWidthHint = width;
         var pieces = Itemize(p);
-        var raw = BreakLines(p, pieces, width);
+        var raw = BreakLines(p, pieces, width, excl);
         var result = new List<LineFrag>();
         for (int i = 0; i < raw.Count; i++)
             result.Add(BuildLine(p, raw[i], width, i == raw.Count - 1));
@@ -234,24 +389,37 @@ public sealed class BlockLayout(LayoutContext ctx)
         return result;
     }
 
-    List<RawLine> BreakLines(Paragraph p, List<Piece> pieces, double width)
+    List<RawLine> BreakLines(Paragraph p, List<Piece> pieces, double width, IExclusion? excl)
     {
         var lines = new List<RawLine>();
         var cur = new RawLine { First = true };
         double x = 0;
         double extraRoom = 0;   // правая/центральная табуляция за правым полем позволяет вылезти за край
 
-        double LineStart(bool first) => p.IndLeft + (first ? p.IndFirst : 0);
-        double Avail(bool first) => width - p.IndRight - LineStart(first);
+        // Вертикальная позиция текущей строки (для обтекания плавающих блоков)
+        double curY = p.BorderTop != null ? p.BorderTop.Width + p.BorderTop.Space : 0;
+        double estH = excl != null ? LineMetrics(p, [], cur).H : 0;
+        void UpdateExcl()
+        {
+            if (excl == null) return;
+            (cur.OffL, cur.OffR) = excl.At(curY, curY + estH);
+        }
+        UpdateExcl();
+
+        double LineStart(bool first) => Math.Max(p.IndLeft + (first ? p.IndFirst : 0), cur.OffL);
+        double Avail(bool first) => width - Math.Max(p.IndRight, cur.OffR) - LineStart(first);
         bool HasContent() => cur.Pieces.Any(q => q.Kind is PieceKind.Text or PieceKind.Image);
 
         void Finish(PieceKind? endBreak)
         {
             cur.EndBreak = endBreak;
             lines.Add(cur);
+            if (excl != null)
+                curY += cur.ExtraTop + LineMetrics(p, cur.Pieces.Where(q => q.Kind is not (PieceKind.LineBreak or PieceKind.PageBreak)).ToList(), cur).H;
             cur = new RawLine { First = false };
             x = 0;
             extraRoom = 0;
+            UpdateExcl();
         }
 
         int i = 0;
@@ -323,6 +491,14 @@ public sealed class BlockLayout(LayoutContext ctx)
                 Finish(null);
                 continue;
             }
+            // Рядом с плавающим блоком не помещается — опускаем строку ниже него
+            if (excl != null && (cur.OffL > 0 || cur.OffR > 0) && excl.NextBottom(curY) is double nb && nb > curY)
+            {
+                cur.ExtraTop += nb - curY;
+                curY = nb;
+                UpdateExcl();
+                continue;
+            }
             // Слово длиннее строки — режем по глифам
             double room = avail - x;
             int j2 = i;
@@ -367,13 +543,8 @@ public sealed class BlockLayout(LayoutContext ctx)
         return lines;
     }
 
-    LineFrag BuildLine(Paragraph p, RawLine raw, double width, bool lastOfPara)
+    (double H, double Baseline) LineMetrics(Paragraph p, List<Piece> pieces, RawLine raw)
     {
-        var pieces = raw.Pieces.Where(q => q.Kind is not (PieceKind.LineBreak or PieceKind.PageBreak)).ToList();
-        double lineStart = p.IndLeft + (raw.First ? p.IndFirst : 0);
-        double avail = width - p.IndRight - lineStart;
-
-        // Метрики строки
         double asc = 0, desc = 0;
         foreach (var q in pieces)
         {
@@ -418,6 +589,16 @@ public sealed class BlockLayout(LayoutContext ctx)
                 break;
         }
 
+        return (h, baseline);
+    }
+
+    LineFrag BuildLine(Paragraph p, RawLine raw, double width, bool lastOfPara)
+    {
+        var pieces = raw.Pieces.Where(q => q.Kind is not (PieceKind.LineBreak or PieceKind.PageBreak)).ToList();
+        double lineStart = Math.Max(p.IndLeft + (raw.First ? p.IndFirst : 0), raw.OffL);
+        double avail = width - Math.Max(p.IndRight, raw.OffR) - lineStart;
+        var (h, baseline) = LineMetrics(p, pieces, raw);
+
         // Позиции и выравнивание
         int lastVisible = pieces.FindLastIndex(q => q.Kind is not PieceKind.Space);
         double contentW = 0;
@@ -455,13 +636,14 @@ public sealed class BlockLayout(LayoutContext ctx)
             Doc = _ctx.Doc,
             Left = lineStart,
             Baseline = baseline,
-            ParaLeft = p.IndLeft + Math.Min(0, p.IndFirst),
-            ParaRight = width - p.IndRight,
+            ParaLeft = Math.Max(p.IndLeft + Math.Min(0, p.IndFirst), raw.OffL),
+            ParaRight = width - Math.Max(p.IndRight, raw.OffR),
             IsFirst = raw.First,
             IsLast = lastOfPara,
             PageBreakAfter = raw.EndBreak == PieceKind.PageBreak,
         };
         if (raw.First && p.BorderTop != null) lf.TopPad = p.BorderTop.Width + p.BorderTop.Space;
+        lf.TopPad += raw.ExtraTop;
         if (lastOfPara && p.BorderBottom != null) lf.BottomPad = p.BorderBottom.Width + p.BorderBottom.Space;
         lf.Height = lf.TopPad + h + lf.BottomPad;
         return lf;

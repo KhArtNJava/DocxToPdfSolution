@@ -69,6 +69,8 @@ public sealed class LineFrag : Frag
 
     public override void Draw(PdfCanvas c, double x, double y)
     {
+        x += Para.OffsetX;
+        y += Para.OffsetY;
         if (Para.Shading is { } shd)
             c.FillRect(x + ParaLeft, y, ParaRight - ParaLeft, Height, shd);
         if (IsFirst && Para.BorderTop is { } bt)
@@ -319,4 +321,59 @@ public sealed class RowFrag : Frag
         Top = c.Top, Bottom = c.Bottom, Left = c.Left, Right = c.Right, Shading = c.Shading, VAlign = c.VAlign, VMerge = c.VMerge,
         GridIndex = c.GridIndex, Span = c.Span
     };
+}
+
+/// <summary>Блок с фоном, рамкой и отступами, содержащий вложенные фрагменты (float, absolute).</summary>
+public sealed class BoxFrag : Frag
+{
+    public double Width;
+    public required BoxStyle Box;
+    public List<(Frag Frag, double Y)> Items = [];
+
+    public override void Draw(PdfCanvas c, double x, double y)
+    {
+        if (Box.Background is { } bg) c.FillRect(x, y, Width, Height, bg);
+        double cx = x + Box.PadLeft + (Box.BorderLeft?.Width ?? 0);
+        double cy = y + Box.PadTop + (Box.BorderTop?.Width ?? 0);
+        foreach (var (f, fy) in Items) f.Draw(c, cx, cy + fy);
+        void B(BorderDef? b, double x1, double y1, double x2, double y2)
+        {
+            if (b is { IsNone: false }) c.Line(x1, y1, x2, y2, b.Width, b.Color, b.Val.Contains("dash"), b.Val.Contains("dot"));
+        }
+        double h2 = (Box.BorderTop?.Width ?? 0) / 2, w2 = (Box.BorderLeft?.Width ?? 0) / 2;
+        B(Box.BorderTop, x, y + h2, x + Width, y + h2);
+        B(Box.BorderBottom, x, y + Height - (Box.BorderBottom?.Width ?? 0) / 2, x + Width, y + Height - (Box.BorderBottom?.Width ?? 0) / 2);
+        B(Box.BorderLeft, x + w2, y, x + w2, y + Height);
+        B(Box.BorderRight, x + Width - (Box.BorderRight?.Width ?? 0) / 2, y, x + Width - (Box.BorderRight?.Width ?? 0) / 2, y + Height);
+    }
+}
+
+/// <summary>Плавающие блоки вместе с обтекающим их текстом — размещаются на странице как единое целое.</summary>
+public sealed class GroupFrag : Frag
+{
+    public List<(Frag Frag, double X, double Y)> Items = [];
+
+    public override void Draw(PdfCanvas c, double x, double y)
+    {
+        foreach (var (f, fx, fy) in Items) f.Draw(c, x + fx, y + fy);
+    }
+}
+
+/// <summary>Абсолютно позиционированный блок: в потоке не занимает места.</summary>
+public sealed class AbsFrag : Frag
+{
+    public required BoxFrag Content;
+    public double? Left, Top, Right, Bottom;
+    public bool Fixed;
+    public bool RelativeToFlow;          // относительно позиционированного предка
+    public double AnchorX, AnchorWidth, TopOffset;
+    public int ZIndex;
+
+    /// <summary>Отрисовка внутри ячеек/групп (без участия разбивки на страницы).</summary>
+    public override void Draw(PdfCanvas c, double x, double y)
+    {
+        double px = x + AnchorX + (Left ?? (Right != null ? AnchorWidth - Right.Value - Content.Width : 0));
+        double py = y + TopOffset + (Top ?? 0);
+        Content.Draw(c, px, py);
+    }
 }

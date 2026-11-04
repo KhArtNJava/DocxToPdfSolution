@@ -1,0 +1,59 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>Layout</title>
+<style>
+ @page { size: A4; margin: 15mm }
+ body { font-family: Arial, sans-serif; font-size: 10pt; line-height: 1.35 }
+ h2 { color: #234; font-size: 13pt; margin: 14pt 0 6pt; clear: both }
+ .fl { float: left; width: 110px; margin: 0 10px 6px 0 }
+ .fr { float: right; width: 160px; margin: 0 0 6px 12px; background: #eef4fb; border: 1px solid #9bb; padding: 6px }
+ .nav { display: flex; gap: 8px; background: #234; padding: 6px; align-items: center }
+ .nav a { color: #fff; text-decoration: none; padding: 4px 8px; background: #456 }
+ .nav .sp { margin-left: auto; color: #fc6 }
+ .cards { display: flex; flex-wrap: wrap; gap: 10px }
+ .card { flex: 1 1 150px; border: 1px solid #ccc; padding: 8px; background: #fafafa }
+ .center { display: flex; justify-content: space-between; border: 1px dashed #999; padding: 4px }
+ .center div { background: #ffe; border: 1px solid #cc9; padding: 4px 10px }
+ .grid { display: grid; grid-template-columns: 120px 1fr 2fr; gap: 6px; }
+ .grid > div { background: #e8f0e8; padding: 6px; border: 1px solid #8a8 }
+ .wide { grid-column: span 2 } .tall { grid-row: span 2 }
+ .auto { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 6px }
+ .auto div { background: #f0e8f4; padding: 6px; text-align: center }
+ .rel { position: relative; height: 70px; border: 1px solid #c88; background: #fff5f5; padding: 6px }
+ .badge { position: absolute; top: 6px; right: 6px; background: #c33; color: #fff; padding: 2px 6px; font-weight: bold }
+ .moved { position: relative; left: 20px; top: 4px; color: #a50 }
+ .wm { position: fixed; bottom: 6mm; right: 10mm; color: #bbb; font-size: 8pt }
+ .holy { display: flex; gap: 0 } .holy aside { width: 120px; background: #eee; padding: 6px } .holy main { flex: 1; padding: 6px; border: 1px solid #ddd }
+</style></head><body>
+<div class="nav"><a href="https://example.com">Главная</a><a href="#">Каталог</a><a href="#">Контакты</a><span class="sp">+7 900 000-00-00</span></div>
+
+<h2>1. Float</h2>
+<img class="fl" src="img.png">
+<p>Картинка с float:left, текст обтекает её справа. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю. Когда картинка заканчивается, строки снова идут на всю ширину колонки — съешь же ещё этих мягких французских булок, да выпей чаю.</p>
+<div class="fr"><b>Врезка справа.</b> Блок с float:right, фоном, рамкой и отступами.</div>
+<p>Второй абзац обтекает врезку справа. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю.</p>
+<p style="clear:both; border-top: 1px solid #ccc">Абзац с clear:both — начинается ниже всех плавающих блоков.</p>
+
+<h2>2. Flexbox</h2>
+<div class="cards">
+  <div class="card"><b>Карточка 1</b><br>Короткий текст.</div>
+  <div class="card"><b>Карточка 2</b><br>Текст подлиннее, чтобы проверить выравнивание высоты карточек в строке.</div>
+  <div class="card"><b>Карточка 3</b><br>Ещё одна.</div>
+  <div class="card"><b>Карточка 4</b><br>Переносится на новую строку (flex-wrap).</div>
+</div>
+<p></p>
+<div class="center"><div>Слева</div><div>По центру</div><div>Справа</div></div>
+<p></p>
+<div class="holy"><aside>Боковая колонка фиксированной ширины</aside><main>Основное содержимое растягивается (flex: 1). Съешь же ещё этих мягких французских булок, да выпей чаю.</main></div>
+
+<h2>3. Grid</h2>
+<div class="grid">
+  <div class="tall">tall (span 2 строки)</div><div class="wide">wide (span 2 колонки)</div>
+  <div>1fr</div><div>2fr</div>
+  <div>A</div><div>B</div><div>C</div>
+</div>
+<p></p>
+<div class="auto"><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div><div>6</div><div>7</div></div>
+
+<h2>4. Position</h2>
+<div class="rel">Контейнер position:relative. <span class="badge">NEW</span><p class="moved">Абзац, сдвинутый через position:relative (left:20px; top:4px).</p></div>
+<div class="wm">Водяной знак position:fixed — на каждой странице</div>
+</body></html>

@@ -305,6 +305,28 @@ public sealed class CssStyle
     public string? Width, Height;      // исходные значения (могут быть в %)
     public bool PageBreakBefore, PageBreakAfter, AvoidBreakInside;
     public string? VerticalAlign;
+    public string BoxSizing = "content-box";
+
+    // Позиционирование и float
+    public string? Float, Clear;
+    public string Position = "static";
+    public string? Left, Top, Right, Bottom;
+    public int ZIndex;
+
+    // Flexbox
+    public string FlexDirection = "row";
+    public bool FlexWrap;
+    public string JustifyContent = "flex-start";
+    public string AlignItems = "stretch";
+    public string? AlignSelf;
+    public double FlexGrow, FlexShrink = 1;
+    public string? FlexBasis;
+    public int Order;
+    public string? RowGap, ColumnGap;
+
+    // Grid
+    public string? GridTemplateColumns, GridTemplateRows;
+    public string? GridColumnStart, GridColumnEnd, GridRowStart, GridRowEnd;
 
     public CssStyle InheritFrom()
     {

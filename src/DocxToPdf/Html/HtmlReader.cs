@@ -20,7 +20,7 @@ public sealed class HtmlOptions
 /// Читает HTML (+ CSS) и строит ту же модель документа, что и DocxReader,
 /// после чего используется общий движок вёрстки и PDF.
 /// </summary>
-public sealed class HtmlReader
+public sealed partial class HtmlReader
 {
     const string UserAgentCss = """
         p { margin: 1em 0 }
@@ -171,6 +171,7 @@ public sealed class HtmlReader
             p.Inlines.Add(new FieldInline(FieldKind.NumPages, st));
             section.Props.FooterDefault = new HeaderFooter { Blocks = [p] };
         }
+        section.Props.FixedBlocks.AddRange(_fixedBlocks);
         _doc.Sections.Add(section);
         return _doc;
     }
@@ -250,7 +251,8 @@ public sealed class HtmlReader
             : n.Tag switch
             {
                 "table" => "table", "tr" => "table-row", "td" or "th" => "table-cell",
-                "thead" or "tbody" or "tfoot" => "table-row-group", "col" or "colgroup" => "table-column",
+                "thead" => "table-header-group", "tbody" => "table-row-group", "tfoot" => "table-footer-group",
+                "col" or "colgroup" => "table-column", "caption" => "table-caption",
                 _ => BlockTags.Contains(n.Tag) ? "block" : "inline"
             };
         if (n.Tag is "body" or "html") s.Display = "block";
@@ -418,13 +420,87 @@ public sealed class HtmlReader
                 s.Display = lv switch
                 {
                     "none" => "none",
-                    "inline" or "inline-block" or "inline-flex" or "inline-grid" or "contents" => "inline",
+                    "inline" or "inline-block" or "contents" => "inline",
                     "list-item" => "list-item",
-                    "table" or "inline-table" => s.Display == "table" ? "table" : "block",
-                    "table-row" or "table-cell" or "table-row-group" or "table-header-group" or "table-footer-group" => s.Display,
+                    "flex" or "inline-flex" => "flex",
+                    "grid" or "inline-grid" => "grid",
+                    "table" or "inline-table" => "table",
+                    "table-row" or "table-cell" or "table-row-group" or "table-header-group" or "table-footer-group" or "table-caption" => lv,
                     _ => "block"
                 };
                 break;
+            case "box-sizing": s.BoxSizing = lv; break;
+            case "float": s.Float = lv switch { "left" or "inline-start" => "left", "right" or "inline-end" => "right", _ => null }; break;
+            case "clear": s.Clear = lv switch { "left" or "right" or "both" => lv, "inline-start" => "left", "inline-end" => "right", _ => null }; break;
+            case "position": s.Position = lv switch { "sticky" => "relative", "relative" or "absolute" or "fixed" => lv, _ => "static" }; break;
+            case "left": s.Left = lv == "auto" ? null : lv; break;
+            case "top": s.Top = lv == "auto" ? null : lv; break;
+            case "right": s.Right = lv == "auto" ? null : lv; break;
+            case "bottom": s.Bottom = lv == "auto" ? null : lv; break;
+            case "inset":
+            {
+                var (t, r, bt, l) = CssValues.Box(lv);
+                s.Top = t == "auto" ? null : t; s.Right = r == "auto" ? null : r; s.Bottom = bt == "auto" ? null : bt; s.Left = l == "auto" ? null : l;
+                break;
+            }
+            case "z-index": s.ZIndex = int.TryParse(lv, out var z) ? z : 0; break;
+            case "flex-direction": s.FlexDirection = lv; break;
+            case "flex-wrap": s.FlexWrap = lv is "wrap" or "wrap-reverse"; break;
+            case "flex-flow":
+                foreach (var t in CssValues.Tokens(lv))
+                {
+                    if (t.StartsWith("row") || t.StartsWith("column")) s.FlexDirection = t;
+                    else s.FlexWrap = t is "wrap" or "wrap-reverse";
+                }
+                break;
+            case "justify-content": s.JustifyContent = lv.Replace("safe ", "").Replace("unsafe ", ""); break;
+            case "align-items": s.AlignItems = lv; break;
+            case "align-self": s.AlignSelf = lv == "auto" ? null : lv; break;
+            case "flex-grow": s.FlexGrow = ParseNum(lv, 0); break;
+            case "flex-shrink": s.FlexShrink = ParseNum(lv, 1); break;
+            case "flex-basis": s.FlexBasis = lv; break;
+            case "flex":
+            {
+                var t = CssValues.Tokens(lv);
+                if (lv == "none") { s.FlexGrow = 0; s.FlexShrink = 0; s.FlexBasis = "auto"; }
+                else if (lv == "auto") { s.FlexGrow = 1; s.FlexShrink = 1; s.FlexBasis = "auto"; }
+                else if (lv == "initial") { s.FlexGrow = 0; s.FlexShrink = 1; s.FlexBasis = "auto"; }
+                else
+                {
+                    var nums = t.Where(x => double.TryParse(x, NumberStyles.Float, CultureInfo.InvariantCulture, out _)).ToList();
+                    var basis = t.FirstOrDefault(x => !double.TryParse(x, NumberStyles.Float, CultureInfo.InvariantCulture, out _));
+                    s.FlexGrow = nums.Count > 0 ? ParseNum(nums[0], 0) : 1;
+                    s.FlexShrink = nums.Count > 1 ? ParseNum(nums[1], 1) : 1;
+                    s.FlexBasis = basis ?? "0";
+                }
+                break;
+            }
+            case "order": s.Order = int.TryParse(lv, out var ord) ? ord : 0; break;
+            case "gap" or "grid-gap":
+            {
+                var t = CssValues.Tokens(lv);
+                s.RowGap = t[0]; s.ColumnGap = t.Count > 1 ? t[1] : t[0];
+                break;
+            }
+            case "row-gap" or "grid-row-gap": s.RowGap = lv; break;
+            case "column-gap" or "grid-column-gap": s.ColumnGap = lv; break;
+            case "grid-template-columns": s.GridTemplateColumns = lv; break;
+            case "grid-template-rows": s.GridTemplateRows = lv; break;
+            case "grid-column": (s.GridColumnStart, s.GridColumnEnd) = SplitSlash(lv); break;
+            case "grid-row": (s.GridRowStart, s.GridRowEnd) = SplitSlash(lv); break;
+            case "grid-column-start": s.GridColumnStart = lv; break;
+            case "grid-column-end": s.GridColumnEnd = lv; break;
+            case "grid-row-start": s.GridRowStart = lv; break;
+            case "grid-row-end": s.GridRowEnd = lv; break;
+            case "grid-area":
+            {
+                var parts = lv.Split('/').Select(x => x.Trim()).ToArray();
+                if (parts.Length >= 1) s.GridRowStart = parts[0];
+                if (parts.Length >= 2) s.GridColumnStart = parts[1];
+                if (parts.Length >= 3) s.GridRowEnd = parts[2];
+                if (parts.Length >= 4) s.GridColumnEnd = parts[3];
+                break;
+            }
             case "visibility": s.Hidden = lv is "hidden" or "collapse"; break;
             case "margin":
             {
@@ -481,6 +557,15 @@ public sealed class HtmlReader
         }
     }
 
+    static double ParseNum(string v, double def) =>
+        double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : def;
+
+    static (string? A, string? B) SplitSlash(string v)
+    {
+        int i = v.IndexOf('/');
+        return i < 0 ? (v.Trim(), null) : (v[..i].Trim(), v[(i + 1)..].Trim());
+    }
+
     static double FontSize(string v, double parent) => v switch
     {
         "xx-small" => 7.5, "x-small" => 7.5, "small" => 9.75, "medium" => 12, "large" => 13.5,
@@ -526,6 +611,7 @@ public sealed class HtmlReader
         public double PendingMargin;
         public bool PendingBreak;
         public string? PendingLabel;
+        public string? PendingClear;
         public TextStyle? LabelStyle;
         public bool FirstNewlineInPre;
     }
@@ -537,6 +623,7 @@ public sealed class HtmlReader
         public double Width;              // доступная ширина
         public Rgb? Shading;
         public ListState? List;
+        public AnchorBlock? Anchor;
     }
 
     sealed class ListState
@@ -566,6 +653,7 @@ public sealed class HtmlReader
             SpaceBefore = f.PendingMargin,
             PageBreakBefore = f.PendingBreak,
             Shading = b.Shading,
+            Clear = f.PendingClear,
             MarkStyle = ToTextStyle(o),
             WidowControl = true,
         };
@@ -573,6 +661,7 @@ public sealed class HtmlReader
         else if (o.LineHeightPt is double lp) { p.LineRule = "atLeast"; p.LineValue = lp; }
         f.PendingMargin = 0;
         f.PendingBreak = false;
+        f.PendingClear = null;
         if (f.PendingLabel != null)
         {
             var ls = f.LabelStyle!;
@@ -700,6 +789,10 @@ public sealed class HtmlReader
         if (!n.IsElement) { WalkChildren(n, f, b); return; }
         var s = n.Style!;
         if (s.Display == "none") return;
+        bool root = n.Tag is "html" or "body";
+
+        if (!root && s.Position is "absolute" or "fixed") { AddPositioned(n, s, f, b); return; }
+        if (!root && s.Float is "left" or "right") { AddFloat(n, s, f, b); return; }
 
         switch (n.Tag)
         {
@@ -708,7 +801,7 @@ public sealed class HtmlReader
                 f.LastSpace = true;
                 return;
             case "wbr":
-                AddInline(f, b, new TextInline("​", ToTextStyle(s)));
+                AddInline(f, b, new TextInline("\u200B", ToTextStyle(s)));
                 return;
             case "img":
                 AddImage(n, s, f, b);
@@ -716,38 +809,20 @@ public sealed class HtmlReader
             case "hr":
                 AddHr(s, f, b);
                 return;
-            case "table":
-                if (s.Display == "table") { AddTable(n, s, f, b); return; }
-                break;
+        }
+        switch (s.Display)
+        {
+            case "table": AddTable(n, s, f, b); return;
+            case "flex": AddFlex(n, s, f, b); return;
+            case "grid": AddGrid(n, s, f, b); return;
+            case "inline": WalkChildren(n, f, b); return;
         }
 
-        if (s.Display == "inline")
-        {
-            WalkChildren(n, f, b);
-            return;
-        }
+        // Блок с боковыми рамками или высотой — как рамка-ячейка (умеет разрываться между страницами)
+        if (NeedsBox(n, s)) { AddBoxTable(n, s, f, b); return; }
 
         // Блочный элемент
-        Flush(f);
-        f.PendingMargin = Math.Max(f.PendingMargin, s.MarginTop);
-        if (s.PageBreakBefore) f.PendingBreak = true;
-
-        var inner = new BlockCtx
-        {
-            IndL = b.IndL + s.MarginLeft + s.PaddingLeft + (s.BorderLeft?.Width ?? 0),
-            IndR = b.IndR + s.MarginRight + s.PaddingRight + (s.BorderRight?.Width ?? 0),
-            Owner = s,
-            Shading = s.Background ?? b.Shading,
-            List = b.List,
-        };
-        inner.Width = Math.Max(20, _contentWidth - inner.IndL - inner.IndR);
-        if (s.Width is { } wv && !wv.EndsWith('%') && CssValues.Length(wv, s.FontSize) is double fixedW && fixedW < inner.Width)
-        {
-            if (s.MarginLeftAuto && s.MarginRightAuto) inner.IndL += (inner.Width - fixedW) / 2;
-            inner.IndR += inner.Width - fixedW - (s.MarginLeftAuto && s.MarginRightAuto ? (inner.Width - fixedW) / 2 : 0);
-            inner.Width = fixedW;
-        }
-        if (s.PaddingTop > 0) f.PendingMargin += s.PaddingTop;
+        var inner = BeginBox(n, s, f, b, out int startIdx);
 
         if (n.Tag is "ul" or "ol" or "menu" or "dir")
         {
@@ -770,20 +845,81 @@ public sealed class HtmlReader
         }
         if (n.Tag is "pre" or "listing" or "xmp") f.FirstNewlineInPre = true;
 
-        int startIdx = f.Target.Count;
         WalkChildren(n, f, b: inner);
         Flush(f);
         f.PendingLabel = null;   // пустой элемент списка
         f.FirstNewlineInPre = false;
+        EndBox(n, s, f, startIdx);
+    }
 
-        // Рамки блока: верхняя у первого абзаца, нижняя у последнего
-        var paras = f.Target.Skip(startIdx).OfType<Paragraph>().ToList();
+    /// <summary>Начало блочного контейнера: отступы, разрывы, clear, якорь для absolute-потомков.</summary>
+    BlockCtx BeginBox(Node n, CssStyle s, Flow f, BlockCtx b, out int startIdx)
+    {
+        Flush(f);
+        f.PendingMargin = Math.Max(f.PendingMargin, s.MarginTop);
+        if (s.PageBreakBefore) f.PendingBreak = true;
+        if (s.Clear is "left" or "right" or "both") f.PendingClear = s.Clear;
+
+        var inner = new BlockCtx
+        {
+            IndL = b.IndL + s.MarginLeft + s.PaddingLeft + (s.BorderLeft?.Width ?? 0),
+            IndR = b.IndR + s.MarginRight + s.PaddingRight + (s.BorderRight?.Width ?? 0),
+            Owner = s,
+            Shading = s.Background ?? b.Shading,
+            List = b.List,
+            Anchor = b.Anchor,
+        };
+        inner.Width = Math.Max(20, _contentWidth - inner.IndL - inner.IndR);
+        double? fixedW = CssValues.Length(s.Width, s.FontSize, Math.Max(20, _contentWidth - b.IndL - b.IndR - s.MarginLeft - s.MarginRight));
+        if (fixedW != null && s.BoxSizing == "border-box") fixedW -= s.PaddingLeft + s.PaddingRight + (s.BorderLeft?.Width ?? 0) + (s.BorderRight?.Width ?? 0);
+        if (fixedW is > 0 && fixedW < inner.Width)
+        {
+            double spare = inner.Width - fixedW.Value;
+            if (s.MarginLeftAuto && s.MarginRightAuto) { inner.IndL += spare / 2; inner.IndR += spare / 2; }
+            else if (s.MarginLeftAuto) inner.IndL += spare;
+            else inner.IndR += spare;
+            inner.Width = fixedW.Value;
+        }
+        if (s.PaddingTop > 0) f.PendingMargin += s.PaddingTop;
+        startIdx = f.Target.Count;
+        if (s.Position == "relative")
+        {
+            var anchor = new AnchorBlock
+            {
+                X = inner.IndL - s.PaddingLeft, Width = inner.Width + s.PaddingLeft + s.PaddingRight, TopOffset = f.PendingMargin - s.PaddingTop
+            };
+            f.Target.Add(anchor);
+            inner.Anchor = anchor;
+        }
+        return inner;
+    }
+
+    /// <summary>Конец блочного контейнера: рамки, сдвиг position: relative, нижний отступ.</summary>
+    void EndBox(Node n, CssStyle s, Flow f, int startIdx)
+    {
+        var created = f.Target.Skip(startIdx).ToList();
+        var paras = created.OfType<Paragraph>().ToList();
         if (paras.Count > 0)
         {
             if (s.BorderTop?.ToBorderDef() is { } bt) { bt.Space = s.PaddingTop; paras[0].BorderTop = bt; }
             if (s.BorderBottom?.ToBorderDef() is { } bb) { bb.Space = s.PaddingBottom; paras[^1].BorderBottom = bb; }
             if (n.Tag is "h1" or "h2" or "h3" or "h4" or "h5" or "h6") foreach (var p in paras) p.KeepNext = true;
             if (s.AvoidBreakInside) foreach (var p in paras) p.KeepLines = true;
+        }
+        if (s.Position == "relative")
+        {
+            double dx = CssValues.Length(s.Left, s.FontSize, _contentWidth) ?? -(CssValues.Length(s.Right, s.FontSize, _contentWidth) ?? 0);
+            double dy = CssValues.Length(s.Top, s.FontSize) ?? -(CssValues.Length(s.Bottom, s.FontSize) ?? 0);
+            foreach (var blk in created)
+            {
+                switch (blk)
+                {
+                    case Paragraph p: p.OffsetX += dx; p.OffsetY += dy; break;
+                    case Table t: t.Indent += dx; break;
+                    case FloatBlock fb: fb.MarginLeft += fb.Side == "left" ? dx : 0; fb.MarginTop += dy; break;
+                    case AnchorBlock ab: ab.X += dx; ab.TopOffset += dy; break;
+                }
+            }
         }
         if (s.PaddingBottom > 0) f.PendingMargin += s.PaddingBottom;
         f.PendingMargin = Math.Max(f.PendingMargin, s.MarginBottom);
@@ -917,20 +1053,35 @@ public sealed class HtmlReader
         f.PendingMargin = Math.Max(f.PendingMargin, ts.MarginTop);
 
         // Строки: thead → tbody/tr → tfoot
+        f.PendingClear = null;
         var head = new List<(Node Tr, CssStyle? Group)>();
         var body = new List<(Node Tr, CssStyle? Group)>();
         var foot = new List<(Node Tr, CssStyle? Group)>();
         var colWidths = new List<string?>();
         Node? caption = null;
+        // Строки и ячейки определяются по display (работает и для CSS-таблиц на div)
+        static bool IsRow(Node x) => x.Style?.Display == "table-row";
+        static bool IsCell(Node x) => x.Style?.Display == "table-cell";
+        Node? anon = null;   // анонимная строка для ячеек без родителя-строки
         foreach (var c in tableNode.Children.Where(c => c.IsElement && c.Style?.Display != "none"))
         {
+            if (IsCell(c))
+            {
+                if (anon == null) { anon = new Node { Tag = "tr", Style = new CssStyle { Display = "table-row" } }; body.Add((anon, null)); }
+                anon.Children.Add(c);
+                continue;
+            }
+            anon = null;
+            switch (c.Style!.Display)
+            {
+                case "table-caption": caption = c; break;
+                case "table-header-group": head.AddRange(c.Children.Where(IsRow).Select(r => (r, (CssStyle?)c.Style))); break;
+                case "table-footer-group": foot.AddRange(c.Children.Where(IsRow).Select(r => (r, (CssStyle?)c.Style))); break;
+                case "table-row-group": body.AddRange(c.Children.Where(IsRow).Select(r => (r, (CssStyle?)c.Style))); break;
+                case "table-row": body.Add((c, null)); break;
+            }
             switch (c.Tag)
             {
-                case "caption": caption = c; break;
-                case "thead": head.AddRange(c.Children.Where(r => r.Tag == "tr").Select(r => (r, c.Style))); break;
-                case "tfoot": foot.AddRange(c.Children.Where(r => r.Tag == "tr").Select(r => (r, c.Style))); break;
-                case "tbody": body.AddRange(c.Children.Where(r => r.Tag == "tr").Select(r => (r, c.Style))); break;
-                case "tr": body.Add((c, null)); break;
                 case "colgroup":
                     foreach (var col in c.Children.Where(x => x.Tag == "col"))
                         for (int k = 0; k < Math.Max(1, int.TryParse(col.Attr("span"), out var sp) ? sp : 1); k++) colWidths.Add(col.Style?.Width);
@@ -960,7 +1111,7 @@ public sealed class HtmlReader
         {
             var (tr, group) = allRows[r];
             int c = 0;
-            foreach (var td in tr.Children.Where(x => x.Tag is "td" or "th" && x.Style?.Display != "none"))
+            foreach (var td in tr.Children.Where(IsCell))
             {
                 while (grid[r].ContainsKey(c)) c++;
                 int cs = Math.Clamp(int.TryParse(td.Attr("colspan"), out var csv) ? csv : 1, 1, 1000);
@@ -987,6 +1138,7 @@ public sealed class HtmlReader
             Indent = b.IndL + ts.MarginLeft,
             PageBreakBefore = f.PendingBreak,
             SpaceBefore = f.PendingMargin,
+            Clear = ts.Clear,
         };
         f.PendingBreak = false; f.PendingMargin = 0;
         if (borderAttr > 0)

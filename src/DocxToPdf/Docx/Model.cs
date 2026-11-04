@@ -243,6 +243,10 @@ public sealed class Paragraph : Block
     public List<Inline> Inlines = [];
     /// <summary>Свойства раздела, если абзац завершает раздел.</summary>
     public SectionProps? Section;
+    /// <summary>CSS clear: left/right/both.</summary>
+    public string? Clear;
+    /// <summary>Сдвиг при position: relative.</summary>
+    public double OffsetX, OffsetY;
 }
 
 public sealed class CellBorders
@@ -302,6 +306,47 @@ public sealed class Table : Block
     public List<TableRow> Rows = [];
     public bool PageBreakBefore;
     public double SpaceBefore, SpaceAfter;
+    public string? Clear;
+}
+
+/// <summary>Оформление блока-контейнера (фон, рамка, внутренние отступы).</summary>
+public sealed class BoxStyle
+{
+    public Rgb? Background;
+    public BorderDef? BorderTop, BorderBottom, BorderLeft, BorderRight;
+    public double PadTop, PadBottom, PadLeft, PadRight;
+    public double MinHeight;             // CSS height (рамка целиком)
+    public double HorizontalExtra => PadLeft + PadRight + (BorderLeft?.Width ?? 0) + (BorderRight?.Width ?? 0);
+}
+
+/// <summary>Плавающий блок (CSS float) — текст обтекает его.</summary>
+public sealed class FloatBlock : Block
+{
+    public string Side = "left";
+    public double Width;                 // ширина рамки блока (без внешних отступов)
+    public double MarginTop, MarginBottom, MarginLeft, MarginRight;
+    public BoxStyle Box = new();
+    public List<Block> Blocks = [];
+}
+
+/// <summary>Абсолютно/фиксированно позиционированный блок (вне потока).</summary>
+public sealed class PositionedBlock : Block
+{
+    public string Mode = "absolute";     // absolute | fixed
+    public double? Left, Top, Right, Bottom;
+    public double Width;
+    public int ZIndex;
+    public BoxStyle Box = new();
+    public List<Block> Blocks = [];
+}
+
+/// <summary>Точка привязки для absolute-потомков позиционированного предка.</summary>
+public sealed class AnchorBlock : Block
+{
+    public double X;                     // левый край предка относительно колонки
+    public double Width;                 // ширина предка
+    public double TopOffset;             // смещение верха предка относительно точки привязки
+    public List<PositionedBlock> Children = [];
 }
 
 public sealed class HeaderFooter
@@ -319,6 +364,8 @@ public sealed class SectionProps
     public HeaderFooter? HeaderDefault, HeaderFirst, HeaderEven;
     public HeaderFooter? FooterDefault, FooterFirst, FooterEven;
     public int? PageNumberStart;
+    /// <summary>position: fixed — выводится на каждой странице.</summary>
+    public List<PositionedBlock> FixedBlocks = [];
 }
 
 public sealed class Section

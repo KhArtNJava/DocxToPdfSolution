@@ -13,6 +13,8 @@ public sealed class Page
     public bool FirstOfSection;
     public int Number;   // отображаемый номер страницы
     public List<(Frag Frag, double X, double Y)> Items = [];
+    /// <summary>Позиционированные блоки: под потоком (z-index &lt; 0) и над ним.</summary>
+    public List<(Frag Frag, double X, double Y, int Z)> Underlays = [], Overlays = [];
 }
 
 /// <summary>Разбивает поток фрагментов на страницы и добавляет колонтитулы.</summary>
@@ -25,6 +27,8 @@ public sealed class Paginator(LayoutContext ctx)
     double _y, _top, _bottom;
     bool _natural;          // страница начата из-за переполнения (а не явного разрыва)
     TableInfo? _lastTable;
+    readonly List<AbsFrag> _fixed = [];
+    int _sectionFirstPage;
     int _pageNumber;
 
     public List<Page> Run()
@@ -37,7 +41,14 @@ public sealed class Paginator(LayoutContext ctx)
             var (top, bottom) = BodyArea(sp);
             double width = sp.PageWidth - sp.MarginLeft - sp.MarginRight;
             _ctx.MaxImageHeight = Math.Max(50, bottom - top - 2);
-            var frags = new BlockLayout(_ctx).LayoutBlocks(section.Blocks, width);
+            var layout = new BlockLayout(_ctx);
+            var frags = layout.LayoutBlocks(section.Blocks, width);
+            foreach (var fb in sp.FixedBlocks)
+                _fixed.Add(new AbsFrag
+                {
+                    Content = layout.BuildBox(fb.Blocks, fb.Width, fb.Box), Left = fb.Left, Top = fb.Top, Right = fb.Right,
+                    Bottom = fb.Bottom, Fixed = true, ZIndex = fb.ZIndex
+                });
 
             bool continuous = sp.Type == "continuous" && _page != null;
             if (!continuous)
@@ -56,10 +67,23 @@ public sealed class Paginator(LayoutContext ctx)
                 _page!.Section = sp;
             }
             _top = top; _bottom = bottom;
+            if (!continuous) _sectionFirstPage = _pages.Count - 1;
             if (_page!.Items.Count == 0) _y = Math.Max(_y, top);
             Place(frags, sp);
         }
         if (_pages.Count == 0) NewPage(doc.Sections.LastOrDefault()?.Props ?? new SectionProps(), false, true);
+
+        // position: fixed — на каждой странице (относительно страницы целиком)
+        foreach (var page in _pages)
+            foreach (var a in _fixed)
+            {
+                double w = a.Content.Width, h = a.Content.Height;
+                // Для печати fixed отсчитывается от области страницы (внутри полей)
+                var ps = page.Section;
+                double x = a.Left != null ? ps.MarginLeft + a.Left.Value : a.Right != null ? page.Width - ps.MarginRight - a.Right.Value - w : ps.MarginLeft;
+                double y = a.Top != null ? ps.MarginTop + a.Top.Value : a.Bottom != null ? page.Height - ps.MarginBottom - a.Bottom.Value - h : ps.MarginTop;
+                (a.ZIndex < 0 ? page.Underlays : page.Overlays).Add((a.Content, x, y, a.ZIndex));
+            }
 
         AddHeadersFooters();
         return _pages;
@@ -128,11 +152,37 @@ public sealed class Paginator(LayoutContext ctx)
         return h;
     }
 
+    void PlaceAbs(AbsFrag a, SectionProps sp)
+    {
+        double ox, oy, cbW, cbH;
+        if (a.RelativeToFlow)
+        {
+            ox = sp.MarginLeft + a.AnchorX; oy = _y + a.TopOffset; cbW = a.AnchorWidth; cbH = _bottom - oy;
+        }
+        else
+        {
+            ox = sp.MarginLeft; oy = _top; cbW = sp.PageWidth - sp.MarginLeft - sp.MarginRight; cbH = _bottom - _top;
+        }
+        double w = a.Content.Width, h = a.Content.Height;
+        double x = a.Left != null ? ox + a.Left.Value : a.Right != null ? ox + cbW - a.Right.Value - w : ox;
+        double y = a.Top != null ? oy + a.Top.Value : a.Bottom != null ? oy + cbH - a.Bottom.Value - h : _y;
+        // Относительно начального блока (без позиционированного предка) — на первой странице раздела
+        var target = !a.RelativeToFlow && (a.Top != null || a.Bottom != null) ? _pages[_sectionFirstPage] : _page!;
+        var list = a.ZIndex < 0 ? target.Underlays : target.Overlays;
+        list.Add((a.Content, x, y, a.ZIndex));
+    }
+
     void Place(List<Frag> frags, SectionProps sp)
     {
         for (int i = 0; i < frags.Count; i++)
         {
             Frag f = frags[i];
+            if (f is AbsFrag abs)
+            {
+                if (abs.Fixed) _fixed.Add(abs);
+                else PlaceAbs(abs, sp);
+                continue;
+            }
             if (f.PageBreakBefore && !PageEmpty) NewPage(sp, natural: false, firstOfSection: false);
 
             double sb = PageEmpty && _natural ? 0 : f.SpaceBefore;
@@ -239,7 +289,9 @@ public sealed class Paginator(LayoutContext ctx)
         foreach (var page in pages)
         {
             var canvas = pdf.AddPage(page.Width, page.Height);
+            foreach (var (frag, x, y, _) in page.Underlays.OrderBy(u => u.Z)) frag.Draw(canvas, x, y);
             foreach (var (frag, x, y) in page.Items) frag.Draw(canvas, x, y);
+            foreach (var (frag, x, y, _) in page.Overlays.OrderBy(u => u.Z)) frag.Draw(canvas, x, y);
         }
     }
 }
