@@ -707,12 +707,26 @@ public sealed class BlockLayout(LayoutContext ctx)
                     double w = pos - abs;
                     if (stop.Align is "right" or "end" or "center" or "decimal")
                     {
-                        double seg = 0;
-                        for (int j = i + 1; j < pieces.Count && pieces[j].Kind is PieceKind.Text or PieceKind.Space or PieceKind.Image; j++)
+                        double seg = 0, tail = 0;
+                        bool foundSep = false;
+                        for (int j = i + 1; j < pieces.Count && pieces[j].Kind is PieceKind.Text or PieceKind.Space or PieceKind.Image or PieceKind.Spacer && !foundSep; j++)
+                        {
+                            if (stop.Align == "decimal" && pieces[j].Kind == PieceKind.Text)
+                            {
+                                // По разделителю: на позиции табуляции стоит первая запятая/точка числа
+                                int k = pieces[j].Texts.FindIndex(t => t is "," or ".");
+                                if (k >= 0)
+                                {
+                                    seg += pieces[j].Adv.Take(k).Sum();
+                                    tail = pieces[j].Width - pieces[j].Adv.Take(k).Sum();
+                                    foundSep = true; break;
+                                }
+                            }
                             seg += pieces[j].Width;
+                        }
                         if (stop.Align == "center") seg /= 2;
                         w = Math.Max(0, pos - abs - seg);
-                        extraRoom = Math.Max(0, pos - LineStart(cur.First) - Avail(cur.First));
+                        extraRoom = Math.Max(0, pos + tail - LineStart(cur.First) - Avail(cur.First));
                     }
                     else extraRoom = 0;
                     // Позиция табуляции за правым краем — переносим на новую строку (как Word)

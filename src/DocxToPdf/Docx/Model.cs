@@ -60,6 +60,7 @@ public sealed class RunProps
     public double? Spacing;       // pt (межбуквенный интервал)
     public double? Scale;         // w:w — масштаб символов по горизонтали, %
     public bool? Outline;         // контурный текст
+    public bool? Emboss, Imprint, Shadow;   // эффекты текста
     public BorderDef? Border;     // w:bdr — рамка вокруг текста
 
     public RunProps Clone() => (RunProps)MemberwiseClone();
@@ -90,6 +91,7 @@ public sealed class RunProps
         Position = o.Position ?? Position;
         Scale = o.Scale ?? Scale;
         Outline = o.Outline ?? Outline;
+        Emboss = o.Emboss ?? Emboss; Imprint = o.Imprint ?? Imprint; Shadow = o.Shadow ?? Shadow;
         Border = o.Border ?? Border;
         Spacing = o.Spacing ?? Spacing;
         if (o.StyleId != null) StyleId = o.StyleId;
@@ -242,6 +244,9 @@ public sealed record TextStyle
     public double HScale { get; init; } = 1;
     /// <summary>Контурный текст (w:outline).</summary>
     public bool Outline { get; init; }
+    /// <summary>Тень под текстом (w:shadow, w:emboss, w:imprint): цвет тени и её смещение в долях кегля.</summary>
+    public Rgb? ShadowColor { get; init; }
+    public double ShadowOffset { get; init; }
     /// <summary>Рамка вокруг текста (w:bdr) — превращается в общий строчный блок соседних фрагментов.</summary>
     public BorderDef? RunBorder { get; init; }
     public double Size { get; init; } = 10;
@@ -316,6 +321,8 @@ public sealed class Paragraph : Block
     public List<TabStop> Tabs = [];
     public Rgb? Shading;
     public BorderDef? BorderTop, BorderBottom, BorderLeft, BorderRight, BorderBetween;
+    /// <summary>Закладки, начинающиеся в абзаце (цели внутренних ссылок).</summary>
+    public List<string>? Bookmarks;
     /// <summary>Выравнивание номера списка (lvlJc): left/center/right.</summary>
     public string? LabelAlign;
     /// <summary>Привязка строк к сетке документа (docGrid).</summary>
@@ -528,6 +535,8 @@ public sealed class SectionProps
     public HeaderFooter? HeaderDefault, HeaderFirst, HeaderEven;
     public HeaderFooter? FooterDefault, FooterFirst, FooterEven;
     public int? PageNumberStart;
+    /// <summary>Формат номеров страниц (w:pgNumType w:fmt): decimal, upperRoman, lowerRoman, upperLetter …</summary>
+    public string PageNumberFormat = "decimal";
     /// <summary>Рамка страницы (w:pgBorders); Space — отступ от края страницы или текста.</summary>
     public BorderDef? PageBorderTop, PageBorderBottom, PageBorderLeft, PageBorderRight;
     public bool PageBorderFromText;
@@ -554,6 +563,8 @@ public sealed class DocxDocument
     public List<Section> Sections = [];
     public Dictionary<string, byte[]> Media = new(StringComparer.OrdinalIgnoreCase);
     public bool EvenAndOddHeaders;
+    /// <summary>Зеркальные поля (w:mirrorMargins): на чётных страницах левое и правое поля меняются местами.</summary>
+    public bool MirrorMargins;
     /// <summary>Цвет фона страниц (w:background).</summary>
     public Rgb? Background;
     public double DefaultTabStop = 35.4;

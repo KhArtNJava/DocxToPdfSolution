@@ -14,9 +14,11 @@ public static class Converter
     {
         var doc = IsZip(input) ? DocxReader.Read(input) : HtmlReader.Read(input, fonts, htmlOptions);
         var ctx = new LayoutContext(doc, fonts);
-        var pages = new Paginator(ctx).Run();
+        var paginator = new Paginator(ctx);
+        var pages = paginator.Run();
         var pdf = new PdfDocument { Title = doc.Title, Author = doc.Author, Subject = doc.Subject };
         Paginator.Render(pages, pdf);
+        foreach (var (name, (page, x, y)) in paginator.Destinations) pdf.Destinations[name] = (page, x, y);
         pdf.Save(output);
         return pages.Count;
     }

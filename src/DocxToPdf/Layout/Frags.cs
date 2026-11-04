@@ -138,7 +138,9 @@ public sealed class LineFrag : Frag
             if (p.Field != null && c.PageNumber > 0)
             {
                 // Номер страницы известен только сейчас
-                string num = (p.Field == FieldKind.Page ? c.PageNumber : c.PageCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                string num = p.Field == FieldKind.Page
+                    ? c.PageNumberText ?? c.PageNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : c.PageCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 var fg = new List<ushort>(); var ft = new List<string>();
                 int m2 = k;
                 while (m2 < Pieces.Count && Pieces[m2].Field == p.Field && Pieces[m2].Face == p.Face) m2++;
@@ -154,7 +156,7 @@ public sealed class LineFrag : Frag
             {
                 var q = Pieces[m];
                 if (q.Kind is not (PieceKind.Text or PieceKind.Space) || q.Face != p.Face || q.Size != p.Size || q.Rise != p.Rise || q.Style.Color != p.Style.Color || q.Gids.Count == 0
-                    || q.Field != null || q.Style.HScale != p.Style.HScale || q.Style.Outline != p.Style.Outline)
+                    || q.Field != null || q.Style.HScale != p.Style.HScale || q.Style.Outline != p.Style.Outline || q.Style.ShadowColor != p.Style.ShadowColor)
                     break;
                 gids.AddRange(q.Gids); texts.AddRange(q.Texts);
                 double ls = q.Kind == PieceKind.Text ? q.Style.LetterSpacing : q.Style.WordSpacing;
@@ -164,6 +166,14 @@ public sealed class LineFrag : Frag
                 double gap = m + 1 < Pieces.Count ? Pieces[m + 1].X - (q.X + q.Width) : 0;
                 if (Math.Abs(gap) > 0.001) { extra[^1] += gap; anyExtra = true; }
                 m++;
+            }
+            if (p.Style.ShadowColor is { } shc)
+            {
+                // Тень/рельеф: смещённая копия текста под ним; невидима для поиска (не дублирует текст)
+                double so = p.Size * p.Style.ShadowOffset;
+                c.TextAsPaths++;
+                c.Glyphs(p.Face, p.Size, lx + p.X + so, baseY - p.Rise + so, gids, texts, shc, anyExtra ? extra : null, p.Style.HScale, p.Style.Outline);
+                c.TextAsPaths--;
             }
             c.Glyphs(p.Face, p.Size, lx + p.X, baseY - p.Rise, gids, texts, p.Style.Color, anyExtra ? extra : null, p.Style.HScale, p.Style.Outline);
             k = m;

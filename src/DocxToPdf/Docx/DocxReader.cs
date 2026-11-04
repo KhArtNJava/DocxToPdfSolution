@@ -409,6 +409,7 @@ public sealed partial class DocxReader
         var dts = Twips(Val(x.Root.Element(W + "defaultTabStop")));
         if (dts is > 1) _doc.DefaultTabStop = dts.Value;
         _doc.EvenAndOddHeaders = x.Root.Element(W + "evenAndOddHeaders") is { } e && IsOnVal(e);
+        _doc.MirrorMargins = x.Root.Element(W + "mirrorMargins") is { } mm && IsOnVal(mm);
     }
 
     void LoadCoreProps()
@@ -498,6 +499,9 @@ public sealed partial class DocxReader
         r.Position = HalfPoints(Val(rPr.Element(W + "position")));
         if (ParseInt(Val(rPr.Element(W + "w"))) is int sc && sc > 0) r.Scale = sc;
         r.Outline = OnOff(rPr.Element(W + "outline"));
+        r.Emboss = OnOff(rPr.Element(W + "emboss"));
+        r.Imprint = OnOff(rPr.Element(W + "imprint"));
+        r.Shadow = OnOff(rPr.Element(W + "shadow"));
         if (rPr.Element(W + "bdr") is { } bdrEl) r.Border = ParseBorder(bdrEl);
         r.Spacing = Twips(Val(rPr.Element(W + "spacing")));
         return r;
@@ -661,8 +665,13 @@ public sealed partial class DocxReader
             HScale = (r.Scale ?? 100) / 100.0,
             Outline = r.Outline ?? false,
             RunBorder = r.Border is { IsNone: false } ? r.Border : null,
+            // Эффекты Word: «приподнятый» — светлый текст с тёмной тенью снизу-справа, «утопленный» — тень сверху-слева, «тень» — серая тень
+            ShadowColor = r.Emboss == true || r.Imprint == true || r.Shadow == true ? new Rgb(0.55, 0.55, 0.55) : null,
+            ShadowOffset = r.Imprint == true ? -0.04 : r.Emboss == true ? 0.04 : r.Shadow == true ? 0.06 : 0,
             Size = r.Size ?? 10,
-            Color = Rgb.Parse(r.Color) ?? (link != null && r.Color == null ? new Rgb(0.02, 0.39, 0.76) : Rgb.Black),
+            Color = (r.Emboss == true || r.Imprint == true)
+                ? new Rgb(0.93, 0.93, 0.93)
+                : Rgb.Parse(r.Color) ?? (link != null && r.Color == null ? new Rgb(0.02, 0.39, 0.76) : Rgb.Black),
             Background = bg,
             VertAlign = r.VertAlign switch { "superscript" => 1, "subscript" => -1, _ => 0 },
             Position = r.Position ?? 0,
@@ -800,6 +809,7 @@ public sealed partial class DocxReader
         var state = new RunState { BaseR = baseR, Ctx = ctx };
         ParseInlineContainer(p, state, para.Inlines);
         ShareRunBorders(para.Inlines);
+        para.Bookmarks = state.Bookmarks;
         // Отдельная формула (m:oMathPara) — по центру, как в Word
         if (p.Elements(M + "oMathPara").Any() && !p.Elements(W + "r").Any(r => r.Elements(W + "t").Any(t => t.Value.Trim().Length > 0)))
             para.Align = "center";
@@ -953,6 +963,7 @@ public sealed partial class DocxReader
     {
         public required RunProps BaseR;
         public required PartContext Ctx;
+        public List<string>? Bookmarks;
         public string? Link;
         public Stack<FieldFrame> Fields = new();
 
@@ -970,6 +981,8 @@ public sealed partial class DocxReader
                 string? prev = st.Link;
                 string? rid = (string?)el.Attribute(R + "id");
                 if (rid != null && st.Ctx.Rels.TryGetValue(rid, out var rel) && rel.External) st.Link = rel.Target;
+                // Ссылка на закладку внутри документа
+                else if ((string?)el.Attribute(W + "anchor") is { Length: > 0 } anchorName) st.Link = "#" + anchorName;
                 ParseInlineContainer(el, st, output);
                 st.Link = prev;
             }
@@ -983,6 +996,10 @@ public sealed partial class DocxReader
                     output.Add(new FieldInline(kind.Value, ToTextStyle(ResolveRunProps(st.BaseR, ParseRPr(r)))));
                 }
                 else ParseInlineContainer(el, st, output);
+            }
+            else if (n == W + "bookmarkStart")
+            {
+                if ((string?)el.Attribute(W + "name") is { Length: > 0 } bm) (st.Bookmarks ??= []).Add(bm);
             }
             else if (n == W + "ins" || n == W + "moveTo" || n == W + "smartTag" || n == W + "customXml" || n == W + "dir" || n == W + "bdo")
                 ParseInlineContainer(el, st, output);
@@ -1373,6 +1390,7 @@ public sealed partial class DocxReader
         s.Type = Val(sp.Element(W + "type")) ?? "nextPage";
         s.TitlePage = sp.Element(W + "titlePg") is { } tp && IsOnVal(tp);
         s.PageNumberStart = ParseInt((string?)sp.Element(W + "pgNumType")?.Attribute(W + "start"));
+        s.PageNumberFormat = (string?)sp.Element(W + "pgNumType")?.Attribute(W + "fmt") ?? "decimal";
         if (sp.Element(W + "pgBorders") is { } pb)
         {
             BorderDef? B(string n) => ParseBorder(pb.Element(W + n)) is { IsNone: false } b ? b : null;

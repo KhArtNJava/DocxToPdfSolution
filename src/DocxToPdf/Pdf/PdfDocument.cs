@@ -40,6 +40,8 @@ public sealed class PdfDocument
     readonly Dictionary<TrueTypeFont, PdfFont> _fonts = new();
     readonly Dictionary<string, PdfImage?> _images = new();
     public string? Title, Author, Subject;
+    /// <summary>Цели внутренних ссылок: имя → (индекс страницы, x, y сверху).</summary>
+    public readonly Dictionary<string, (int Page, double X, double Y)> Destinations = [];
 
     public PdfCanvas AddPage(double width, double height)
     {
@@ -141,11 +143,12 @@ public sealed class PdfDocument
         var fontIds = _fonts.Values.ToDictionary(f => f, _ => w.Reserve());
         var imageIds = _images.Values.Where(i => i != null).ToDictionary(i => i!, _ => w.Reserve());
 
-        var pageIds = new List<int>();
-        foreach (var page in _pages)
+        // Номера объектов страниц резервируются заранее — на них ссылаются внутренние ссылки
+        var pageIds = _pages.Select(_ => w.Reserve()).ToList();
+        for (int pi = 0; pi < _pages.Count; pi++)
         {
-            int pageId = w.Reserve(), contentId = w.Reserve();
-            pageIds.Add(pageId);
+            var page = _pages[pi];
+            int pageId = pageIds[pi], contentId = w.Reserve();
             var c = page.Canvas;
 
             var res = new StringBuilder("<< /ProcSet [/PDF /Text /ImageB /ImageC]");
@@ -174,9 +177,18 @@ public sealed class PdfDocument
             var annots = new List<int>();
             foreach (var link in c.Links)
             {
+                string action;
+                if (link.Uri.StartsWith('#'))
+                {
+                    // Ссылка на закладку внутри документа: переход к странице и месту
+                    if (!Destinations.TryGetValue(link.Uri[1..], out var dest) || dest.Page >= _pages.Count) continue;
+                    double dy = _pages[dest.Page].Height - dest.Y;
+                    action = $"/Dest [{pageIds[dest.Page]} 0 R /XYZ {F(dest.X)} {F(dy)} null]";
+                }
+                else action = $"/A << /S /URI /URI {PdfString(link.Uri)} >>";
                 int id = w.Reserve();
                 annots.Add(id);
-                w.Obj(id, $"<< /Type /Annot /Subtype /Link /Rect [{F(link.X1)} {F(link.Y1)} {F(link.X2)} {F(link.Y2)}] /Border [0 0 0] /A << /S /URI /URI {PdfString(link.Uri)} >> >>");
+                w.Obj(id, $"<< /Type /Annot /Subtype /Link /Rect [{F(link.X1)} {F(link.Y1)} {F(link.X2)} {F(link.Y2)}] /Border [0 0 0] {action} >>");
             }
             string annotStr = annots.Count > 0 ? " /Annots [" + string.Join(" ", annots.Select(a => a + " 0 R")) + "]" : "";
             w.Obj(pageId, $"<< /Type /Page /Parent {pagesId} 0 R /MediaBox [0 0 {F(page.Width)} {F(page.Height)}] /Resources {resId} 0 R /Contents {contentId} 0 R{annotStr} >>");
@@ -374,6 +386,7 @@ public sealed class PdfCanvas
 
     /// <summary>Номер текущей страницы и их общее число (для полей PAGE/NUMPAGES в тексте).</summary>
     public int PageNumber, PageCount;
+    public string? PageNumberText;
 
     public void Glyphs(FontFace face, double size, double x, double baseline, IReadOnlyList<ushort> gids, IReadOnlyList<string> texts, Rgb color,
         IReadOnlyList<double>? extra = null, double hscale = 1, bool outline = false)

@@ -18,6 +18,9 @@ public sealed class Page
     /// <summary>Разделительные линии колонок.</summary>
     public List<(double X, double Y1, double Y2)> ColumnLines = [];
     public Rgb? Background;
+    /// <summary>Левое поле этой страницы (с учётом зеркальных полей) и текст номера страницы.</summary>
+    public double MarginLeft;
+    public string NumberText = "1";
 }
 
 /// <summary>Разбивает поток фрагментов на страницы (и колонки), размещает сноски и колонтитулы.</summary>
@@ -115,7 +118,8 @@ public sealed class Paginator(LayoutContext ctx)
                 double w = a.Content.Width, h = a.Content.Height;
                 // Для печати fixed отсчитывается от области страницы (внутри полей)
                 var ps = page.Section;
-                double x = a.Left != null ? ps.MarginLeft + a.Left.Value : a.Right != null ? page.Width - ps.MarginRight - a.Right.Value - w : ps.MarginLeft;
+                double mr = page.Width - page.MarginLeft - (ps.PageWidth - ps.MarginLeft - ps.MarginRight);
+                double x = a.Left != null ? page.MarginLeft + a.Left.Value : a.Right != null ? page.Width - mr - a.Right.Value - w : page.MarginLeft;
                 double y = a.Top != null ? ps.MarginTop + a.Top.Value : a.Bottom != null ? page.Height - ps.MarginBottom - a.Bottom.Value - h : ps.MarginTop;
                 (a.ZIndex < 0 ? page.Underlays : page.Overlays).Add((a.Content, x, y, a.ZIndex));
             }
@@ -176,6 +180,9 @@ public sealed class Paginator(LayoutContext ctx)
         {
             Section = sp, Width = sp.PageWidth, Height = sp.PageHeight, BodyLeft = sp.MarginLeft,
             FirstOfSection = firstOfSection, Number = _pageNumber, Background = _ctx.Doc.Background,
+            // Зеркальные поля: на чётных страницах внутреннее (широкое) поле справа
+            MarginLeft = _ctx.Doc.MirrorMargins && _pageNumber % 2 == 0 ? sp.MarginRight : sp.MarginLeft,
+            NumberText = FormatPageNumber(_pageNumber, sp.PageNumberFormat),
         };
         _pages.Add(_page);
         var (top, bottom) = BodyArea(sp);
@@ -207,7 +214,7 @@ public sealed class Paginator(LayoutContext ctx)
         if (_sp?.ColumnSeparator == true && _colMaxY > _colTop + 1)
             for (int i = 1; i <= Math.Min(_col, _colX.Length - 1); i++)
             {
-                double x = _page.Section.MarginLeft + (_colX[i - 1] + _colW[i - 1] + _colX[i]) / 2;
+                double x = _page.MarginLeft + (_colX[i - 1] + _colW[i - 1] + _colX[i]) / 2;
                 _page.ColumnLines.Add((x, _colTop, _colMaxY));
             }
     }
@@ -220,11 +227,11 @@ public sealed class Paginator(LayoutContext ctx)
         double y = _bottom - _footH + NoteSeparator;
         // Разделитель сносок: короткая линия
         var sep = new SeparatorFrag { Width = 144, Height = 0 };
-        _page.Items.Add((sep, sp.MarginLeft, y - NoteSeparator / 2));
+        _page.Items.Add((sep, _page.MarginLeft, y - NoteSeparator / 2));
         foreach (var f in _notes)
         {
             y += f.SpaceBefore;
-            _page.Items.Add((f, sp.MarginLeft, y));
+            _page.Items.Add((f, _page.MarginLeft, y));
             y += f.Height + f.SpaceAfter;
         }
         _notes.Clear();
@@ -236,7 +243,8 @@ public sealed class Paginator(LayoutContext ctx)
     void Put(Frag f, double spaceBefore)
     {
         _y += spaceBefore;
-        _page!.Items.Add((f, _page.Section.MarginLeft + _colX[_col], _y));
+        _page!.Items.Add((f, _page.MarginLeft + _colX[_col], _y));
+        CollectBookmarks(f, _page.MarginLeft + _colX[_col], _y);
         _y += f.Height + f.SpaceAfter;
         _colMaxY = Math.Max(_colMaxY, _y - f.SpaceAfter);
         if (f is RowFrag rf) _lastTable = rf.Table;
@@ -257,7 +265,7 @@ public sealed class Paginator(LayoutContext ctx)
     }
 
     /// <summary>Положение абсолютного блока на странице.</summary>
-    (double X, double Y) AbsPosition(AbsFrag a, SectionProps sp, double flowY, double top, double bottom)
+    (double X, double Y) AbsPosition(AbsFrag a, SectionProps sp, double flowY, double top, double bottom, double ml)
     {
         double w = a.Content.Width, h = a.Content.Height;
         double contentW = sp.PageWidth - sp.MarginLeft - sp.MarginRight;
@@ -267,8 +275,8 @@ public sealed class Paginator(LayoutContext ctx)
             var (cx, cw) = a.HRel switch
             {
                 "page" => (0.0, sp.PageWidth),
-                "flow" => (sp.MarginLeft + a.AnchorX, a.AnchorWidth > 0 ? a.AnchorWidth : contentW),
-                _ => (sp.MarginLeft, contentW)
+                "flow" => (ml + a.AnchorX, a.AnchorWidth > 0 ? a.AnchorWidth : contentW),
+                _ => (ml, contentW)
             };
             var (cy, ch) = a.VRel switch
             {
@@ -293,8 +301,8 @@ public sealed class Paginator(LayoutContext ctx)
             return (x, y);
         }
         double ox, oy, cbW, cbH;
-        if (a.RelativeToFlow) { ox = sp.MarginLeft + a.AnchorX; oy = flowY + a.TopOffset; cbW = a.AnchorWidth; cbH = bottom - oy; }
-        else { ox = sp.MarginLeft; oy = top; cbW = contentW; cbH = bottom - top; }
+        if (a.RelativeToFlow) { ox = ml + a.AnchorX; oy = flowY + a.TopOffset; cbW = a.AnchorWidth; cbH = bottom - oy; }
+        else { ox = ml; oy = top; cbW = contentW; cbH = bottom - top; }
         double x2 = a.Left != null ? ox + a.Left.Value : a.Right != null ? ox + cbW - a.Right.Value - w : ox;
         double y2 = a.Top != null ? oy + a.Top.Value : a.Bottom != null ? oy + cbH - a.Bottom.Value - h : flowY;
         return (x2, y2);
@@ -302,7 +310,7 @@ public sealed class Paginator(LayoutContext ctx)
 
     void PlaceAbs(AbsFrag a, SectionProps sp)
     {
-        var (x, y) = AbsPosition(a, sp, _y, _top, _bottom);
+        var (x, y) = AbsPosition(a, sp, _y, _top, _bottom, _page!.MarginLeft);
         // CSS: относительно начального блока (без позиционированного предка) — на первой странице раздела
         var target = a.HRel == null && !a.RelativeToFlow && (a.Top != null || a.Bottom != null) ? _pages[_sectionFirstPage] : _page!;
         var list = a.ZIndex < 0 ? target.Underlays : target.Overlays;
@@ -389,6 +397,62 @@ public sealed class Paginator(LayoutContext ctx)
         }
     }
 
+    /// <summary>Цели внутренних ссылок: закладка → (страница, x, y).</summary>
+    public readonly Dictionary<string, (int Page, double X, double Y)> Destinations = [];
+
+    void CollectBookmarks(Frag f, double x, double y)
+    {
+        switch (f)
+        {
+            case LineFrag lf when lf.IsFirst && lf.Para.Bookmarks != null:
+                foreach (var b in lf.Para.Bookmarks) Destinations.TryAdd(b, (_pages.Count - 1, x, y));
+                break;
+            case RowFrag rf:
+                foreach (var cell in rf.Cells)
+                    foreach (var (cf, cy) in cell.Items) CollectBookmarks(cf, x + cell.X + cell.MarginLeft, y + cell.MarginTop + cy);
+                break;
+            case GroupFrag gf:
+                foreach (var (gfr, gx, gy) in gf.Items) CollectBookmarks(gfr, x + gx, y + gy);
+                break;
+            case TransformFrag tf:
+                foreach (var (tfr, ty) in tf.Items) CollectBookmarks(tfr, x, y + ty);
+                break;
+        }
+    }
+
+    /// <summary>Номер страницы в формате раздела (w:pgNumType w:fmt).</summary>
+    public static string FormatPageNumber(int n, string fmt)
+    {
+        static string Roman(int v)
+        {
+            if (v <= 0 || v >= 4000) return v.ToString(CultureInfo.InvariantCulture);
+            int[] vals = [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1];
+            string[] syms = ["M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I"];
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < vals.Length; i++) while (v >= vals[i]) { sb.Append(syms[i]); v -= vals[i]; }
+            return sb.ToString();
+        }
+        static string Letters(int v, string abc)
+        {
+            if (v <= 0) return v.ToString(CultureInfo.InvariantCulture);
+            char c = abc[(v - 1) % abc.Length];
+            return new string(c, (v - 1) / abc.Length + 1);   // как в Word: A … Z, AA, BB …
+        }
+        string d = n.ToString(CultureInfo.InvariantCulture);
+        return fmt switch
+        {
+            "upperRoman" => Roman(n),
+            "lowerRoman" => Roman(n).ToLowerInvariant(),
+            "upperLetter" => Letters(n, "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+            "lowerLetter" => Letters(n, "abcdefghijklmnopqrstuvwxyz"),
+            "russianUpper" => Letters(n, "АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЭЮЯ"),
+            "russianLower" => Letters(n, "абвгдежзиклмнопрстуфхцчшщэюя"),
+            "numberInDash" => "- " + d + " -",
+            "decimalZero" => n < 10 ? "0" + d : d,
+            _ => d
+        };
+    }
+
     void RepeatHeaderRows(Frag f)
     {
         if (!PageEmpty || f is not RowFrag rf || rf.IsHeader || rf.Table.HeaderRows.Count == 0) return;
@@ -410,9 +474,7 @@ public sealed class Paginator(LayoutContext ctx)
             else { header = sp.HeaderDefault; footer = sp.FooterDefault; }
 
             double width = sp.PageWidth - sp.MarginLeft - sp.MarginRight;
-            _ctx.FieldText = k => k == FieldKind.Page
-                ? page.Number.ToString(CultureInfo.InvariantCulture)
-                : total.ToString(CultureInfo.InvariantCulture);
+            _ctx.FieldText = k => k == FieldKind.Page ? page.NumberText : total.ToString(CultureInfo.InvariantCulture);
             var (top, bottom) = BodyArea(sp);
 
             void PlaceBlocks(List<Frag> frags, double y)
@@ -422,12 +484,12 @@ public sealed class Paginator(LayoutContext ctx)
                     if (f is AbsFrag a)
                     {
                         // Объекты колонтитула (водяные знаки, логотипы) позиционируются относительно страницы
-                        var (ax, ay) = AbsPosition(a, sp, y, top, bottom);
+                        var (ax, ay) = AbsPosition(a, sp, y, top, bottom, page.MarginLeft);
                         (a.ZIndex < 0 || a.HRel != null ? page.Underlays : page.Overlays).Add((a.Content, ax, ay, a.ZIndex));
                         continue;
                     }
                     y += f.SpaceBefore;
-                    page.Items.Add((f, sp.MarginLeft, y));
+                    page.Items.Add((f, page.MarginLeft, y));
                     y += f.Height + f.SpaceAfter;
                 }
             }
@@ -453,6 +515,7 @@ public sealed class Paginator(LayoutContext ctx)
         {
             var canvas = pdf.AddPage(page.Width, page.Height);
             canvas.PageNumber = page.Number;
+            canvas.PageNumberText = page.NumberText;
             canvas.PageCount = pages.Count;
             if (page.Background is { } bg) canvas.FillRect(0, 0, page.Width, page.Height, bg);
             foreach (var (frag, x, y, _) in page.Underlays.OrderBy(u => u.Z)) frag.Draw(canvas, x, y);
@@ -473,7 +536,8 @@ public sealed class Paginator(LayoutContext ctx)
         double x1, y1, x2, y2;
         if (sp.PageBorderFromText)
         {
-            x1 = sp.MarginLeft - Sp(sp.PageBorderLeft); x2 = page.Width - sp.MarginRight + Sp(sp.PageBorderRight);
+            double contentW = sp.PageWidth - sp.MarginLeft - sp.MarginRight;
+            x1 = page.MarginLeft - Sp(sp.PageBorderLeft); x2 = page.MarginLeft + contentW + Sp(sp.PageBorderRight);
             y1 = sp.MarginTop - Sp(sp.PageBorderTop); y2 = page.Height - sp.MarginBottom + Sp(sp.PageBorderBottom);
         }
         else
