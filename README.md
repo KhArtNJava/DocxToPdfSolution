@@ -23,7 +23,8 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 |---|---|
 | `Docx/DocxReader.cs` | ZIP-пакет, связи (rels), тема, стили с наследованием, нумерация, настройки, разделы, колонтитулы, таблицы, рисунки |
 | `Docx/Model.cs` | Модель документа (свойства в пунктах, разрешённые стили) |
-| `Fonts/TrueTypeFont.cs` | Парсер TTF/TTC (cmap 4/12, hmtx, OS/2, post, name) и сабсеттинг glyf/loca |
+| `Fonts/TrueTypeFont.cs` | Парсер TTF/OTF/TTC (cmap 4/12, hmtx, OS/2, post, name) и сабсеттинг glyf/loca |
+| `Fonts/Cff.cs` | Контуры CFF (OpenType .otf): разбор, подмножество в CID-форме для PDF (CIDFontType0C), интерпретатор Type 2 charstrings для вывода текста кривыми |
 | `Fonts/FontManager.cs` | Поиск системных шрифтов (Windows/Linux/macOS), замены (Calibri→Carlito и т.п.), запасные шрифты для отсутствующих символов, Symbol/Wingdings |
 | `Images/ImageDecoder.cs` | JPEG (как есть, DCTDecode), PNG (все типы, Adam7, прозрачность), GIF (LZW), BMP (1–32 бит) |
 | `Images/Tiff.cs` | TIFF: без сжатия, LZW (с предиктором), Deflate, PackBits, JPEG (полосы склеиваются без перекодирования), CCITT RLE/G3/G4; RGB(A), серый, палитра, CMYK, YCbCr; полосы и плитки |
@@ -38,7 +39,7 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 
 ## Поддерживается
 
-- Шрифты: встраивание подмножеств TrueType, кириллица и любой Unicode, синтез жирного/курсива, если нет файла начертания
+- Шрифты: встраивание подмножеств TrueType (glyf) и OpenType CFF (.otf: CIDFontType0 + FontFile3/CIDFontType0C, номера глифов сохраняются), кириллица и любой Unicode, синтез жирного/курсива, если нет файла начертания
 - Текст: жирный, курсив, подчёркивание (в т.ч. двойное), зачёркивание, цвет, выделение, верхний/нижний индекс, ПРОПИСНЫЕ, скрытый текст
 - Абзацы: выравнивание (в т.ч. по ширине), отступы, выступ, интервалы до/после, межстрочный (auto/exact/atLeast), contextualSpacing, заливка, верхняя/нижняя граница, разрывы строк и страниц, pageBreakBefore, keepNext/keepLines, контроль висячих строк
 - Табуляция: left/center/right/decimal, заполнители (точки, дефисы, подчёркивание) — оглавления
@@ -195,7 +196,7 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
   лигатура лам-алеф не собирается
 - EMF+ (GDI+) без GDI-дубля не разбирается (в «двойных» EMF выводится GDI-часть); в метафайлах не поддерживаются растровые операции (ROP) кроме копирования, кисти-узоры выводятся серой заливкой; TIFF: старый JPEG (сжатие 6) и JPEG в плитках не поддерживаются
 - Нет кернинга, автопереносов и сложного шейпинга индийских письменностей
-- Только TrueType-контуры (OTF с CFF пропускаются)
+- Вариативные шрифты OpenType с таблицей CFF2 не поддерживаются (TrueType-вариативные выводятся в начертании по умолчанию)
 - 3D: пересекающиеся плоскости сцены не разрезаются (порядок — по центру плоскости, как алгоритм художника);
   для блоков вне flex/grid точка схода перспективы — центр самого элемента;
   `backface-visibility: hidden` скрывает обратную сторону по стандарту (Chromium при печати её показывает)

@@ -276,16 +276,19 @@ public sealed class PdfDocument
         }
         widths.Append(" ]");
 
-        w.Obj(cidId, $"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{baseFont} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {descId} 0 R /DW 1000 /W {widths} /CIDToGIDMap /Identity >>");
+        // TrueType (glyf) — CIDFontType2; CFF — CIDFontType0 (CID подмножества = номер глифа, CIDToGIDMap не нужен)
+        string cidType = f.IsCff ? "/CIDFontType0" : "/CIDFontType2";
+        string gidMap = f.IsCff ? "" : " /CIDToGIDMap /Identity";
+        w.Obj(cidId, $"<< /Type /Font /Subtype {cidType} /BaseFont /{baseFont} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {descId} 0 R /DW 1000 /W {widths}{gidMap} >>");
 
         int flags = 4; // symbolic (корректно для Identity-кодировки)
         if (f.IsFixedPitch) flags |= 1;
         if (f.IsSerif) flags |= 2;
         if (f.IsItalic || f.ItalicAngle != 0) flags |= 64;
-        w.Obj(descId, $"<< /Type /FontDescriptor /FontName /{baseFont} /Flags {flags} /FontBBox [{F(f.XMin * k)} {F(f.YMin * k)} {F(f.XMax * k)} {F(f.YMax * k)}] /ItalicAngle {F(f.ItalicAngle)} /Ascent {F(f.Ascent * k)} /Descent {F(-f.Descent * k)} /CapHeight {F(f.CapHeight * k)} /StemV {(f.IsBold ? 120 : 80)} /FontFile2 {fileId} 0 R >>");
+        w.Obj(descId, $"<< /Type /FontDescriptor /FontName /{baseFont} /Flags {flags} /FontBBox [{F(f.XMin * k)} {F(f.YMin * k)} {F(f.XMax * k)} {F(f.YMax * k)}] /ItalicAngle {F(f.ItalicAngle)} /Ascent {F(f.Ascent * k)} /Descent {F(-f.Descent * k)} /CapHeight {F(f.CapHeight * k)} /StemV {(f.IsBold ? 120 : 80)} /{(f.IsCff ? "FontFile3" : "FontFile2")} {fileId} 0 R >>");
 
         var sub = f.Subset(pf.Used.Keys);
-        w.Stream(fileId, $"/Length1 {sub.Length}", sub);
+        w.Stream(fileId, f.IsCff ? "/Subtype /CIDFontType0C" : $"/Length1 {sub.Length}", sub);
 
         // ToUnicode CMap
         var cm = new StringBuilder();

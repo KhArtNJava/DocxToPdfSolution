@@ -85,7 +85,7 @@ public sealed class FontManager
             }
         }
         if (_index.Count == 0)
-            throw new InvalidOperationException("Не найдено ни одного TrueType-шрифта. Укажите каталог со шрифтами опцией --fonts.");
+            throw new InvalidOperationException("Не найдено ни одного шрифта TrueType/OpenType. Укажите каталог со шрифтами опцией --fonts.");
     }
 
     public int FamilyCount => _index.Count;

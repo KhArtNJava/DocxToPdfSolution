@@ -35,6 +35,9 @@ public sealed class TrueTypeFont
     public bool IsItalic { get; private set; }
     public bool IsSymbol { get; private set; }
     public bool IsSerif { get; private set; }
+    /// <summary>Контуры CFF (OpenType .otf): встраивается как CIDFontType0 (FontFile3 /CIDFontType0C).</summary>
+    internal CffFont? Cff { get; private set; }
+    public bool IsCff => Cff != null;
 
     TrueTypeFont(byte[] data) => _data = data;
 
@@ -93,7 +96,8 @@ public sealed class TrueTypeFont
             {
                 int off = FontOffset(data, i);
                 var tables = ReadDirectory(data, off);
-                if (!tables.ContainsKey("glyf") || !tables.ContainsKey("cmap") || !tables.ContainsKey("head")) continue;
+                // Контуры TrueType (glyf) или CFF (OpenType .otf); CFF2 (вариативные) не поддерживаются
+                if (!(tables.ContainsKey("glyf") || tables.ContainsKey("CFF ")) || !tables.ContainsKey("cmap") || !tables.ContainsKey("head")) continue;
                 var names = ReadNames(data, tables);
                 var families = new List<string>();
                 void Add(string? s) { if (!string.IsNullOrWhiteSpace(s) && !families.Contains(s, StringComparer.OrdinalIgnoreCase)) families.Add(s.Trim()); }
@@ -163,7 +167,11 @@ public sealed class TrueTypeFont
     {
         foreach (var (k, v) in ReadDirectory(_data, offset)) _tables[k] = v;
         if (!_tables.ContainsKey("glyf"))
-            throw new NotSupportedException("Поддерживаются только TrueType-шрифты с таблицей glyf");
+        {
+            if (!_tables.TryGetValue("CFF ", out var cff))
+                throw new NotSupportedException("Поддерживаются шрифты с контурами TrueType (glyf) или CFF");
+            Cff = new CffFont(_data, cff.Offset, cff.Length);
+        }
 
         var head = _tables["head"].Offset;
         UnitsPerEm = U16(_data, head + 18);
@@ -216,10 +224,18 @@ public sealed class TrueTypeFont
         if (UnderlineThickness <= 0) UnderlineThickness = UnitsPerEm / 20;
         if (UnderlinePosition == 0) UnderlinePosition = -UnitsPerEm / 10;
 
+        if (Cff != null)
+        {
+            NumGlyphs = Math.Max(1, NumGlyphs);
+            _loca = [];
+        }
+        else
+        {
         var loca = _tables["loca"].Offset;
         _loca = new int[NumGlyphs + 1];
         for (int g = 0; g <= NumGlyphs; g++)
             _loca[g] = indexToLoc == 0 ? U16(_data, loca + 2 * g) * 2 : (int)U32(_data, loca + 4 * g);
+        }
 
         var names = ReadNames(_data, _tables.ToDictionary(k => k.Key, v => (v.Value.Offset, v.Value.Length)));
         Family = names.FirstOrDefault(n => n.Id == 1).Value ?? "Font";
@@ -323,6 +339,7 @@ public sealed class TrueTypeFont
     /// </summary>
     public byte[] Subset(IEnumerable<ushort> used)
     {
+        if (Cff != null) return Cff.Subset(used, PostScriptName);
         var keep = new HashSet<int> { 0 };
         var stack = new Stack<int>(used.Select(u => (int)u));
         while (stack.Count > 0)
@@ -391,6 +408,7 @@ public sealed class TrueTypeFont
     public string GlyphPath(ushort gid)
     {
         if (_pathCache.TryGetValue(gid, out var cached)) return cached;
+        if (Cff != null) return _pathCache[gid] = Cff.GlyphPath(gid, UnitsPerEm);
         var contours = new List<List<(double X, double Y, bool On)>>();
         CollectContours(gid, 1, 0, 0, 1, 0, 0, contours, 0);
         var sb = new StringBuilder();
