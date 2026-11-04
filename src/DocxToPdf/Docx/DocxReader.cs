@@ -553,7 +553,14 @@ public sealed partial class DocxReader
             r.ThemeAscii = (string?)fonts.Attribute(W + "asciiTheme");
             r.ThemeHAnsi = (string?)fonts.Attribute(W + "hAnsiTheme");
             r.ThemeEastAsia = (string?)fonts.Attribute(W + "eastAsiaTheme");
+            r.FontCs = (string?)fonts.Attribute(W + "cs");
         }
+        r.SizeCs = HalfPoints(Val(rPr.Element(W + "szCs")));
+        r.BoldCs = OnOff(rPr.Element(W + "bCs"));
+        r.ItalicCs = OnOff(rPr.Element(W + "iCs"));
+        r.Rtl = OnOff(rPr.Element(W + "rtl"));
+        r.Cs = OnOff(rPr.Element(W + "cs"));
+        if (Val(rPr.Element(W + "em")) is { } em && em != "none") r.Emphasis = em;
         r.Bold = OnOff(rPr.Element(W + "b"));
         r.Italic = OnOff(rPr.Element(W + "i"));
         r.Strike = OnOff(rPr.Element(W + "strike"));
@@ -762,6 +769,7 @@ public sealed partial class DocxReader
             VertAlign = r.VertAlign switch { "superscript" => 1, "subscript" => -1, _ => 0 },
             Position = r.Position ?? 0,
             Link = link,
+            Emphasis = r.Emphasis,
         };
     }
 
@@ -782,9 +790,26 @@ public sealed partial class DocxReader
     {
         var r = paraBase.Clone();
         string? cs = direct?.StyleId;
-        if (cs != null) r.Overlay(StyleChain(cs).R);
+        if (cs != null) ToggleOverlay(r, StyleChain(cs).R);
         r.Overlay(direct);
         return r;
+    }
+
+    /// <summary>
+    /// Символьный стиль поверх стиля абзаца: переключаемые свойства (b, i, caps, strike …), включённые
+    /// в обоих стилях, взаимно отменяются (XOR, как в Word); остальные свойства накладываются обычно.
+    /// </summary>
+    static void ToggleOverlay(RunProps r, RunProps? style)
+    {
+        if (style == null) return;
+        static bool? X(bool? cur, bool? st) => st == true ? !(cur ?? false) : cur;
+        var t = (r.Bold, r.Italic, r.Caps, r.SmallCaps, r.Strike, r.DStrike, r.BoldCs, r.ItalicCs, r.Vanish);
+        r.Overlay(style);
+        r.Bold = X(t.Bold, style.Bold); r.Italic = X(t.Italic, style.Italic);
+        r.Caps = X(t.Caps, style.Caps); r.SmallCaps = X(t.SmallCaps, style.SmallCaps);
+        r.Strike = X(t.Strike, style.Strike); r.DStrike = X(t.DStrike, style.DStrike);
+        r.BoldCs = X(t.BoldCs, style.BoldCs); r.ItalicCs = X(t.ItalicCs, style.ItalicCs);
+        r.Vanish = X(t.Vanish, style.Vanish);
     }
 
     // ================================================================
@@ -793,6 +818,7 @@ public sealed partial class DocxReader
 
     void ParseBlockContainer(XElement container, PartContext ctx, List<Block> output, bool isBody = false)
     {
+        Paragraph? carry = null;   // абзац с удалённым знаком абзаца — сливается со следующим
         foreach (var el in container.Elements())
         {
             if (el.Name == W + "p")
@@ -804,6 +830,20 @@ public sealed partial class DocxReader
                 var para = ParseParagraph(el, ctx);
                 _pending = saved;
                 output.AddRange(pending);
+                if (carry != null)
+                {
+                    // Объединённый абзац получает свойства следующего (его знак абзаца сохранился), как в Word
+                    para.Inlines.InsertRange(0, carry.Inlines);
+                    if (carry.Bookmarks != null) para.Bookmarks = [.. carry.Bookmarks, .. para.Bookmarks ?? []];
+                    carry = null;
+                }
+                // Удалённый знак абзаца (исправления): текст продолжается в следующем абзаце
+                if (el.Element(W + "pPr")?.Element(W + "rPr")?.Element(W + "del") != null && para.Section == null
+                    && el.ElementsAfterSelf().FirstOrDefault()?.Name == W + "p")
+                {
+                    carry = para;
+                    continue;
+                }
                 if (para.DropLines > 0)
                     output.Add(new FloatBlock { Side = "left", Width = 0, DropLines = para.DropLines, MarginRight = para.DropGap, Blocks = [para] });
                 else if (FrameFloat(el.Element(W + "pPr")?.Element(W + "framePr")) is { } ff)
@@ -1319,7 +1359,7 @@ public sealed partial class DocxReader
             if (st.Suppressed || hidden) continue;
             if (ParseNoteElement(el, style, output)) continue;
 
-            if (n == W + "t") { if (el.Value.Length > 0) output.Add(new TextInline(el.Value, style)); }
+            if (n == W + "t") { if (el.Value.Length > 0) AddScriptText(el.Value, rp, style, st.Link, output); }
             else if (n == W + "tab") output.Add(new TabInline(style));
             else if (n == W + "ptab")
                 output.Add(new TabInline(style)
@@ -1359,6 +1399,47 @@ public sealed partial class DocxReader
                 }
             }
         }
+    }
+
+    /// <summary>Символ сложной письменности (Word оформляет его свойствами szCs/bCs/iCs/rFonts w:cs).</summary>
+    static bool IsComplexScript(char c) =>
+        c is >= '\u0590' and <= '\u08FF' or >= '\u0900' and <= '\u0DFF' or >= '\u0E00' and <= '\u0EFF'
+          or >= '\uFB1D' and <= '\uFDFF' or >= '\uFE70' and <= '\uFEFF';
+
+    /// <summary>
+    /// Текст фрагмента: части на сложных письменностях (и весь фрагмент с w:rtl/w:cs) получают
+    /// свойства *Cs; нейтральные символы (пробелы, цифры, знаки) присоединяются к соседней части.
+    /// </summary>
+    void AddScriptText(string text, RunProps rp, TextStyle style, string? link, List<Inline> output)
+    {
+        bool allCs = rp.Rtl == true || rp.Cs == true;
+        if (!allCs && !text.Any(IsComplexScript)) { output.Add(new TextInline(text, style)); return; }
+        var cp = rp.Clone();
+        cp.Size = rp.SizeCs ?? rp.Size;
+        cp.Bold = rp.BoldCs ?? false;
+        cp.Italic = rp.ItalicCs ?? false;
+        if (rp.FontCs != null) { cp.FontAscii = cp.FontHAnsi = cp.FontEastAsia = rp.FontCs; cp.ThemeAscii = cp.ThemeHAnsi = cp.ThemeEastAsia = null; }
+        var csStyle = ToTextStyle(cp, link);
+        if (allCs) { output.Add(new TextInline(text, csStyle)); return; }
+        int start = 0;
+        bool? curCs = null;
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            bool neutral = !char.IsLetter(c) && !IsComplexScript(c);
+            if (neutral) continue;
+            bool cs = IsComplexScript(c);
+            if (curCs == null) curCs = cs;
+            else if (cs != curCs)
+            {
+                // Граница: нейтральные символы между частями остаются с предыдущей
+                int cut = i;
+                output.Add(new TextInline(text[start..cut], curCs == true ? csStyle : style));
+                start = cut;
+                curCs = cs;
+            }
+        }
+        if (start < text.Length) output.Add(new TextInline(text[start..], curCs == true ? csStyle : style));
     }
 
     static bool OuterSuppressed(RunState st) => st.Fields.Skip(1).Any(f => !f.InResult || f.SkipResult);

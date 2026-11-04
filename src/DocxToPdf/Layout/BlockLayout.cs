@@ -349,6 +349,9 @@ public sealed class BlockLayout(LayoutContext ctx)
         double asc = f.Ascent / em * st.Size, desc = f.Descent / em * st.Size;
         p.Ascent = Math.Max(asc, asc * (p.Size / st.Size) + p.Rise);
         p.Descent = Math.Max(desc, desc * (p.Size / st.Size) - p.Rise);
+        // Знаки ударения (w:em) увеличивают высоту строки, чтобы не наезжать на соседние строки
+        if (st.Emphasis == "underDot") p.Descent = Math.Max(p.Descent, st.Size * 0.4 - p.Rise);
+        else if (st.Emphasis != null) p.Ascent = Math.Max(p.Ascent, Math.Max(asc, st.Size * 0.95) + st.Size * 0.25 + p.Rise);
     }
 
     (double Size, double Rise) EffectiveSize(TextStyle st)
@@ -401,10 +404,13 @@ public sealed class BlockLayout(LayoutContext ctx)
                 if (dir == 2) afterArabic = cp is >= 0x0600 and <= 0x08FF or >= 0xFB50 and <= 0xFEFF;
                 else if (dir == 1) afterArabic = false;
                 if (afterArabic && (cp is >= '0' and <= '9' or >= 0x0660 and <= 0x0669)) dir = 3;
-                if (cur == null || cur.Kind != kind || cur.Face != face || cur.Size != gsize || cjk || (dir != 0 && cur.Dir != 0 && dir != cur.Dir))
+                // В абзаце справа налево знаки после латинского слова — отдельный нейтральный кусок:
+                // его направление определяет окружение (точка в конце абзаца — слева, как в UAX #9)
+                bool splitNeutral = para.Rtl && cur != null && kind == PieceKind.Text && dir == 0 && cur.Dir == 1;
+                if (cur == null || cur.Kind != kind || cur.Face != face || cur.Size != gsize || cjk || (dir != 0 && cur.Dir != 0 && dir != cur.Dir) || splitNeutral)
                 {
                     cur = new Piece { Kind = kind, Style = st, Face = face, Size = gsize, Rise = rise, Src = src };
-                    cur.BreakBefore = kind == PieceKind.Text && (breakNext || cjk);
+                    cur.BreakBefore = kind == PieceKind.Text && (breakNext || cjk) && !splitNeutral;
                     SetMetrics(cur, st, PrimaryFace(cp, st));
                     pieces.Add(cur);
                     breakNext = false;

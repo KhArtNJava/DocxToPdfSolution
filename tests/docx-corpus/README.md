@@ -20,6 +20,7 @@
 | t15.docx | общий abstractNum у разных numId, `isLgl`/`lvlRestart`, отступы `start`/`end`, `beforeLines`, цвета выделения, `tblCellSpacing`, формат сносок `footnotePr`, точная высота строки (обрезка), титул с `vAlign=center` |
 | t16.docx | нумерация через стиль абзаца, символьный стиль + прямое форматирование, поле HYPERLINK, пустой абзац с крупным маркером, `gridBefore`/`gridAfter`, наследование колонтитулов вторым разделом |
 | t17.docx | оглавление на полях HYPERLINK `\l` и PAGEREF, поле REF `\h`, `jc=distribute`, сноска в таблице, картинка в колонтитуле (gen11.py требует img.png) |
+| t18.docx | поле переплёта `gutter`, `szCs`/`bCs` для иврита и арабского, `moveFrom`, удалённый знак абзаца, таблица без `tblGrid`, знаки ударения `w:em`, XOR переключаемых свойств стилей, эмодзи, отрицательная позиция |
 
-Сгенерировать заново: `python3 gen.py && python3 gen2.py && python3 gen3.py && python3 gen4.py && python3 gen5.py && python3 gen6.py && python3 gen7.py && python3 gen8.py && python3 gen9.py && python3 gen10.py && python3 gen11.py` (нужен python-docx).
+Сгенерировать заново: `python3 gen.py && python3 gen2.py && python3 gen3.py && python3 gen4.py && python3 gen5.py && python3 gen6.py && python3 gen7.py && python3 gen8.py && python3 gen9.py && python3 gen10.py && python3 gen11.py && python3 gen12.py` (нужен python-docx).
 Сравнение с LibreOffice: сконвертировать в `ours/` и `lo/`, затем `python3 cmp.py`.

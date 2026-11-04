@@ -63,6 +63,14 @@ public sealed class RunProps
     public bool? Outline;         // контурный текст
     public bool? Emboss, Imprint, Shadow;   // эффекты текста
     public BorderDef? Border;     // w:bdr — рамка вокруг текста
+    /// <summary>Свойства для сложных письменностей (иврит, арабский…): w:szCs, w:bCs, w:iCs, w:rFonts w:cs.</summary>
+    public double? SizeCs;
+    public bool? BoldCs, ItalicCs;
+    public string? FontCs;
+    /// <summary>w:rtl / w:cs — весь фрагмент оформляется свойствами сложных письменностей.</summary>
+    public bool? Rtl, Cs;
+    /// <summary>Знаки ударения w:em: dot, comma, circle, underDot.</summary>
+    public string? Emphasis;
 
     public RunProps Clone() => (RunProps)MemberwiseClone();
 
@@ -96,6 +104,9 @@ public sealed class RunProps
         Emboss = o.Emboss ?? Emboss; Imprint = o.Imprint ?? Imprint; Shadow = o.Shadow ?? Shadow;
         Border = o.Border ?? Border;
         Spacing = o.Spacing ?? Spacing;
+        SizeCs = o.SizeCs ?? SizeCs; BoldCs = o.BoldCs ?? BoldCs; ItalicCs = o.ItalicCs ?? ItalicCs;
+        FontCs = o.FontCs ?? FontCs; Rtl = o.Rtl ?? Rtl; Cs = o.Cs ?? Cs;
+        Emphasis = o.Emphasis ?? Emphasis;
         if (o.StyleId != null) StyleId = o.StyleId;
     }
 }
@@ -240,6 +251,8 @@ public sealed record TextStyle
     /// <summary>Цвет подчёркивания (w:u w:color); null — цвет текста.</summary>
     public Rgb? UnderlineColor { get; init; }
     public bool DoubleStrike { get; init; }
+    /// <summary>Знаки ударения (w:em): dot, comma, circle — над символами, underDot — под ними.</summary>
+    public string? Emphasis { get; init; }
     public bool Strike { get; init; }
     public bool Caps { get; init; }
     /// <summary>Капитель: строчные буквы — уменьшенными прописными.</summary>

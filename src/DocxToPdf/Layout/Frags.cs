@@ -273,6 +273,25 @@ public sealed class LineFrag : Frag
                     else c.Line(px, sy, px + w, sy, thick, st.Color);
                 }
             }
+            if (st.Emphasis != null && p.Kind == PieceKind.Text && p.Adv.Count == p.Texts.Count)
+            {
+                // Знаки ударения (w:em): точка над каждым символом (underDot — под ним)
+                double r = Math.Max(0.5, st.Size * 0.07), gx = px;
+                double ey = st.Emphasis == "underDot" ? baseY - p.Rise + st.Size * 0.28 : baseY - p.Rise - st.Size * 0.98;
+                for (int g = 0; g < p.Texts.Count; g++)
+                {
+                    double adv = p.Adv[g] + p.GlyphExtra;
+                    if (!string.IsNullOrWhiteSpace(p.Texts[g]))
+                    {
+                        double cx = gx + p.Adv[g] / 2;
+                        var radii = new[] { r, r, r, r, r, r, r, r };
+                        if (st.Emphasis == "circle")
+                            c.StrokeRoundedRect(cx - r * 1.3, ey - r * 1.3, r * 2.6, r * 2.6, radii.Select(v => v * 1.3).ToArray(), new BorderDef { Width = Math.Max(0.3, r * 0.5), Color = st.Color });
+                        else c.FillRoundedRect(cx - r, ey - r, 2 * r, 2 * r, radii, st.Color);
+                    }
+                    gx += adv;
+                }
+            }
             if (st.Link != null)
                 c.Link(px, baseY - p.Ascent, w, p.Ascent + p.Descent, st.Link);
         }
