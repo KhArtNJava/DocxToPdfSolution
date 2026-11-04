@@ -11,6 +11,8 @@ public sealed class LayoutContext(DocxDocument doc, FontManager fonts)
     public readonly FontManager Fonts = fonts;
     /// <summary>Текст полей PAGE/NUMPAGES (только для колонтитулов).</summary>
     public Func<FieldKind, string>? FieldText;
+    /// <summary>Шаг сетки строк текущего раздела (docGrid), 0 — нет.</summary>
+    public double GridPitch;
     /// <summary>Максимальная высота изображения (высота области текста).</summary>
     public double MaxImageHeight = 700;
 }
@@ -24,6 +26,9 @@ public abstract class Frag
 
     /// <summary>Рисует фрагмент; (x, y) — левый верхний угол (без SpaceBefore).</summary>
     public abstract void Draw(PdfCanvas c, double x, double y);
+
+    /// <summary>Сноски, на которые ссылается фрагмент (их текст размещается внизу той же страницы).</summary>
+    public virtual IEnumerable<List<Block>> Notes => [];
 
     /// <summary>Пытается разделить фрагмент так, чтобы первая часть уместилась в avail.</summary>
     public virtual (Frag First, Frag Remainder)? Split(double avail) => null;
@@ -52,12 +57,20 @@ public sealed class Piece
     public bool SpacerStart;
     /// <summary>Источник: индекс инлайна в абзаце и позиции символов каждого глифа.</summary>
     public int Src = -1;
+    /// <summary>Поле PAGE/NUMPAGES: текст подставляется при отрисовке.</summary>
+    public FieldKind? Field;
+    /// <summary>Направление: 0 — нейтральный, 1 — слева направо, 2 — справа налево.</summary>
+    public int Dir;
+    /// <summary>Разрыв колонки (а не страницы).</summary>
+    public bool ColumnBreak;
+    /// <summary>Текст сноски, на которую ссылается этот фрагмент.</summary>
+    public List<Block>? Note;
     public List<int> Pos = [];
     public double X;
 
     public Piece CloneEmpty() => new()
     {
-        Kind = Kind, Style = Style, Face = Face, Size = Size, Rise = Rise, Ascent = Ascent, Descent = Descent, Src = Src
+        Kind = Kind, Style = Style, Face = Face, Size = Size, Rise = Rise, Ascent = Ascent, Descent = Descent, Src = Src, Field = Field
     };
 }
 
@@ -72,17 +85,29 @@ public sealed class LineFrag : Frag
     public double ParaLeft, ParaRight;
     public double TopPad, BottomPad;
     public bool IsFirst, IsLast;
+    /// <summary>Строка заканчивается разрывом колонки.</summary>
+    public bool ColumnBreakAfter;
+    public List<List<Block>>? NoteBlocks;
+    public override IEnumerable<List<Block>> Notes => NoteBlocks ?? [];
 
     public override void Draw(PdfCanvas c, double x, double y)
     {
         x += Para.OffsetX;
         y += Para.OffsetY;
+        // Рамка/заливка: в группе абзацев с общей рамкой промежутки между ними тоже внутри рамки
+        double boxTop = y - (IsFirst && Para.GroupPrev ? SpaceBefore : 0);
+        double boxBottom = y + Height + (IsLast && Para.GroupNext ? SpaceAfter : 0);
+        var bl = Para.BorderLeft; var br = Para.BorderRight;
+        double bx1 = x + ParaLeft - (bl != null ? bl.Space + bl.Width : 0);
+        double bx2 = x + ParaRight + (br != null ? br.Space + br.Width : 0);
         if (Para.Shading is { } shd)
-            c.FillRect(x + ParaLeft, y, ParaRight - ParaLeft, Height, shd);
-        if (IsFirst && Para.BorderTop is { } bt)
-            DrawBorder(c, bt, x + ParaLeft, x + ParaRight, y + bt.Width / 2);
-        if (IsLast && Para.BorderBottom is { } bb)
-            DrawBorder(c, bb, x + ParaLeft, x + ParaRight, y + Height - bb.Width / 2);
+            c.FillRect(bx1, boxTop, bx2 - bx1, boxBottom - boxTop, shd);
+        var topB = IsFirst ? (Para.GroupPrev ? Para.BorderBetween : Para.BorderTop) : null;
+        if (topB != null) DrawBorder(c, topB, bx1, bx2, y + topB.Width / 2);
+        if (IsLast && !Para.GroupNext && Para.BorderBottom is { } bb)
+            DrawBorder(c, bb, bx1, bx2, y + Height - bb.Width / 2);
+        if (bl != null) c.Line(bx1 + bl.Width / 2, boxTop, bx1 + bl.Width / 2, boxBottom, bl.Width, bl.Color, bl.Val.Contains("dash"), bl.Val.Contains("dot"));
+        if (br != null) c.Line(bx2 - br.Width / 2, boxTop, bx2 - br.Width / 2, boxBottom, br.Width, br.Color, br.Val.Contains("dash"), br.Val.Contains("dot"));
 
         double baseY = y + TopPad + Baseline;
         double lx = x + Left;
@@ -110,13 +135,26 @@ public sealed class LineFrag : Frag
         {
             var p = Pieces[k];
             if (p.Kind is not (PieceKind.Text or PieceKind.Space) || p.Face == null || p.Gids.Count == 0) { k++; continue; }
+            if (p.Field != null && c.PageNumber > 0)
+            {
+                // Номер страницы известен только сейчас
+                string num = (p.Field == FieldKind.Page ? c.PageNumber : c.PageCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var fg = new List<ushort>(); var ft = new List<string>();
+                int m2 = k;
+                while (m2 < Pieces.Count && Pieces[m2].Field == p.Field && Pieces[m2].Face == p.Face) m2++;
+                foreach (char ch in num) { p.Face.Font.TryGetGlyph(ch, out var g); fg.Add(g); ft.Add(ch.ToString()); }
+                c.Glyphs(p.Face, p.Size, lx + p.X, baseY - p.Rise, fg, ft, p.Style.Color, null, p.Style.HScale, p.Style.Outline);
+                k = m2;
+                continue;
+            }
             var gids = new List<ushort>(); var texts = new List<string>(); var extra = new List<double>();
             bool anyExtra = false;
             int m = k;
             while (m < Pieces.Count)
             {
                 var q = Pieces[m];
-                if (q.Kind is not (PieceKind.Text or PieceKind.Space) || q.Face != p.Face || q.Size != p.Size || q.Rise != p.Rise || q.Style.Color != p.Style.Color || q.Gids.Count == 0)
+                if (q.Kind is not (PieceKind.Text or PieceKind.Space) || q.Face != p.Face || q.Size != p.Size || q.Rise != p.Rise || q.Style.Color != p.Style.Color || q.Gids.Count == 0
+                    || q.Field != null || q.Style.HScale != p.Style.HScale || q.Style.Outline != p.Style.Outline)
                     break;
                 gids.AddRange(q.Gids); texts.AddRange(q.Texts);
                 double ls = q.Kind == PieceKind.Text ? q.Style.LetterSpacing : q.Style.WordSpacing;
@@ -127,7 +165,7 @@ public sealed class LineFrag : Frag
                 if (Math.Abs(gap) > 0.001) { extra[^1] += gap; anyExtra = true; }
                 m++;
             }
-            c.Glyphs(p.Face, p.Size, lx + p.X, baseY - p.Rise, gids, texts, p.Style.Color, anyExtra ? extra : null);
+            c.Glyphs(p.Face, p.Size, lx + p.X, baseY - p.Rise, gids, texts, p.Style.Color, anyExtra ? extra : null, p.Style.HScale, p.Style.Outline);
             k = m;
         }
 
@@ -317,6 +355,7 @@ public sealed class RowFrag : Frag
     public required TableInfo Table;
     public required List<CellBox> Cells;
     public bool IsHeader, CantSplit;
+    public override IEnumerable<List<Block>> Notes => Cells.SelectMany(c => c.Items.SelectMany(i => i.Frag.Notes));
 
     public override void Draw(PdfCanvas c, double x, double y)
     {
@@ -477,6 +516,7 @@ public sealed class BoxFrag : Frag
 public sealed class GroupFrag : Frag
 {
     public List<(Frag Frag, double X, double Y)> Items = [];
+    public override IEnumerable<List<Block>> Notes => Items.SelectMany(i => i.Frag.Notes);
 
     public override void Draw(PdfCanvas c, double x, double y)
     {
@@ -493,6 +533,7 @@ public sealed class AbsFrag : Frag
     public bool RelativeToFlow;          // относительно позиционированного предка
     public double AnchorX, AnchorWidth, TopOffset;
     public int ZIndex;
+    public string? HRel, VRel, AlignX, AlignY;
 
     /// <summary>Отрисовка внутри ячеек/групп (без участия разбивки на страницы).</summary>
     public override void Draw(PdfCanvas c, double x, double y)
@@ -737,5 +778,27 @@ public static class TransformPainter
             c.EndTransform();
             c.InvisibleTextOnly--;
         }
+    }
+}
+
+/// <summary>Содержимое ячейки с повёрнутым текстом (снизу вверх или сверху вниз).</summary>
+public sealed class RotatedFrag : Frag
+{
+    public List<(Frag Frag, double Y)> Items = [];
+    public double Length;        // длина строк (вдоль поворота) = высота области
+    public double Thickness;     // суммарная высота строк до поворота
+    public double CellWidth;     // ширина ячейки
+    public string Direction = "btLr";
+
+    public override void Draw(PdfCanvas c, double x, double y)
+    {
+        // Локальные координаты содержимого (u вдоль строки, v поперёк) → область ячейки
+        double off = Math.Max(0, (CellWidth - Thickness) / 2);
+        if (Direction == "btLr")
+            c.BeginTransform(x, y, 0, -1, 1, 0, off, Length);          // (u,v) → (v, L − u)
+        else
+            c.BeginTransform(x, y, 0, 1, -1, 0, off + Thickness, 0);   // (u,v) → (T − v, u)
+        foreach (var (f, fy) in Items) f.Draw(c, x, y + fy);
+        c.EndTransform();
     }
 }

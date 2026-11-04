@@ -58,6 +58,9 @@ public sealed class RunProps
     public string? StyleId;       // rStyle
     public double? Position;      // pt (поднятие/опускание)
     public double? Spacing;       // pt (межбуквенный интервал)
+    public double? Scale;         // w:w — масштаб символов по горизонтали, %
+    public bool? Outline;         // контурный текст
+    public BorderDef? Border;     // w:bdr — рамка вокруг текста
 
     public RunProps Clone() => (RunProps)MemberwiseClone();
 
@@ -85,6 +88,9 @@ public sealed class RunProps
         Shading = o.Shading ?? Shading;
         VertAlign = o.VertAlign ?? VertAlign;
         Position = o.Position ?? Position;
+        Scale = o.Scale ?? Scale;
+        Outline = o.Outline ?? Outline;
+        Border = o.Border ?? Border;
         Spacing = o.Spacing ?? Spacing;
         if (o.StyleId != null) StyleId = o.StyleId;
     }
@@ -115,10 +121,12 @@ public sealed class ParaProps
     public double? Line;          // pt (exact/atLeast) либо 240-е доли (auto)
     public string? LineRule;
     public int? NumId, Ilvl;
-    public bool? PageBreakBefore, KeepNext, KeepLines, ContextualSpacing, WidowControl;
+    public bool? PageBreakBefore, KeepNext, KeepLines, ContextualSpacing, WidowControl, SnapToGrid, Bidi;
+    public int? DropLines;
+    public double? DropGap;
     public List<TabStop>? Tabs;   // включая val="clear"
     public string? Shading;
-    public BorderDef? BorderTop, BorderBottom;
+    public BorderDef? BorderTop, BorderBottom, BorderLeft, BorderRight, BorderBetween;
     public RunProps? MarkRunProps;
 
     public ParaProps Clone()
@@ -150,6 +158,8 @@ public sealed class ParaProps
         KeepLines = o.KeepLines ?? KeepLines;
         ContextualSpacing = o.ContextualSpacing ?? ContextualSpacing;
         WidowControl = o.WidowControl ?? WidowControl;
+        SnapToGrid = o.SnapToGrid ?? SnapToGrid;
+        Bidi = o.Bidi ?? Bidi;
         if (o.Tabs != null)
         {
             Tabs ??= new List<TabStop>();
@@ -162,6 +172,9 @@ public sealed class ParaProps
         Shading = o.Shading ?? Shading;
         BorderTop = o.BorderTop ?? BorderTop;
         BorderBottom = o.BorderBottom ?? BorderBottom;
+        BorderLeft = o.BorderLeft ?? BorderLeft;
+        BorderRight = o.BorderRight ?? BorderRight;
+        BorderBetween = o.BorderBetween ?? BorderBetween;
         if (o.MarkRunProps != null)
         {
             MarkRunProps ??= new RunProps();
@@ -225,6 +238,12 @@ public sealed record TextStyle
     public double LetterSpacing { get; init; }
     /// <summary>Дополнительный интервал у пробелов, pt (word-spacing).</summary>
     public double WordSpacing { get; init; }
+    /// <summary>Горизонтальный масштаб символов (w:w), 1 — 100%.</summary>
+    public double HScale { get; init; } = 1;
+    /// <summary>Контурный текст (w:outline).</summary>
+    public bool Outline { get; init; }
+    /// <summary>Рамка вокруг текста (w:bdr) — превращается в общий строчный блок соседних фрагментов.</summary>
+    public BorderDef? RunBorder { get; init; }
     public double Size { get; init; } = 10;
     public Rgb Color { get; init; } = Rgb.Black;
     public Rgb? Background { get; init; }
@@ -269,6 +288,14 @@ public sealed class ImageInline(string partName, double width, double height, Te
 
 public enum FieldKind { Page, NumPages }
 
+/// <summary>Ссылка на сноску: номер в тексте и текст сноски внизу страницы.</summary>
+public sealed class FootnoteInline(string mark, TextStyle style, List<Block> blocks) : Inline
+{
+    public string Mark = mark;
+    public TextStyle Style = style;
+    public List<Block> Blocks = blocks;
+}
+
 public sealed class FieldInline(FieldKind kind, TextStyle style) : Inline
 {
     public FieldKind Kind = kind;
@@ -288,7 +315,18 @@ public sealed class Paragraph : Block
     public bool PageBreakBefore, KeepNext, KeepLines, ContextualSpacing, WidowControl = true;
     public List<TabStop> Tabs = [];
     public Rgb? Shading;
-    public BorderDef? BorderTop, BorderBottom;
+    public BorderDef? BorderTop, BorderBottom, BorderLeft, BorderRight, BorderBetween;
+    /// <summary>Выравнивание номера списка (lvlJc): left/center/right.</summary>
+    public string? LabelAlign;
+    /// <summary>Привязка строк к сетке документа (docGrid).</summary>
+    public bool SnapToGrid = true;
+    /// <summary>Буквица (w:framePr dropCap): высота в строках, отступ до текста.</summary>
+    public int DropLines;
+    public double DropGap;
+    /// <summary>Абзац справа налево (w:bidi).</summary>
+    public bool Rtl;
+    /// <summary>Абзац входит в группу с общей рамкой (соседи с одинаковыми границами).</summary>
+    public bool GroupPrev, GroupNext;
     public TextStyle MarkStyle = new();
     public List<Inline> Inlines = [];
     /// <summary>Свойства раздела, если абзац завершает раздел.</summary>
@@ -338,6 +376,8 @@ public sealed class TableCell
     public Rgb? Shading;
     public Margins? Margins;
     public string VAlign = "top";
+    /// <summary>Направление текста в ячейке: null — обычное, "btLr" — снизу вверх, "tbRl" — сверху вниз.</summary>
+    public string? TextDirection;
     public double? Width;
     public List<Block> Blocks = [];
 }
@@ -398,6 +438,8 @@ public sealed class BoxStyle
 /// <summary>Плавающий блок (CSS float) — текст обтекает его.</summary>
 public sealed class FloatBlock : Block
 {
+    /// <summary>Буквица: высота в строках следующего абзаца (0 — обычный плавающий блок).</summary>
+    public int DropLines;
     public TransformResolver? Transform;
     public string Side = "left";
     public double Width;                 // ширина рамки блока (без внешних отступов)
@@ -409,6 +451,12 @@ public sealed class FloatBlock : Block
 /// <summary>Абсолютно/фиксированно позиционированный блок (вне потока).</summary>
 public sealed class PositionedBlock : Block
 {
+    /// <summary>
+    /// Относительно чего позиционировать (DOCX-якоря): "page", "margin", "flow" (абзац); null — правила CSS.
+    /// </summary>
+    public string? HRel, VRel;
+    /// <summary>Выравнивание внутри области: left/center/right и top/center/bottom.</summary>
+    public string? AlignX, AlignY;
     public TransformResolver? Transform;
     public string Mode = "absolute";     // absolute | fixed
     public double? Left, Top, Right, Bottom;
@@ -480,6 +528,17 @@ public sealed class SectionProps
     public HeaderFooter? HeaderDefault, HeaderFirst, HeaderEven;
     public HeaderFooter? FooterDefault, FooterFirst, FooterEven;
     public int? PageNumberStart;
+    /// <summary>Рамка страницы (w:pgBorders); Space — отступ от края страницы или текста.</summary>
+    public BorderDef? PageBorderTop, PageBorderBottom, PageBorderLeft, PageBorderRight;
+    public bool PageBorderFromText;
+    public string PageBorderDisplay = "allPages";
+    /// <summary>Сетка строк (w:docGrid type="lines"): шаг в pt, 0 — нет.</summary>
+    public double LinePitch;
+    /// <summary>Колонки текста.</summary>
+    public int Columns = 1;
+    public double ColumnSpace = 36;
+    public List<(double Width, double Space)>? ColumnWidths;
+    public bool ColumnSeparator;
     /// <summary>position: fixed — выводится на каждой странице.</summary>
     public List<PositionedBlock> FixedBlocks = [];
 }
@@ -495,6 +554,8 @@ public sealed class DocxDocument
     public List<Section> Sections = [];
     public Dictionary<string, byte[]> Media = new(StringComparer.OrdinalIgnoreCase);
     public bool EvenAndOddHeaders;
+    /// <summary>Цвет фона страниц (w:background).</summary>
+    public Rgb? Background;
     public double DefaultTabStop = 35.4;
     public string? Title, Author, Subject;
 }

@@ -372,7 +372,11 @@ public sealed class PdfCanvas
 
     bool SkipGraphics => InvisibleTextOnly > 0;
 
-    public void Glyphs(FontFace face, double size, double x, double baseline, IReadOnlyList<ushort> gids, IReadOnlyList<string> texts, Rgb color, IReadOnlyList<double>? extra = null)
+    /// <summary>Номер текущей страницы и их общее число (для полей PAGE/NUMPAGES в тексте).</summary>
+    public int PageNumber, PageCount;
+
+    public void Glyphs(FontFace face, double size, double x, double baseline, IReadOnlyList<ushort> gids, IReadOnlyList<string> texts, Rgb color,
+        IReadOnlyList<double>? extra = null, double hscale = 1, bool outline = false)
     {
         if (Collecting > 0) return;
         if (gids.Count == 0) return;
@@ -383,13 +387,13 @@ public sealed class PdfCanvas
             double k = size / font.UnitsPerEm, skewK = face.SynthItalic ? 0.2126 : 0;
             double gx = x;
             _sb.Append($"q {Color(color)} rg ");
-            if (face.SynthBold) _sb.Append($"{Color(color)} RG {F(size * 0.03 / k)} w ");
+            if (face.SynthBold || outline) _sb.Append($"{Color(color)} RG {F(size * (outline ? 0.04 : 0.03) / k)} w ");
             for (int i = 0; i < gids.Count; i++)
             {
                 string path = font.GlyphPath(gids[i]);
                 if (path.Length > 0)
-                    _sb.Append($"q {F(k)} 0 {F(k * skewK)} {F(k)} {F(gx)} {F(Y(baseline))} cm ").Append(path).Append(face.SynthBold ? "B Q " : "f Q ");
-                gx += font.Advance(gids[i]) * size + (extra != null && i < extra.Count ? extra[i] : 0);
+                    _sb.Append($"q {F(k * hscale)} 0 {F(k * skewK)} {F(k)} {F(gx)} {F(Y(baseline))} cm ").Append(path).Append(outline ? "S Q " : face.SynthBold ? "B Q " : "f Q ");
+                gx += font.Advance(gids[i]) * size * hscale + (extra != null && i < extra.Count ? extra[i] : 0);
             }
             _sb.Append("Q\n");
             return;
@@ -402,8 +406,10 @@ public sealed class PdfCanvas
         _sb.Append("BT ");
         _sb.Append($"{Color(color)} rg ");
         if (InvisibleTextOnly > 0) _sb.Append("3 Tr ");
+        else if (outline) _sb.Append($"1 Tr {F(size * 0.04)} w {Color(color)} RG ");
         else if (face.SynthBold) _sb.Append($"2 Tr {F(size * 0.03)} w {Color(color)} RG ");
         _sb.Append($"/{pf.Name} {F(size)} Tf ");
+        if (Math.Abs(hscale - 1) > 1e-6) _sb.Append($"{F(hscale * 100)} Tz ");
         double skew = face.SynthItalic ? 0.2126 : 0;
         _sb.Append($"1 0 {F(skew)} 1 {F(x)} {F(Y(baseline))} Tm ");
         if (extra == null)
@@ -420,12 +426,14 @@ public sealed class PdfCanvas
             {
                 _sb.Append(gids[i].ToString("X4"));
                 if (i < gids.Count - 1 && Math.Abs(extra[i]) > 0.0001)
-                    _sb.Append("> ").Append(F(-extra[i] * 1000 / size)).Append(" <");
+                    _sb.Append("> ").Append(F(-extra[i] * 1000 / size / hscale)).Append(" <");
             }
             _sb.Append(">] TJ");
         }
         _sb.Append(" ET\n");
-        if (face.SynthBold || InvisibleTextOnly > 0) _sb.Append("0 Tr\n");
+        if (face.SynthBold || outline || InvisibleTextOnly > 0) _sb.Append("0 Tr\n");
+        // Tz — параметр текстового состояния, сохраняется после ET: возвращаем 100%
+        if (Math.Abs(hscale - 1) > 1e-6) _sb.Append("100 Tz\n");
     }
 
     // ---------------------------------------------------------------

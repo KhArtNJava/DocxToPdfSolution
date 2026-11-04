@@ -54,8 +54,42 @@ public sealed class BlockLayout(LayoutContext ctx)
             Boxes.Where(b => side == "both" || b.Side == side).Select(b => b.Bottom).DefaultIfEmpty(0).Max();
     }
 
+    /// <summary>Отступ сверху под верхнюю (или межабзацную) границу.</summary>
+    static double TopBorderPad(Paragraph p)
+    {
+        var b = p.GroupPrev ? p.BorderBetween : p.BorderTop;
+        return b != null ? b.Width + b.Space : 0;
+    }
+
+    static bool SameBorder(BorderDef? a, BorderDef? b) =>
+        (a == null && b == null) || (a != null && b != null && a.Val == b.Val && Math.Abs(a.Width - b.Width) < 0.01 && a.Color == b.Color);
+
+    /// <summary>
+    /// Соседние абзацы с одинаковыми рамками и отступами образуют группу с общей рамкой (как в Word):
+    /// между ними нет нижней/верхней границы (только «между», если задана), боковые идут непрерывно.
+    /// </summary>
+    static void GroupBorders(IReadOnlyList<Block> blocks)
+    {
+        Paragraph? prev = null;
+        foreach (var b in blocks)
+        {
+            if (b is not Paragraph p) { prev = null; continue; }
+            p.GroupPrev = false; p.GroupNext = false;
+            bool hasBox = p.BorderTop != null || p.BorderBottom != null || p.BorderLeft != null || p.BorderRight != null || p.BorderBetween != null;
+            if (prev != null && hasBox && SameBorder(prev.BorderTop, p.BorderTop) && SameBorder(prev.BorderBottom, p.BorderBottom)
+                && SameBorder(prev.BorderLeft, p.BorderLeft) && SameBorder(prev.BorderRight, p.BorderRight) && SameBorder(prev.BorderBetween, p.BorderBetween)
+                && Math.Abs(prev.IndLeft - p.IndLeft) < 0.01 && Math.Abs(prev.IndRight - p.IndRight) < 0.01)
+            {
+                prev.GroupNext = true;
+                p.GroupPrev = true;
+            }
+            prev = p;
+        }
+    }
+
     public List<Frag> LayoutBlocks(IReadOnlyList<Block> blocks, double width)
     {
+        GroupBorders(blocks);
         var frags = new List<Frag>();
         Paragraph? prev = null;
         LineFrag? prevLast = null;
@@ -123,6 +157,8 @@ public sealed class BlockLayout(LayoutContext ctx)
                 }
                 case FloatBlock fb:
                 {
+                    if (fb.DropLines > 0) PrepareDropCap(fb, bi + 1 < blocks.Count ? blocks[bi + 1] as Paragraph : null, width);
+                    if (fb.Width <= 0) fb.Width = MeasureContentWidth(fb.Blocks) + fb.Box.HorizontalExtra;
                     double w = fb.Width + fb.MarginLeft + fb.MarginRight;
                     var box = Transformed(BuildBox(fb.Blocks, fb.Width, fb.Box), fb.Transform);
                     double h = box.Height + fb.MarginTop + fb.MarginBottom;
@@ -194,6 +230,43 @@ public sealed class BlockLayout(LayoutContext ctx)
         return frags;
     }
 
+    /// <summary>Ширина содержимого без переносов (для блоков «по содержимому»).</summary>
+    double MeasureContentWidth(List<Block> blocks)
+    {
+        double max = 0;
+        foreach (var f in LayoutBlocks(blocks, 5000))
+        {
+            if (f is LineFrag lf && lf.Pieces.Count > 0)
+                max = Math.Max(max, lf.Left + lf.Pieces.Max(p => p.X + p.Width));
+            else if (f is RowFrag rf && rf.Cells.Count > 0)
+                max = Math.Max(max, rf.Cells.Max(c => c.X + c.Width));
+        }
+        return Math.Max(1, max);
+    }
+
+    /// <summary>
+    /// Буквица Word (framePr dropCap): высота ровно N строк следующего абзаца,
+    /// базовая линия буквы — внизу этих строк.
+    /// </summary>
+    void PrepareDropCap(FloatBlock fb, Paragraph? next, double width)
+    {
+        if (fb.Blocks.Count == 0 || fb.Blocks[0] is not Paragraph dp) return;
+        double lh = 14;
+        if (next != null)
+        {
+            var lines = LayoutParagraph(next, width);
+            if (lines.Count > 0) lh = lines[0].Height - lines[0].TopPad;
+        }
+        dp.LineRule = "exact";
+        dp.LineValue = fb.DropLines * lh;
+        dp.SpaceBefore = dp.SpaceAfter = 0;
+        dp.IndLeft = dp.IndRight = dp.IndFirst = 0;
+        dp.Shading = null; dp.BorderTop = dp.BorderBottom = dp.BorderLeft = dp.BorderRight = null;
+        fb.MarginBottom = 0;
+        if (fb.MarginRight <= 0) fb.MarginRight = 2;
+        fb.Width = 0;
+    }
+
     /// <summary>Вёрстка содержимого блока с фоном/рамкой/отступами.</summary>
     public BoxFrag BuildBox(List<Block> blocks, double outerWidth, BoxStyle box)
     {
@@ -227,6 +300,7 @@ public sealed class BlockLayout(LayoutContext ctx)
 
     AbsFrag MakeAbs(PositionedBlock pb, double anchorX, double anchorWidth, bool relative) => new()
     {
+        HRel = pb.HRel, VRel = pb.VRel, AlignX = pb.AlignX, AlignY = pb.AlignY,
         Content = Transformed(BuildBox(pb.Blocks, pb.Width, pb.Box), pb.Transform),
         Left = pb.Left, Top = pb.Top, Right = pb.Right, Bottom = pb.Bottom,
         Fixed = pb.Mode == "fixed", RelativeToFlow = relative, AnchorX = anchorX, AnchorWidth = anchorWidth,
@@ -298,6 +372,8 @@ public sealed class BlockLayout(LayoutContext ctx)
             var (size, rise) = EffectiveSize(st);
             Piece? cur = null;
             int pos = 0;
+            var shaped = Bidi.ShapeArabic(text);
+            bool afterArabic = false;   // числа после арабских букв входят в фрагмент справа налево (UAX #9, W2)
             foreach (var rune in text.EnumerateRunes())
             {
                 int cp = rune.Value;
@@ -315,10 +391,17 @@ public sealed class BlockLayout(LayoutContext ctx)
                     cp = Rune.ToUpperInvariant(rune).Value;
                     gsize = size * 0.75;
                 }
-                var (face, gid, outCp) = ResolveGlyph(cp, st);
+                // Арабские буквы — контекстная форма для глифа, исходная буква для копирования
+                int glyphCp = shaped != null && shaped[at] != 0 ? shaped[at] : cp;
+                var (face, gid, outCp) = ResolveGlyph(glyphCp, st);
+                if (glyphCp != cp) outCp = cp;
                 bool cjk = IsCjk(cp);
                 var kind = space ? PieceKind.Space : PieceKind.Text;
-                if (cur == null || cur.Kind != kind || cur.Face != face || cur.Size != gsize || cjk)
+                int dir = space ? 0 : Bidi.Direction(cp);
+                if (dir == 2) afterArabic = cp is >= 0x0600 and <= 0x08FF or >= 0xFB50 and <= 0xFEFF;
+                else if (dir == 1) afterArabic = false;
+                if (afterArabic && (cp is >= '0' and <= '9' or >= 0x0660 and <= 0x0669)) dir = 3;
+                if (cur == null || cur.Kind != kind || cur.Face != face || cur.Size != gsize || cjk || (dir != 0 && cur.Dir != 0 && dir != cur.Dir))
                 {
                     cur = new Piece { Kind = kind, Style = st, Face = face, Size = gsize, Rise = rise, Src = src };
                     cur.BreakBefore = kind == PieceKind.Text && (breakNext || cjk);
@@ -326,7 +409,8 @@ public sealed class BlockLayout(LayoutContext ctx)
                     pieces.Add(cur);
                     breakNext = false;
                 }
-                double adv = face.Font.Advance(gid) * gsize + (space ? st.WordSpacing : st.LetterSpacing);
+                if (cur.Dir == 0 && dir != 0) cur.Dir = dir;
+                double adv = face.Font.Advance(gid) * gsize * st.HScale + (space ? st.WordSpacing : st.LetterSpacing);
                 cur.Gids.Add(gid);
                 cur.Pos.Add(at);
                 cur.Texts.Add(char.ConvertFromUtf32(outCp == 0xA0 ? ' ' : outCp));
@@ -385,7 +469,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 };
             var inlStyle = inl switch
             {
-                TextInline ti => ti.Style, FieldInline fi => fi.Style, TabInline tb => tb.Style,
+                TextInline ti => ti.Style, FieldInline fi => fi.Style, TabInline tb => tb.Style, FootnoteInline fn2 => fn2.Style,
                 BreakInline bi => bi.Style, ImageInline ii => ii.Style, _ => null
             };
             if (inlStyle != null) SyncBoxes(inlStyle);
@@ -393,14 +477,30 @@ public sealed class BlockLayout(LayoutContext ctx)
             {
                 case TextInline t: AddText(t.Text, t.Style); break;
                 case FieldInline f:
-                    AddText(_ctx.FieldText?.Invoke(f.Kind) ?? "1", f.Style);
+                {
+                    // В основном тексте номер страницы известен только при отрисовке — ширина по оценке
+                    int before = pieces.Count;
+                    AddText(_ctx.FieldText?.Invoke(f.Kind) ?? "99", f.Style);
+                    for (int k = before; k < pieces.Count; k++) pieces[k].Field = f.Kind;
+                }
                     break;
+                case FootnoteInline fn:
+                {
+                    int before = pieces.Count;
+                    AddText(fn.Mark, fn.Style);
+                    if (pieces.Count > before) pieces[before].Note = fn.Blocks;
+                    break;
+                }
                 case TabInline tab:
                     pieces.Add(MakeTab(tab.Style));
                     breakNext = true;
                     break;
                 case BreakInline br:
-                    pieces.Add(new Piece { Kind = br.Kind == BreakKind.Line ? PieceKind.LineBreak : PieceKind.PageBreak, Style = br.Style, Src = src });
+                    pieces.Add(new Piece
+                    {
+                        Kind = br.Kind == BreakKind.Line ? PieceKind.LineBreak : PieceKind.PageBreak, Style = br.Style, Src = src,
+                        ColumnBreak = br.Kind == BreakKind.Column
+                    });
                     breakNext = true;
                     break;
                 case ImageInline img:
@@ -443,8 +543,10 @@ public sealed class BlockLayout(LayoutContext ctx)
         public List<Piece> Pieces = [];
         public double OffL, OffR;      // сужение строки плавающими блоками
         public double ExtraTop;        // сдвиг вниз (строка не поместилась рядом с float)
+        public double StartX;          // начало строки (номер списка, выровненный вправо/по центру, выступает влево)
         public bool First;
         public PieceKind? EndBreak;   // LineBreak / PageBreak, если строка закончилась разрывом
+        public bool ColumnBreak;
     }
 
     (double Pos, TabStop Stop) NextTab(Paragraph p, double absPos)
@@ -546,9 +648,15 @@ public sealed class BlockLayout(LayoutContext ctx)
         var cur = new RawLine { First = startFirst };
         double x = 0;
         double extraRoom = 0;   // правая/центральная табуляция за правым полем позволяет вылезти за край
+        if (startFirst && p.LabelAlign != null)
+        {
+            // lvlJc right/center: номер заканчивается (или центрирован) на позиции начала строки
+            double lw = pieces.Where(q => q.Src == 0 && q.Kind is PieceKind.Text or PieceKind.Space).Sum(q => q.Width);
+            cur.StartX = x = p.LabelAlign == "center" ? -lw / 2 : -lw;
+        }
 
         // Вертикальная позиция текущей строки (для обтекания плавающих блоков)
-        double curY = startY ?? (p.BorderTop != null ? p.BorderTop.Width + p.BorderTop.Space : 0);
+        double curY = startY ?? TopBorderPad(p);
         double estH = excl != null ? LineMetrics(p, [], cur).H : 0;
         void UpdateExcl()
         {
@@ -557,8 +665,9 @@ public sealed class BlockLayout(LayoutContext ctx)
         }
         UpdateExcl();
 
-        double LineStart(bool first) => Math.Max(p.IndLeft + (first ? p.IndFirst : 0), cur.OffL);
-        double Avail(bool first) => width - Math.Max(p.IndRight, cur.OffR) - LineStart(first);
+        // Сдвиг плавающими блоками действует, только если они есть (отрицательные отступы сохраняются)
+        double LineStart(bool first) => cur.OffL > 0 ? Math.Max(p.IndLeft + (first ? p.IndFirst : 0), cur.OffL) : p.IndLeft + (first ? p.IndFirst : 0);
+        double Avail(bool first) => width - (cur.OffR > 0 ? Math.Max(p.IndRight, cur.OffR) : p.IndRight) - LineStart(first);
         bool HasContent() => cur.Pieces.Any(q => q.Kind is PieceKind.Text or PieceKind.Image);
 
         void Finish(PieceKind? endBreak)
@@ -582,6 +691,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 case PieceKind.LineBreak:
                 case PieceKind.PageBreak:
                     cur.Pieces.Add(pc);
+                    cur.ColumnBreak = pc.ColumnBreak;
                     Finish(pc.Kind);
                     i++;
                     continue;
@@ -753,15 +863,27 @@ public sealed class BlockLayout(LayoutContext ctx)
                 break;
         }
 
+        // Сетка документа (docGrid): высота строки кратна шагу сетки, текст по центру ячейки сетки
+        double pitch = _ctx.GridPitch;
+        if (pitch > 1 && p.SnapToGrid && p.LineRule == "auto")
+        {
+            // Как в Word: число шагов сетки по высоте шрифта, умноженное на множитель интервала
+            double nh = Math.Max(1, Math.Ceiling((asc + desc) / pitch - 0.02)) * pitch * (p.LineValue / 240.0);
+            baseline += (nh - h) / 2;
+            h = nh;
+        }
         return (h, baseline);
     }
 
     LineFrag BuildLine(Paragraph p, RawLine raw, double width, bool lastOfPara)
     {
         var pieces = raw.Pieces.Where(q => q.Kind is not (PieceKind.LineBreak or PieceKind.PageBreak)).ToList();
-        double lineStart = Math.Max(p.IndLeft + (raw.First ? p.IndFirst : 0), raw.OffL);
-        double avail = width - Math.Max(p.IndRight, raw.OffR) - lineStart;
+        double lineStart = raw.OffL > 0 ? Math.Max(p.IndLeft + (raw.First ? p.IndFirst : 0), raw.OffL) : p.IndLeft + (raw.First ? p.IndFirst : 0);
+        double avail = width - (raw.OffR > 0 ? Math.Max(p.IndRight, raw.OffR) : p.IndRight) - lineStart;
         var (h, baseline) = LineMetrics(p, pieces, raw);
+
+        // Визуальный порядок для текста справа налево (после переноса строк, как в UAX #9)
+        Bidi.Reorder(pieces, p.Rtl);
 
         // Позиции и выравнивание
         int lastVisible = pieces.FindLastIndex(q => q.Kind is not PieceKind.Space);
@@ -769,7 +891,7 @@ public sealed class BlockLayout(LayoutContext ctx)
         for (int i = 0; i <= lastVisible; i++) contentW += pieces[i].Width;
 
         double offset = 0;
-        string align = p.Align;
+        string align = p.Rtl ? p.Align switch { "left" => "right", "right" => "left", _ => p.Align } : p.Align;
         bool justify = align == "both" && !lastOfPara && raw.EndBreak == null;
         if (align == "center") offset = (avail - contentW) / 2;
         else if (align == "right") offset = avail - contentW;
@@ -784,7 +906,7 @@ public sealed class BlockLayout(LayoutContext ctx)
             if (spaces > 0 && extra > 0) extraPerSpace = extra / spaces;
         }
 
-        double xx = offset;
+        double xx = offset + raw.StartX;
         for (int i = 0; i < pieces.Count; i++)
         {
             var q = pieces[i];
@@ -800,15 +922,17 @@ public sealed class BlockLayout(LayoutContext ctx)
             Doc = _ctx.Doc,
             Left = lineStart,
             Baseline = baseline,
-            ParaLeft = Math.Max(p.IndLeft + Math.Min(0, p.IndFirst), raw.OffL),
-            ParaRight = width - Math.Max(p.IndRight, raw.OffR),
+            ParaLeft = raw.OffL > 0 ? Math.Max(p.IndLeft + Math.Min(0, p.IndFirst), raw.OffL) : p.IndLeft + Math.Min(0, p.IndFirst),
+            ParaRight = width - (raw.OffR > 0 ? Math.Max(p.IndRight, raw.OffR) : p.IndRight),
             IsFirst = raw.First,
             IsLast = lastOfPara,
-            PageBreakAfter = raw.EndBreak == PieceKind.PageBreak,
+            PageBreakAfter = raw.EndBreak == PieceKind.PageBreak && !raw.ColumnBreak,
+            ColumnBreakAfter = raw.ColumnBreak,
+            NoteBlocks = pieces.Any(q => q.Note != null) ? pieces.Where(q => q.Note != null).Select(q => q.Note!).ToList() : null,
         };
-        if (raw.First && p.BorderTop != null) lf.TopPad = p.BorderTop.Width + p.BorderTop.Space;
+        if (raw.First) lf.TopPad = TopBorderPad(p);
         lf.TopPad += raw.ExtraTop;
-        if (lastOfPara && p.BorderBottom != null) lf.BottomPad = p.BorderBottom.Width + p.BorderBottom.Space;
+        if (lastOfPara && p.BorderBottom != null && !p.GroupNext) lf.BottomPad = p.BorderBottom.Width + p.BorderBottom.Space;
         lf.Height = lf.TopPad + h + lf.BottomPad;
         return lf;
     }
@@ -870,7 +994,22 @@ public sealed class BlockLayout(LayoutContext ctx)
                 box.Left = b?.Left ?? (g == 0 ? t.Borders.Left : t.Borders.InsideV);
                 box.Right = b?.Right ?? (g + span >= cols ? t.Borders.Right : t.Borders.InsideV);
 
-                if (cell.VMerge != VMerge.Continue)
+                if (cell.VMerge != VMerge.Continue && cell.TextDirection != null)
+                {
+                    // Повёрнутый текст: строки идут вдоль высоты строки таблицы
+                    double cw0 = Math.Max(1, box.Width - box.MarginLeft - box.MarginRight);
+                    double len = row.Height > 0 ? row.Height - box.MarginTop - box.MarginBottom : MeasureContentWidth(cell.Blocks) + 1;
+                    var rf = LayoutBlocks(cell.Blocks, Math.Max(10, len));
+                    var rot = new RotatedFrag { Length = Math.Max(10, len), Direction = cell.TextDirection, CellWidth = cw0 };
+                    double ry = 0;
+                    foreach (var f in rf) { ry += f.SpaceBefore; rot.Items.Add((f, ry)); ry += f.Height + f.SpaceAfter; }
+                    rot.Thickness = ry;
+                    rot.Height = rot.Length;
+                    box.Items.Add((rot, 0));
+                    box.ContentHeight = rot.Height;
+                    if (cell.VMerge == VMerge.None) rowH = Math.Max(rowH, rot.Height + box.MarginTop + box.MarginBottom);
+                }
+                else if (cell.VMerge != VMerge.Continue)
                 {
                     double cw = Math.Max(1, box.Width - box.MarginLeft - box.MarginRight);
                     var frags = LayoutBlocks(cell.Blocks, cw);

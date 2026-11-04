@@ -9,7 +9,7 @@ namespace DocxToPdf.Docx;
 /// Читает пакет DOCX (ZIP + WordprocessingML) и строит вычисленную модель документа:
 /// стили разрешены, нумерация посчитана, размеры переведены в пункты.
 /// </summary>
-public sealed class DocxReader
+public sealed partial class DocxReader
 {
     static readonly XNamespace W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     static readonly XNamespace R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -30,6 +30,26 @@ public sealed class DocxReader
         public RunProps? RPr;
         public CellBorders? TblBorders;
         public Margins? TblCellMar;
+        public Dictionary<string, CondFormat> Cond = [];
+        public int RowBand = 1, ColBand = 1;
+    }
+
+    /// <summary>Условное форматирование табличного стиля (tblStylePr): шапка, полосы, первая колонка…</summary>
+    sealed class CondFormat
+    {
+        public ParaProps? PPr;
+        public RunProps? RPr;
+        public string? Shading;
+        public CellBorders? Borders;
+
+        public CondFormat Merge(CondFormat? over)
+        {
+            if (over == null) return this;
+            var r = new CondFormat { PPr = PPr?.Clone() ?? new ParaProps(), RPr = RPr?.Clone() ?? new RunProps(), Shading = over.Shading ?? Shading };
+            r.PPr.Overlay(over.PPr); r.RPr.Overlay(over.RPr);
+            r.Borders = new CellBorders(); r.Borders.Overlay(Borders); r.Borders.Overlay(over.Borders);
+            return r;
+        }
     }
 
     sealed class NumLevel
@@ -37,6 +57,7 @@ public sealed class DocxReader
         public int Start = 1;
         public string NumFmt = "decimal";
         public string LvlText = "";
+        public string Jc = "left";
         public string Suff = "tab";
         public ParaProps? PPr;
         public RunProps? RPr;
@@ -74,13 +95,15 @@ public sealed class DocxReader
     string _majorFont = "Calibri Light", _minorFont = "Calibri";
     string? _majorEa, _minorEa;
 
-    DocxReader(ZipArchive zip) => _zip = zip;
+    readonly string _docDir;
+
+    DocxReader(ZipArchive zip, string docDir) { _zip = zip; _docDir = docDir; }
 
     public static DocxDocument Read(string path)
     {
         using var fs = File.OpenRead(path);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
-        return new DocxReader(zip).ReadAll();
+        return new DocxReader(zip, Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".").ReadAll();
     }
 
     // ================================================================
@@ -175,9 +198,12 @@ public sealed class DocxReader
         LoadNumbering(RelTarget("/numbering") ?? baseDir + "numbering.xml");
         LoadSettings(RelTarget("/settings") ?? baseDir + "settings.xml");
         LoadCoreProps();
+        LoadNotes(RelTarget("/footnotes"), _footnotes);
+        LoadNotes(RelTarget("/endnotes"), _endnotes);
 
         var xdoc = LoadXml(mainPart) ?? throw new InvalidDataException("Не удалось прочитать " + mainPart);
         var body = xdoc.Root?.Element(W + "body") ?? throw new InvalidDataException("В документе нет w:body");
+        _doc.Background = Rgb.Parse((string?)xdoc.Root!.Element(W + "background")?.Attribute(W + "color"));
 
         var ctx = new PartContext { Rels = mainRels, BaseDir = baseDir };
         var blocks = new List<Block>();
@@ -187,6 +213,8 @@ public sealed class DocxReader
         var finalSect = body.Element(W + "sectPr");
         var finalProps = finalSect != null ? ParseSectPr(finalSect, ctx) : new SectionProps();
         _doc.Sections.Add(new Section { Props = finalProps, Blocks = blocks });
+
+        AppendEndnotes(blocks);
 
         // Разделы, завершённые абзацами с sectPr: разрезаем общий список
         SplitSections();
@@ -272,6 +300,21 @@ public sealed class DocxReader
             {
                 def.TblBorders = ParseBorders(tblPr.Element(W + "tblBorders"));
                 def.TblCellMar = ParseMargins(tblPr.Element(W + "tblCellMar"));
+                def.RowBand = Math.Max(1, ParseInt(Val(tblPr.Element(W + "tblStyleRowBandSize"))) ?? 1);
+                def.ColBand = Math.Max(1, ParseInt(Val(tblPr.Element(W + "tblStyleColBandSize"))) ?? 1);
+            }
+            foreach (var cp in s.Elements(W + "tblStylePr"))
+            {
+                string? type = (string?)cp.Attribute(W + "type");
+                if (type == null) continue;
+                var tcPr = cp.Element(W + "tcPr");
+                def.Cond[type] = new CondFormat
+                {
+                    PPr = ParsePPr(cp.Element(W + "pPr")),
+                    RPr = ParseRPr(cp.Element(W + "rPr")),
+                    Shading = (string?)tcPr?.Element(W + "shd")?.Attribute(W + "fill"),
+                    Borders = ParseBorders(tcPr?.Element(W + "tcBorders")),
+                };
             }
             _styles[def.Id] = def;
             if (IsOn(s.Attribute(W + "default")))
@@ -293,6 +336,16 @@ public sealed class DocxReader
         p.StyleId = id;
         _styleChainCache[id] = (p, r);
         return (p, r);
+    }
+
+    /// <summary>Условные форматы стиля с учётом наследования (basedOn).</summary>
+    Dictionary<string, CondFormat> CondChain(string? id, int depth = 0)
+    {
+        if (id == null || depth > 20 || !_styles.TryGetValue(id, out var st)) return [];
+        var baseCond = CondChain(st.BasedOn, depth + 1);
+        var r = new Dictionary<string, CondFormat>(baseCond);
+        foreach (var (k, v) in st.Cond) r[k] = r.TryGetValue(k, out var b) ? b.Merge(v) : v;
+        return r;
     }
 
     (CellBorders? B, Margins? M) TableStyleChain(string? id, int depth = 0)
@@ -344,6 +397,7 @@ public sealed class DocxReader
         NumFmt = Val(lvl.Element(W + "numFmt")) ?? "decimal",
         LvlText = Val(lvl.Element(W + "lvlText")) ?? "",
         Suff = Val(lvl.Element(W + "suff")) ?? "tab",
+        Jc = Val(lvl.Element(W + "lvlJc")) ?? "left",
         PPr = ParsePPr(lvl.Element(W + "pPr")),
         RPr = ParseRPr(lvl.Element(W + "rPr")),
     };
@@ -381,6 +435,9 @@ public sealed class DocxReader
     }
 
     static bool? OnOff(XElement? e) => e == null ? null : IsOnVal(e);
+
+    static int? ParseHex(string? s) =>
+        s != null && int.TryParse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v) ? v : null;
 
     static int? ParseInt(string? s)
     {
@@ -439,6 +496,9 @@ public sealed class DocxReader
         r.VertAlign = Val(rPr.Element(W + "vertAlign"));
         r.StyleId = Val(rPr.Element(W + "rStyle"));
         r.Position = HalfPoints(Val(rPr.Element(W + "position")));
+        if (ParseInt(Val(rPr.Element(W + "w"))) is int sc && sc > 0) r.Scale = sc;
+        r.Outline = OnOff(rPr.Element(W + "outline"));
+        if (rPr.Element(W + "bdr") is { } bdrEl) r.Border = ParseBorder(bdrEl);
         r.Spacing = Twips(Val(rPr.Element(W + "spacing")));
         return r;
     }
@@ -505,8 +565,18 @@ public sealed class DocxReader
         {
             p.BorderTop = ParseBorder(bdr.Element(W + "top"));
             p.BorderBottom = ParseBorder(bdr.Element(W + "bottom"));
+            p.BorderLeft = ParseBorder(bdr.Element(W + "left") ?? bdr.Element(W + "start"));
+            p.BorderRight = ParseBorder(bdr.Element(W + "right") ?? bdr.Element(W + "end"));
+            p.BorderBetween = ParseBorder(bdr.Element(W + "between"));
         }
         p.MarkRunProps = ParseRPr(pPr.Element(W + "rPr"));
+        p.SnapToGrid = OnOff(pPr.Element(W + "snapToGrid"));
+        p.Bidi = OnOff(pPr.Element(W + "bidi"));
+        if (pPr.Element(W + "framePr") is { } fp && (string?)fp.Attribute(W + "dropCap") is "drop" or "margin")
+        {
+            p.DropLines = Math.Max(1, ParseInt((string?)fp.Attribute(W + "lines")) ?? 3);
+            p.DropGap = Twips((string?)fp.Attribute(W + "hSpace")) ?? 0;
+        }
         return p;
     }
 
@@ -588,6 +658,9 @@ public sealed class DocxReader
             Caps = r.Caps ?? false,
             SmallCaps = r.SmallCaps ?? false,
             LetterSpacing = r.Spacing ?? 0,
+            HScale = (r.Scale ?? 100) / 100.0,
+            Outline = r.Outline ?? false,
+            RunBorder = r.Border is { IsNone: false } ? r.Border : null,
             Size = r.Size ?? 10,
             Color = Rgb.Parse(r.Color) ?? (link != null && r.Color == null ? new Rgb(0.02, 0.39, 0.76) : Rgb.Black),
             Background = bg,
@@ -627,7 +700,19 @@ public sealed class DocxReader
     {
         foreach (var el in container.Elements())
         {
-            if (el.Name == W + "p") output.Add(ParseParagraph(el, ctx));
+            if (el.Name == W + "p")
+            {
+                // Плавающие объекты абзаца (картинки, надписи) — блоки перед ним
+                var saved = _pending;
+                var pending = new List<Block>();
+                _pending = pending;
+                var para = ParseParagraph(el, ctx);
+                _pending = saved;
+                output.AddRange(pending);
+                if (para.DropLines > 0)
+                    output.Add(new FloatBlock { Side = "left", Width = 0, DropLines = para.DropLines, MarginRight = para.DropGap, Blocks = [para] });
+                else output.Add(para);
+            }
             else if (el.Name == W + "tbl") output.Add(ParseTable(el, ctx));
             else if (el.Name == W + "sdt") { var c = el.Element(W + "sdtContent"); if (c != null) ParseBlockContainer(c, ctx, output); }
             else if (el.Name == W + "customXml" || el.Name == W + "ins" || el.Name == W + "moveTo") ParseBlockContainer(el, ctx, output);
@@ -681,6 +766,9 @@ public sealed class DocxReader
             Shading = Rgb.Parse(pp.Shading),
             BorderTop = pp.BorderTop is { IsNone: false } ? pp.BorderTop : null,
             BorderBottom = pp.BorderBottom is { IsNone: false } ? pp.BorderBottom : null,
+            BorderLeft = pp.BorderLeft is { IsNone: false } ? pp.BorderLeft : null,
+            BorderRight = pp.BorderRight is { IsNone: false } ? pp.BorderRight : null,
+            BorderBetween = pp.BorderBetween is { IsNone: false } ? pp.BorderBetween : null,
         };
 
         var markR = baseR.Clone();
@@ -703,12 +791,50 @@ public sealed class DocxReader
             }
         }
 
+        if (lvl != null && para.Inlines.Count > 0 && lvl.Jc is "right" or "end" or "center") para.LabelAlign = lvl.Jc == "center" ? "center" : "right";
+        para.SnapToGrid = pp.SnapToGrid ?? true;
+        para.DropLines = direct?.DropLines ?? 0;
+        para.DropGap = direct?.DropGap ?? 0;
+        para.Rtl = pp.Bidi ?? false;
+
         var state = new RunState { BaseR = baseR, Ctx = ctx };
         ParseInlineContainer(p, state, para.Inlines);
+        ShareRunBorders(para.Inlines);
+        // Отдельная формула (m:oMathPara) — по центру, как в Word
+        if (p.Elements(M + "oMathPara").Any() && !p.Elements(W + "r").Any(r => r.Elements(W + "t").Any(t => t.Value.Trim().Length > 0)))
+            para.Align = "center";
 
         if (pPrEl?.Element(W + "sectPr") is { } sp && !ctx.HeaderFooter)
             para.Section = ParseSectPr(sp, ctx);
         return para;
+    }
+
+    /// <summary>Соседние фрагменты с одинаковой рамкой w:bdr объединяются в один строчный блок.</summary>
+    static void ShareRunBorders(List<Inline> inlines)
+    {
+        InlineBox? box = null;
+        BorderDef? last = null;
+        foreach (var inl in inlines)
+        {
+            TextStyle? st = inl switch { TextInline t => t.Style, TabInline tb => tb.Style, FieldInline fi => fi.Style, ImageInline ii => ii.Style, _ => null };
+            if (st == null) continue;
+            var b = st.RunBorder;
+            if (b == null) { box = null; last = null; continue; }
+            if (box == null || last == null || last.Val != b.Val || Math.Abs(last.Width - b.Width) > 0.01 || last.Color != b.Color)
+            {
+                double pad = b.Space;
+                box = new InlineBox { Top = b, Bottom = b, Left = b, Right = b, PadLeft = pad, PadRight = pad, PadTop = 0.5, PadBottom = 0.5, Background = st.Background };
+                last = b;
+            }
+            var ns = st with { Box = box };
+            switch (inl)
+            {
+                case TextInline t: t.Style = ns; break;
+                case TabInline tb: tb.Style = ns; break;
+                case FieldInline fi: fi.Style = ns; break;
+                case ImageInline ii: ii.Style = ns; break;
+            }
+        }
     }
 
     static ParaProps StripNum(ParaProps p)
@@ -851,7 +977,7 @@ public sealed class DocxReader
             {
                 string instr = ((string?)el.Attribute(W + "instr") ?? "").Trim();
                 var kind = FieldKindOf(instr);
-                if (kind != null && st.Ctx.HeaderFooter)
+                if (kind != null)
                 {
                     var r = el.Descendants(W + "rPr").FirstOrDefault();
                     output.Add(new FieldInline(kind.Value, ToTextStyle(ResolveRunProps(st.BaseR, ParseRPr(r)))));
@@ -872,13 +998,12 @@ public sealed class DocxReader
             }
             else if (n == M + "oMathPara" || n == M + "oMath")
             {
-                // Формулы: выводим только текст
-                string text = string.Concat(el.Descendants(M + "t").Select(t => t.Value));
-                if (text.Length > 0 && !st.Suppressed)
+                // Формулы OMML — линейная запись с индексами
+                if (!st.Suppressed)
                 {
                     var rr = ResolveRunProps(st.BaseR, null);
-                    rr.Italic = true;
-                    output.Add(new TextInline(text, ToTextStyle(rr, st.Link)));
+                    var baseStyle = ToTextStyle(rr, st.Link) with { FontAscii = "Cambria Math", FontHAnsi = "Cambria Math", FontEastAsia = "Cambria Math" };
+                    MathToInlines(el, baseStyle, output);
                 }
             }
         }
@@ -908,7 +1033,7 @@ public sealed class DocxReader
                     var f = st.Fields.Peek();
                     f.InResult = true;
                     var kind = FieldKindOf(f.Instr.ToString().Trim());
-                    if (kind != null && st.Ctx.HeaderFooter && !OuterSuppressed(st))
+                    if (kind != null && !OuterSuppressed(st))
                     {
                         output.Add(new FieldInline(kind.Value, f.Style ?? style));
                         f.SkipResult = true;
@@ -918,7 +1043,7 @@ public sealed class DocxReader
                 else if (type == "end" && st.Fields.Count > 0)
                 {
                     var f = st.Fields.Pop();
-                    if (!f.InResult && !f.Emitted && st.Ctx.HeaderFooter && !st.Suppressed)
+                    if (!f.InResult && !f.Emitted && !st.Suppressed)
                     {
                         var kind = FieldKindOf(f.Instr.ToString().Trim());
                         if (kind != null) output.Add(new FieldInline(kind.Value, f.Style ?? style));
@@ -932,6 +1057,7 @@ public sealed class DocxReader
                 continue;
             }
             if (st.Suppressed || hidden) continue;
+            if (ParseNoteElement(el, style, output)) continue;
 
             if (n == W + "t") { if (el.Value.Length > 0) output.Add(new TextInline(el.Value, style)); }
             else if (n == W + "tab") output.Add(new TabInline(style));
@@ -970,34 +1096,6 @@ public sealed class DocxReader
 
     static bool OuterSuppressed(RunState st) => st.Fields.Skip(1).Any(f => !f.InResult || f.SkipResult);
 
-    void ParseDrawing(XElement drawing, RunState st, TextStyle style, List<Inline> output)
-    {
-        foreach (var container in drawing.Elements())
-        {
-            if (container.Name != WP + "inline" && container.Name != WP + "anchor") continue;
-            var extent = container.Element(WP + "extent");
-            double cx = (double?)extent?.Attribute("cx") ?? 0;
-            double cy = (double?)extent?.Attribute("cy") ?? 0;
-            var blip = container.Descendants(A + "blip").FirstOrDefault();
-            string? rid = (string?)blip?.Attribute(R + "embed") ?? (string?)blip?.Attribute(R + "link");
-            if (rid == null) continue;
-            AddImage(rid, cx / 12700.0, cy / 12700.0, st, style, output);
-        }
-    }
-
-    void ParseVml(XElement pict, RunState st, TextStyle style, List<Inline> output)
-    {
-        foreach (var img in pict.Descendants(V + "imagedata"))
-        {
-            string? rid = (string?)img.Attribute(R + "id");
-            if (rid == null) continue;
-            var shape = img.Parent;
-            string css = (string?)shape?.Attribute("style") ?? "";
-            double w = CssLength(css, "width"), h = CssLength(css, "height");
-            AddImage(rid, w, h, st, style, output);
-        }
-    }
-
     static double CssLength(string css, string prop)
     {
         foreach (var part in css.Split(';'))
@@ -1015,14 +1113,26 @@ public sealed class DocxReader
 
     void AddImage(string rid, double w, double h, RunState st, TextStyle style, List<Inline> output)
     {
-        if (!st.Ctx.Rels.TryGetValue(rid, out var rel) || rel.External) return;
+        if (!st.Ctx.Rels.TryGetValue(rid, out var rel)) return;
         if (!_doc.Media.ContainsKey(rel.Target))
         {
-            var bytes = LoadBytes(rel.Target);
+            var bytes = rel.External ? LoadExternal(rel.Target) : LoadBytes(rel.Target);
             if (bytes == null) return;
             _doc.Media[rel.Target] = bytes;
         }
         output.Add(new ImageInline(rel.Target, w, h, style));
+    }
+
+    /// <summary>Картинка по внешней ссылке (r:link): file:// или путь относительно документа.</summary>
+    byte[]? LoadExternal(string target)
+    {
+        try
+        {
+            string path = target.StartsWith("file:", StringComparison.OrdinalIgnoreCase) ? new Uri(target).LocalPath : Uri.UnescapeDataString(target);
+            if (!Path.IsPathRooted(path)) path = Path.Combine(_docDir, path.Replace('/', Path.DirectorySeparatorChar));
+            return File.Exists(path) ? File.ReadAllBytes(path) : null;
+        }
+        catch { return null; }
     }
 
     // ---------------- Таблицы ----------------
@@ -1067,8 +1177,54 @@ public sealed class DocxReader
             };
         }
 
-        foreach (var trEl in RowsOf(tbl))
+        // Условное форматирование стиля: какие области включены (tblLook) и размеры полос
+        var cond = styleId != null ? CondChain(styleId) : [];
+        var look = tblPr?.Element(W + "tblLook");
+        int lookVal = ParseHex((string?)look?.Attribute(W + "val")) ?? 0x04A0;
+        bool LookOn(string attr, int bit) => look?.Attribute(W + attr) is { } a ? IsOn(a) : (lookVal & bit) != 0;
+        bool firstRowOn = LookOn("firstRow", 0x20), lastRowOn = LookOn("lastRow", 0x40);
+        bool firstColOn = LookOn("firstColumn", 0x80), lastColOn = LookOn("lastColumn", 0x100);
+        bool hBandOn = !LookOn("noHBand", 0x200), vBandOn = !LookOn("noVBand", 0x400);
+        StyleDef? sdef = styleId != null ? _styles.GetValueOrDefault(styleId) : null;
+        int rowBand = sdef?.RowBand ?? 1, colBand = sdef?.ColBand ?? 1;
+        var allRows = RowsOf(tbl).ToList();
+        int totalCols = Math.Max(t.Grid.Count, allRows.Count == 0 ? 0 : allRows.Max(r => CellsOf(r).Sum(c => Math.Max(1, ParseInt(Val(c.Element(W + "tcPr")?.Element(W + "gridSpan"))) ?? 1))));
+
+        CondFormat? CondFor(int r, int c, int span)
         {
+            if (cond.Count == 0) return null;
+            bool firstRow = firstRowOn && r == 0, lastRow = lastRowOn && r == allRows.Count - 1;
+            bool firstCol = firstColOn && c == 0, lastCol = lastColOn && c + span >= totalCols;
+            var parts = new List<string> { "wholeTable" };
+            if (vBandOn && !firstCol && !lastCol)
+            {
+                int ci = c - (firstColOn ? 1 : 0);
+                parts.Add((ci / colBand) % 2 == 0 ? "band1Vert" : "band2Vert");
+            }
+            if (hBandOn && !firstRow && !lastRow)
+            {
+                int ri = r - (firstRowOn ? 1 : 0);
+                parts.Add((ri / rowBand) % 2 == 0 ? "band1Horz" : "band2Horz");
+            }
+            if (firstCol) parts.Add("firstCol");
+            if (lastCol) parts.Add("lastCol");
+            if (firstRow) parts.Add("firstRow");
+            if (lastRow) parts.Add("lastRow");
+            if (firstRow && firstCol) parts.Add("nwCell");
+            if (firstRow && lastCol) parts.Add("neCell");
+            if (lastRow && firstCol) parts.Add("swCell");
+            if (lastRow && lastCol) parts.Add("seCell");
+            CondFormat? acc = null;
+            foreach (var p in parts)
+                if (cond.TryGetValue(p, out var cf)) acc = acc == null ? new CondFormat().Merge(cf) : acc.Merge(cf);
+            return acc;
+        }
+
+        int rowIndex = -1;
+        foreach (var trEl in allRows)
+        {
+            rowIndex++;
+            int gridCol = 0;
             var row = new TableRow();
             var trPr = trEl.Element(W + "trPr");
             if (trPr != null)
@@ -1089,10 +1245,14 @@ public sealed class DocxReader
                         Borders = new CellBorders { Top = new BorderDef { Val = "nil" }, Bottom = new BorderDef { Val = "nil" }, Left = new BorderDef { Val = "nil" } }
                     });
             }
+            gridCol = row.Cells.Sum(c => c.GridSpan);
             foreach (var tcEl in CellsOf(trEl))
             {
                 var cell = new TableCell();
                 var tcPr = tcEl.Element(W + "tcPr");
+                int spanHere = Math.Max(1, ParseInt(Val(tcPr?.Element(W + "gridSpan"))) ?? 1);
+                var cf = CondFor(rowIndex, gridCol, spanHere);
+                gridCol += spanHere;
                 if (tcPr != null)
                 {
                     cell.GridSpan = Math.Max(1, ParseInt(Val(tcPr.Element(W + "gridSpan"))) ?? 1);
@@ -1103,10 +1263,35 @@ public sealed class DocxReader
                     cell.Shading = Rgb.Parse((string?)tcPr.Element(W + "shd")?.Attribute(W + "fill"));
                     cell.Margins = ParseMargins(tcPr.Element(W + "tcMar"));
                     cell.VAlign = Val(tcPr.Element(W + "vAlign")) ?? "top";
+                    cell.TextDirection = Val(tcPr.Element(W + "textDirection")) switch
+                    {
+                        "btLr" => "btLr",
+                        "tbRl" or "tbRlV" or "tbLrV" => "tbRl",
+                        _ => null
+                    };
                     var tcW = tcPr.Element(W + "tcW");
                     if (tcW != null && (string?)tcW.Attribute(W + "type") is "dxa" or null) cell.Width = Twips((string?)tcW.Attribute(W + "w"));
                 }
-                ParseBlockContainer(tcEl, cellCtx, cell.Blocks);
+                var useCtx = cellCtx;
+                if (cf != null)
+                {
+                    // Условный формат: заливка и рамки ячейки (если не заданы явно), свойства текста
+                    if (cell.Shading == null) cell.Shading = Rgb.Parse(cf.Shading);
+                    if (cf.Borders != null)
+                    {
+                        var cb = new CellBorders
+                        {
+                            Top = cf.Borders.Top ?? cf.Borders.InsideH, Bottom = cf.Borders.Bottom ?? cf.Borders.InsideH,
+                            Left = cf.Borders.Left ?? cf.Borders.InsideV, Right = cf.Borders.Right ?? cf.Borders.InsideV,
+                        };
+                        cb.Overlay(cell.Borders);
+                        cell.Borders = cb;
+                    }
+                    var tp2 = (cellCtx.TablePPr ?? new ParaProps()).Clone(); tp2.Overlay(cf.PPr);
+                    var tr2 = (cellCtx.TableRPr ?? new RunProps()).Clone(); tr2.Overlay(cf.RPr);
+                    useCtx = new PartContext { Rels = ctx.Rels, BaseDir = ctx.BaseDir, HeaderFooter = ctx.HeaderFooter, TablePPr = tp2, TableRPr = tr2 };
+                }
+                ParseBlockContainer(tcEl, useCtx, cell.Blocks);
                 if (cell.GridSpan == 0 && row.Cells.Count > 0) { row.Cells[^1].GridSpan++; continue; }
                 cell.GridSpan = Math.Max(1, cell.GridSpan);
                 row.Cells.Add(cell);
@@ -1188,6 +1373,27 @@ public sealed class DocxReader
         s.Type = Val(sp.Element(W + "type")) ?? "nextPage";
         s.TitlePage = sp.Element(W + "titlePg") is { } tp && IsOnVal(tp);
         s.PageNumberStart = ParseInt((string?)sp.Element(W + "pgNumType")?.Attribute(W + "start"));
+        if (sp.Element(W + "pgBorders") is { } pb)
+        {
+            BorderDef? B(string n) => ParseBorder(pb.Element(W + n)) is { IsNone: false } b ? b : null;
+            s.PageBorderTop = B("top"); s.PageBorderBottom = B("bottom"); s.PageBorderLeft = B("left"); s.PageBorderRight = B("right");
+            s.PageBorderFromText = (string?)pb.Attribute(W + "offsetFrom") == "text";
+            s.PageBorderDisplay = (string?)pb.Attribute(W + "display") ?? "allPages";
+        }
+        if (sp.Elements(W + "docGrid").LastOrDefault() is { } grid && (string?)grid.Attribute(W + "type") is "lines" or "linesAndChars" or "snapToChars")
+            s.LinePitch = Twips((string?)grid.Attribute(W + "linePitch")) ?? 0;
+        if (sp.Elements(W + "cols").LastOrDefault() is { } cols)
+        {
+            s.Columns = Math.Max(1, ParseInt((string?)cols.Attribute(W + "num")) ?? 1);
+            s.ColumnSpace = Twips((string?)cols.Attribute(W + "space")) ?? 36;
+            s.ColumnSeparator = cols.Attribute(W + "sep") is { } sepA && IsOn(sepA);
+            var explicitCols = cols.Elements(W + "col").ToList();
+            if (explicitCols.Count > 0 && (string?)cols.Attribute(W + "equalWidth") is "0" or "false")
+            {
+                s.ColumnWidths = explicitCols.Select(c => (Twips((string?)c.Attribute(W + "w")) ?? 0, Twips((string?)c.Attribute(W + "space")) ?? 0)).ToList();
+                s.Columns = s.ColumnWidths.Count;
+            }
+        }
 
         foreach (var hr in sp.Elements(W + "headerReference"))
         {
