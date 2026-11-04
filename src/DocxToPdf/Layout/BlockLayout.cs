@@ -230,6 +230,24 @@ public sealed class BlockLayout(LayoutContext ctx)
         return frags;
     }
 
+    /// <summary>Вёрстка содержимого надписи в строке и элементов группы фигур.</summary>
+    void BuildObject(ImageInline img)
+    {
+        if (img.Content != null)
+        {
+            var built = BuildBox(img.Content, Math.Max(1, img.FrameW), img.Box ?? new BoxStyle());
+            img.Built = built;
+            // Автоподбор высоты: содержимое выше рамки увеличивает её
+            if (built.Height > img.FrameH + 0.5)
+            {
+                if (img.Rotation == 0) img.Height = built.Height;
+                img.FrameH = built.Height;
+            }
+        }
+        if (img.Children != null)
+            foreach (var (child, _, _) in img.Children) BuildObject(child);
+    }
+
     /// <summary>Ширина содержимого без переносов (для блоков «по содержимому»).</summary>
     double MeasureContentWidth(List<Block> blocks)
     {
@@ -516,6 +534,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                     break;
                 case ImageInline img:
                 {
+                    BuildObject(img);
                     double w = img.Width, h = img.Height;
                     if ((w <= 0 || h <= 0) && img.Shape == null) { w = 100; h = 75; }
                     w = Math.Max(w, 0.5); h = Math.Max(h, 0.5);

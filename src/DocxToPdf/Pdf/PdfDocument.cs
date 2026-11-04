@@ -684,6 +684,31 @@ public sealed class PdfCanvas
             case "leftArrow": { double hw = Math.Min(w, h); Poly((w, h * 0.25), (hw / 2, h * 0.25), (hw / 2, 0), (0, h / 2), (hw / 2, h), (hw / 2, h * 0.75), (w, h * 0.75)); break; }
             case "upArrow": { double hh = Math.Min(w, h); Poly((w * 0.25, h), (w * 0.25, hh / 2), (0, hh / 2), (w / 2, 0), (w, hh / 2), (w * 0.75, hh / 2), (w * 0.75, h)); break; }
             case "downArrow": { double hh = Math.Min(w, h); Poly((w * 0.25, 0), (w * 0.75, 0), (w * 0.75, h - hh / 2), (w, h - hh / 2), (w / 2, h), (0, h - hh / 2), (w * 0.25, h - hh / 2)); break; }
+            case "custom" when sh.Paths != null:
+            {
+                // Произвольный контур: каждый подконтур со своими признаками заливки/обводки
+                bool anyFill = sh.Fill != null, anyStroke = sh.Stroke != null && sh.StrokeWidth > 0;
+                if (anyFill) _sb.Append($"{Color(sh.Fill!.Value)} rg ");
+                if (anyStroke) _sb.Append($"{F(sh.StrokeWidth)} w {Color(sh.Stroke!.Value)} RG ");
+                foreach (var cp in sh.Paths)
+                {
+                    var sb = new StringBuilder();
+                    foreach (var (cmd, pts) in cp.Commands)
+                    {
+                        switch (cmd)
+                        {
+                            case 'M': sb.Append(P(pts[0] * w, pts[1] * h)).Append(" m "); break;
+                            case 'L': sb.Append(P(pts[0] * w, pts[1] * h)).Append(" l "); break;
+                            case 'C': sb.Append(P(pts[0] * w, pts[1] * h)).Append(' ').Append(P(pts[2] * w, pts[3] * h)).Append(' ').Append(P(pts[4] * w, pts[5] * h)).Append(" c "); break;
+                            case 'Z': sb.Append("h "); break;
+                        }
+                    }
+                    bool f = anyFill && cp.Fill, st = anyStroke && cp.Stroke;
+                    if (f || st) _sb.Append(sb).Append(f && st ? "B " : f ? "f " : "S ");
+                }
+                _sb.Append("Q\n");
+                return;
+            }
             default: Poly((0, 0), (w, 0), (w, h), (0, h)); break;
         }
         bool fill = sh.Fill != null && !open, stroke = sh.Stroke != null && sh.StrokeWidth > 0;

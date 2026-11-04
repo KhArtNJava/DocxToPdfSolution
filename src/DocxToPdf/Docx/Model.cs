@@ -324,6 +324,15 @@ public sealed class ImageInline(string partName, double width, double height, Te
     public double FrameW = width, FrameH = height;
     /// <summary>Фигура без текста (DrawingML prstGeom / VML): рисуется контурами вместо картинки.</summary>
     public ShapeSpec? Shape;
+    /// <summary>Надпись в строке: содержимое и оформление рамки (как строчный блок).</summary>
+    public List<Block>? Content;
+    public BoxStyle? Box;
+    /// <summary>Группа фигур: элементы с координатами внутри рамки группы (pt).</summary>
+    public List<(ImageInline Item, double X, double Y)>? Children;
+    /// <summary>Рамка картинки (pic:spPr/a:ln).</summary>
+    public BorderDef? Border;
+    /// <summary>Свёрстанное содержимое надписи (заполняется при вёрстке).</summary>
+    public object? Built;
     public bool HasGeometry => CropL != 0 || CropT != 0 || CropR != 0 || CropB != 0 || Rotation != 0 || FlipH || FlipV;
 }
 
@@ -338,6 +347,15 @@ public sealed class ShapeSpec
     public bool Dashed, Dotted;
     /// <summary>Стрелки на концах линии (a:headEnd / a:tailEnd).</summary>
     public bool HeadArrow, TailArrow;
+    /// <summary>Произвольный контур (a:custGeom): подконтуры в долях рамки 0…1.</summary>
+    public List<CustomPath>? Paths;
+}
+
+/// <summary>Подконтур a:path: команды M/L/C/Z с точками в долях рамки.</summary>
+public sealed class CustomPath
+{
+    public List<(char Cmd, double[] Pts)> Commands = [];
+    public bool Fill = true, Stroke = true;
 }
 
 public enum FieldKind { Page, NumPages, PageRef }

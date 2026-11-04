@@ -8,6 +8,7 @@ public sealed partial class DocxReader
 {
     static readonly XNamespace WPS = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
     static readonly XNamespace PIC = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+    static readonly XNamespace WPG = "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup";
     static readonly XNamespace W10 = "urn:schemas-microsoft-com:office:word";
 
     /// <summary>Блоки, которые абзац порождает перед собой (плавающие объекты).</summary>
@@ -126,7 +127,8 @@ public sealed partial class DocxReader
             // Отрицательные значения — поля вокруг картинки; доля видимой части должна быть положительной
             if (1 - img.CropL - img.CropR < 0.01 || 1 - img.CropT - img.CropB < 0.01) img.CropL = img.CropT = img.CropR = img.CropB = 0;
         }
-        var xfrm = container.Descendants(PIC + "spPr").FirstOrDefault()?.Element(A + "xfrm")
+        var xfrm = container.Elements().FirstOrDefault(e => e.Name.LocalName == "spPr")?.Element(A + "xfrm")
+                   ?? container.Descendants(PIC + "spPr").FirstOrDefault()?.Element(A + "xfrm")
                    ?? container.Descendants(A + "xfrm").FirstOrDefault();
         if (xfrm != null)
         {
@@ -147,12 +149,54 @@ public sealed partial class DocxReader
     static ShapeSpec ParseShapeSpec(XElement spPr, XElement? shapeStyle)
     {
         var sh = new ShapeSpec { Geom = (string?)spPr.Element(A + "prstGeom")?.Attribute("prst") ?? "rect" };
+        if (spPr.Element(A + "custGeom")?.Element(A + "pathLst") is { } pathLst)
+        {
+            // Произвольный контур: точки пути в его системе (w×h) → доли рамки
+            sh.Geom = "custom";
+            sh.Paths = [];
+            foreach (var path in pathLst.Elements(A + "path"))
+            {
+                double pw = EmuRaw(path.Attribute("w")), ph = EmuRaw(path.Attribute("h"));
+                if (pw <= 0) pw = 1; if (ph <= 0) ph = 1;
+                var cp = new CustomPath
+                {
+                    Fill = (string?)path.Attribute("fill") != "none",
+                    Stroke = (string?)path.Attribute("stroke") is not ("0" or "false"),
+                };
+                double[] Pts(XElement e) => e.Elements(A + "pt").SelectMany(pt => new[] { EmuRaw(pt.Attribute("x")) / pw, EmuRaw(pt.Attribute("y")) / ph }).ToArray();
+                double lastX = 0, lastY = 0;
+                foreach (var cmd in path.Elements())
+                {
+                    switch (cmd.Name.LocalName)
+                    {
+                        case "moveTo": { var a = Pts(cmd); if (a.Length >= 2) { cp.Commands.Add(('M', a)); (lastX, lastY) = (a[0], a[1]); } break; }
+                        case "lnTo": { var a = Pts(cmd); if (a.Length >= 2) { cp.Commands.Add(('L', a)); (lastX, lastY) = (a[0], a[1]); } break; }
+                        case "cubicBezTo": { var a = Pts(cmd); if (a.Length >= 6) { cp.Commands.Add(('C', a)); (lastX, lastY) = (a[4], a[5]); } break; }
+                        case "quadBezTo":
+                        {
+                            var a = Pts(cmd);
+                            if (a.Length >= 4)
+                            {
+                                // Квадратичная кривая → кубическая
+                                double c1x = lastX + 2.0 / 3 * (a[0] - lastX), c1y = lastY + 2.0 / 3 * (a[1] - lastY);
+                                double c2x = a[2] + 2.0 / 3 * (a[0] - a[2]), c2y = a[3] + 2.0 / 3 * (a[1] - a[3]);
+                                cp.Commands.Add(('C', [c1x, c1y, c2x, c2y, a[2], a[3]]));
+                                (lastX, lastY) = (a[2], a[3]);
+                            }
+                            break;
+                        }
+                        case "close": cp.Commands.Add(('Z', [])); break;
+                    }
+                }
+                sh.Paths.Add(cp);
+            }
+        }
         if (spPr.Element(A + "noFill") != null) sh.Fill = null;
         else sh.Fill = DrawingColor(spPr.Element(A + "solidFill")) ?? DrawingColor(shapeStyle?.Element(A + "fillRef"));
         var ln = spPr.Element(A + "ln");
         if (ln?.Element(A + "noFill") != null) sh.Stroke = null;
         else sh.Stroke = DrawingColor(ln?.Element(A + "solidFill")) ?? DrawingColor(shapeStyle?.Element(A + "lnRef"))
-                         ?? (ln != null || shapeStyle == null ? Rgb.Black : null);
+                         ?? (ln != null ? Rgb.Black : null);   // без a:ln и стиля контура нет
         if (ln?.Attribute("w") != null) sh.StrokeWidth = Math.Max(0.25, Emu((string?)ln.Attribute("w")));
         string dash = (string?)ln?.Element(A + "prstDash")?.Attribute("val") ?? "solid";
         sh.Dotted = dash is "dot" or "sysDot";
@@ -172,68 +216,139 @@ public sealed partial class DocxReader
             var extent = container.Element(WP + "extent");
             double w = Emu((string?)extent?.Attribute("cx")), h = Emu((string?)extent?.Attribute("cy"));
 
-            // Содержимое: картинка или надпись
-            List<Block>? content = null;
-            BoxStyle box = new();
-            var blip = container.Descendants(A + "blip").FirstOrDefault();
-            var txbx = container.Descendants(WPS + "txbx").FirstOrDefault()?.Element(W + "txbxContent")
-                       ?? container.Descendants(W + "txbxContent").FirstOrDefault();
-            if (txbx != null)
-            {
-                content = [];
-                ParseBlockContainer(txbx, st.Ctx, content);
-                var spPr = container.Descendants(WPS + "spPr").FirstOrDefault();
-                if (spPr != null && spPr.Element(A + "noFill") == null) box.Background = DrawingColor(spPr.Element(A + "solidFill"));
-                var ln = spPr?.Element(A + "ln");
-                if (ln != null && ln.Element(A + "noFill") == null)
-                {
-                    var lc = DrawingColor(ln.Element(A + "solidFill")) ?? Rgb.Black;
-                    double lw = ln.Attribute("w") != null ? Math.Max(0.25, Emu((string?)ln.Attribute("w"))) : 0.75;
-                    var b = new BorderDef { Width = lw, Color = lc };
-                    box.BorderTop = box.BorderBottom = box.BorderLeft = box.BorderRight = b;
-                }
-                var bodyPr = container.Descendants(WPS + "bodyPr").FirstOrDefault();
-                box.PadLeft = bodyPr?.Attribute("lIns") != null ? Emu((string?)bodyPr.Attribute("lIns")) : 7.2;
-                box.PadRight = bodyPr?.Attribute("rIns") != null ? Emu((string?)bodyPr.Attribute("rIns")) : 7.2;
-                box.PadTop = bodyPr?.Attribute("tIns") != null ? Emu((string?)bodyPr.Attribute("tIns")) : 3.6;
-                box.PadBottom = bodyPr?.Attribute("bIns") != null ? Emu((string?)bodyPr.Attribute("bIns")) : 3.6;
-                box.MinHeight = h;
-            }
-            else if (blip != null)
-            {
-                string? rid = (string?)blip.Attribute(R + "embed") ?? (string?)blip.Attribute(R + "link");
-                if (rid == null) continue;
-                var tmp = new List<Inline>();
-                AddImage(rid, w, h, st, style, tmp);
-                if (tmp.Count == 0) continue;
-                ApplyPictureGeometry(container, (ImageInline)tmp[0], !anchor);
-                if (!anchor) { output.AddRange(tmp); continue; }
-                var p = new Paragraph { MarkStyle = style with { Size = 1 }, LineRule = "auto", SnapToGrid = false };
-                p.Inlines.AddRange(tmp);
-                content = [p];
-            }
-            else if (container.Descendants(WPS + "wsp").FirstOrDefault() is { } wsp && wsp.Element(WPS + "spPr") is { } shapePr)
-            {
-                // Фигура без текста: прямоугольник, эллипс, линия, стрелка …
-                var shape = ParseShapeSpec(shapePr, wsp.Element(WPS + "style"));
-                if (shape.Geom is "line" or "straightConnector1") { if (h < 0.01) h = 0; if (w < 0.01) w = 0; }
-                var img = new ImageInline("", Math.Max(w, shape.StrokeWidth), Math.Max(h, shape.StrokeWidth), style) { Shape = shape };
-                img.FrameW = w; img.FrameH = h;
-                ApplyPictureGeometry(container, img, !anchor);
-                if (!anchor) { output.Add(img); continue; }
-                var p = new Paragraph { MarkStyle = style with { Size = 1 }, LineRule = "auto", SnapToGrid = false };
-                p.Inlines.Add(img);
-                content = [p];
-            }
-            else continue;
+            // Ссылка на объекте (wp:docPr/a:hlinkClick)
+            var objStyle = style;
+            if ((string?)container.Element(WP + "docPr")?.Element(A + "hlinkClick")?.Attribute(R + "id") is { } hrid
+                && st.Ctx.Rels.TryGetValue(hrid, out var hrel))
+                objStyle = style with { Link = hrel.External ? hrel.Target : "#" + hrel.Target.TrimStart('#') };
 
-            if (!anchor)
+            var gobj = container.Element(A + "graphic")?.Element(A + "graphicData")?.Elements().FirstOrDefault();
+            var item = gobj != null ? ParseGraphicObject(gobj, w, h, st, objStyle, inline: !anchor) : null;
+            if (item == null) continue;
+            if (!anchor) { output.Add(item); continue; }
+
+            List<Block> content;
+            BoxStyle box = new();
+            if (item.Content != null && item.Rotation == 0 && item.Children == null)
             {
-                // Надпись в строке — плавающий блок слева (упрощение)
-                AddFloat("left", w, h, content, box, 0, 0, 0, 0);
-                continue;
+                // Обычная надпись с привязкой: содержимое в рамке (обтекание, разрыв и т. п. как раньше)
+                content = item.Content;
+                box = item.Box ?? new BoxStyle();
+            }
+            else
+            {
+                var p = new Paragraph { MarkStyle = style with { Size = 1 }, LineRule = "auto", SnapToGrid = false };
+                p.Inlines.Add(item);
+                content = [p];
             }
             EmitAnchor(container, w, h, content, box);
+        }
+    }
+
+    /// <summary>
+    /// Объект DrawingML внутри рамки w×h: картинка (pic:pic), фигура или надпись (wps:wsp), группа (wpg:wgp/grpSp).
+    /// </summary>
+    ImageInline? ParseGraphicObject(XElement obj, double w, double h, RunState st, TextStyle style, bool inline)
+    {
+        string ln = obj.Name.LocalName;
+        if (ln == "pic")
+        {
+            var blip = obj.Descendants(A + "blip").FirstOrDefault();
+            string? rid = (string?)blip?.Attribute(R + "embed") ?? (string?)blip?.Attribute(R + "link");
+            if (rid == null) return null;
+            var tmp = new List<Inline>();
+            AddImage(rid, w, h, st, style, tmp);
+            if (tmp.Count == 0) return null;
+            var img = (ImageInline)tmp[0];
+            ApplyPictureGeometry(obj, img, inline);
+            // Рамка картинки
+            var pln = obj.Element(PIC + "spPr")?.Element(A + "ln");
+            if (pln != null && pln.Element(A + "noFill") == null && DrawingColor(pln.Element(A + "solidFill")) is { } pc)
+                img.Border = new BorderDef { Width = pln.Attribute("w") != null ? Math.Max(0.25, Emu((string?)pln.Attribute("w"))) : 0.75, Color = pc };
+            return img;
+        }
+        if (ln is "wgp" or "grpSp")
+        {
+            var gx = obj.Element(WPG + "grpSpPr")?.Element(A + "xfrm");
+            double chOffX = EmuRaw(gx?.Element(A + "chOff")?.Attribute("x")), chOffY = EmuRaw(gx?.Element(A + "chOff")?.Attribute("y"));
+            double chExtX = EmuRaw(gx?.Element(A + "chExt")?.Attribute("cx")), chExtY = EmuRaw(gx?.Element(A + "chExt")?.Attribute("cy"));
+            double sx = chExtX > 0 ? w / chExtX : 1 / 12700.0, sy = chExtY > 0 ? h / chExtY : 1 / 12700.0;
+            var group = new ImageInline("", w, h, style) { Children = [], FrameW = w, FrameH = h };
+            foreach (var child in obj.Elements())
+            {
+                if (child.Name.LocalName is not ("wsp" or "pic" or "grpSp")) continue;
+                var cx = child.Name.LocalName == "grpSp"
+                    ? child.Element(WPG + "grpSpPr")?.Element(A + "xfrm")
+                    : child.Elements().FirstOrDefault(e => e.Name.LocalName == "spPr")?.Element(A + "xfrm");
+                double ox = (EmuRaw(cx?.Element(A + "off")?.Attribute("x")) - chOffX) * sx;
+                double oy = (EmuRaw(cx?.Element(A + "off")?.Attribute("y")) - chOffY) * sy;
+                double cw = EmuRaw(cx?.Element(A + "ext")?.Attribute("cx")) * sx, ch = EmuRaw(cx?.Element(A + "ext")?.Attribute("cy")) * sy;
+                var ci = ParseGraphicObject(child, cw, ch, st, style, inline: false);
+                if (ci != null) group.Children.Add((ci, ox, oy));
+            }
+            ApplyGroupRotation(obj, group, inline);
+            return group.Children.Count > 0 ? group : null;
+        }
+        if (ln != "wsp") return null;
+        var spPr = obj.Element(WPS + "spPr");
+        var txbx = obj.Element(WPS + "txbx")?.Element(W + "txbxContent");
+        if (txbx != null)
+        {
+            var content = new List<Block>();
+            ParseBlockContainer(txbx, st.Ctx, content);
+            var box = new BoxStyle();
+            if (spPr != null && spPr.Element(A + "noFill") == null)
+                box.Background = DrawingColor(spPr.Element(A + "solidFill")) ?? (spPr.Element(A + "solidFill") == null ? DrawingColor(obj.Element(WPS + "style")?.Element(A + "fillRef")) : null);
+            var lnEl = spPr?.Element(A + "ln");
+            if (lnEl != null && lnEl.Element(A + "noFill") == null)
+            {
+                var lc = DrawingColor(lnEl.Element(A + "solidFill")) ?? Rgb.Black;
+                double lw = lnEl.Attribute("w") != null ? Math.Max(0.25, Emu((string?)lnEl.Attribute("w"))) : 0.75;
+                var b = new BorderDef { Width = lw, Color = lc };
+                box.BorderTop = box.BorderBottom = box.BorderLeft = box.BorderRight = b;
+            }
+            var bodyPr = obj.Element(WPS + "bodyPr");
+            box.PadLeft = bodyPr?.Attribute("lIns") != null ? Emu((string?)bodyPr.Attribute("lIns")) : 7.2;
+            box.PadRight = bodyPr?.Attribute("rIns") != null ? Emu((string?)bodyPr.Attribute("rIns")) : 7.2;
+            box.PadTop = bodyPr?.Attribute("tIns") != null ? Emu((string?)bodyPr.Attribute("tIns")) : 3.6;
+            box.PadBottom = bodyPr?.Attribute("bIns") != null ? Emu((string?)bodyPr.Attribute("bIns")) : 3.6;
+            box.MinHeight = h;
+            // Вертикальный текст: содержимое в ячейке с поворотом строк (как textDirection у ячейки таблицы)
+            string? vert = (string?)bodyPr?.Attribute("vert");
+            if (vert is "vert" or "vert270" or "eaVert" or "wordArtVert" or "mongolianVert" or "wordArtVertRtl")
+            {
+                var t = BoxTable(content, box, w, h, null);
+                t.Rows[0].Cells[0].TextDirection = vert == "vert270" ? "btLr" : "tbRl";
+                t.Rows[0].HeightRule = "exact";
+                content = [t];
+                box = new BoxStyle { MinHeight = h };
+            }
+            var tb = new ImageInline("", w, h, style) { Content = content, Box = box, FrameW = w, FrameH = h };
+            ApplyPictureGeometry(obj, tb, inline);
+            return tb;
+        }
+        if (spPr == null) return null;
+        // Фигура без текста: прямоугольник, эллипс, линия, стрелка, произвольный контур …
+        var shape = ParseShapeSpec(spPr, obj.Element(WPS + "style"));
+        var img2 = new ImageInline("", Math.Max(w, shape.StrokeWidth), Math.Max(h, shape.StrokeWidth), style) { Shape = shape, FrameW = w, FrameH = h };
+        ApplyPictureGeometry(obj, img2, inline);
+        return img2;
+    }
+
+    static double EmuRaw(XAttribute? a) => double.TryParse((string?)a, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
+
+    static void ApplyGroupRotation(XElement grp, ImageInline img, bool inline)
+    {
+        var x = grp.Element(WPG + "grpSpPr")?.Element(A + "xfrm");
+        if (x == null) return;
+        if (double.TryParse((string?)x.Attribute("rot"), NumberStyles.Float, CultureInfo.InvariantCulture, out var rot)) img.Rotation = rot / 60000.0 % 360;
+        img.FlipH = (string?)x.Attribute("flipH") is "1" or "true";
+        img.FlipV = (string?)x.Attribute("flipV") is "1" or "true";
+        if (inline && img.Rotation != 0)
+        {
+            double a = img.Rotation * Math.PI / 180, c = Math.Abs(Math.Cos(a)), s = Math.Abs(Math.Sin(a));
+            img.Width = img.FrameW * c + img.FrameH * s;
+            img.Height = img.FrameW * s + img.FrameH * c;
         }
     }
 

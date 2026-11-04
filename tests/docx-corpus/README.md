@@ -23,6 +23,7 @@
 | t18.docx | поле переплёта `gutter`, `szCs`/`bCs` для иврита и арабского, `moveFrom`, удалённый знак абзаца, таблица без `tblGrid`, знаки ударения `w:em`, XOR переключаемых свойств стилей, эмодзи, отрицательная позиция |
 | t19.docx | длинное слово без пробелов, CMYK JPEG, 16-битный PNG, серый с альфой, таблица `bidiVisual`, фигуры DrawingML (прямоугольник, линия) и VML, картинка с обтеканием в абсолютной позиции страницы (gen13.py; картинки подменяются в архиве вручную) |
 | t20_strict.docx | t1_text.docx в формате Strict OOXML (пространства имён purl.oclc.org) — результат должен совпадать с t1 |
+| t21.docx | группа фигур `wpg`, произвольный контур `custGeom`, рамка и ссылка у картинки, надписи в строке: вертикальный текст `vert270`, автоподбор высоты, поворот 30° (gen14.py; надписи дописываются в XML) |
 
 Сгенерировать заново: `python3 gen.py && python3 gen2.py && python3 gen3.py && python3 gen4.py && python3 gen5.py && python3 gen6.py && python3 gen7.py && python3 gen8.py && python3 gen9.py && python3 gen10.py && python3 gen11.py && python3 gen12.py` (нужен python-docx).
 Сравнение с LibreOffice: сконвертировать в `ours/` и `lo/`, затем `python3 cmp.py`.

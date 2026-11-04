@@ -207,11 +207,11 @@ public sealed class LineFrag : Frag
         {
             var p = Pieces[i];
             double px = lx + p.X;
-            if (p.Kind == PieceKind.Image && p.Image?.Shape is { } shape)
+            if (p.Kind == PieceKind.Image && p.Image is { } obj && (obj.Shape != null || obj.Content != null || obj.Children != null))
             {
-                // Фигура без текста: рамка неповёрнутая, поворот вокруг центра
-                double sh = p.Ascent + p.Descent, sk = p.Image.Width > 0 ? p.Width / p.Image.Width : 1;
-                c.Shape(shape, px + p.Width / 2, baseY - p.Ascent + sh / 2, p.Image.FrameW * sk, p.Image.FrameH * sk, p.Image.Rotation, p.Image.FlipH, p.Image.FlipV);
+                // Фигура, надпись или группа: рамка неповёрнутая, поворот вокруг центра
+                double sh = p.Ascent + p.Descent, sk = obj.Width > 0 ? p.Width / obj.Width : 1;
+                DrawObject(c, Doc, obj, px + p.Width / 2, baseY - p.Ascent + sh / 2, sk);
             }
             else if (p.Kind == PieceKind.Image && p.Image != null && Doc.Media.TryGetValue(p.Image.PartName, out var bytes))
             {
@@ -235,6 +235,13 @@ public sealed class LineFrag : Frag
                 }
                 if (tr != null) TransformPainter.Paint(c, px, iy, iw, ih, tr, DrawImg);
                 else DrawImg();
+                if (img.Border is { } ib)
+                {
+                    // Рамка картинки по краю рамки (повёрнутой вместе с ней)
+                    double k2 = img.Width > 0 ? iw / img.Width : 1;
+                    var frame = new ShapeSpec { Geom = "rect", Stroke = ib.Color, StrokeWidth = ib.Width };
+                    c.Shape(frame, px + iw / 2, iy + ih / 2, img.FrameW * k2, img.FrameH * k2, img.Rotation, img.FlipH, img.FlipV);
+                }
             }
             if (p.Kind == PieceKind.Tab && p.Tab != null && p.Tab.Leader is not ("none" or "") && p.Width > 4)
                 DrawLeader(c, p, px, baseY);
@@ -301,6 +308,49 @@ public sealed class LineFrag : Frag
             if (st.Link != null)
                 c.Link(px, baseY - p.Ascent, w, p.Ascent + p.Descent, st.Link);
         }
+    }
+
+    /// <summary>
+    /// Рисует фигуру, надпись, картинку или группу с центром (cx, cy) в масштабе k
+    /// (рамка FrameW×FrameH, поворот и отражение вокруг центра).
+    /// </summary>
+    internal static void DrawObject(PdfCanvas c, DocxDocument doc, ImageInline obj, double cx, double cy, double k)
+    {
+        double fw = obj.FrameW * k, fh = obj.FrameH * k;
+        if (obj.Shape != null)
+        {
+            c.Shape(obj.Shape, cx, cy, fw, fh, obj.Rotation, obj.FlipH, obj.FlipV);
+            return;
+        }
+        bool rotated = obj.Rotation != 0 || obj.FlipH || obj.FlipV;
+        if (rotated)
+        {
+            double a = obj.Rotation * Math.PI / 180, cos = Math.Cos(a), sin = Math.Sin(a);
+            double fx = obj.FlipH ? -1 : 1, fy = obj.FlipV ? -1 : 1;
+            // Поворот по часовой стрелке (ось y вниз) после отражения
+            c.BeginTransform(cx, cy, cos * fx, sin * fx, -sin * fy, cos * fy, 0, 0);
+        }
+        if (obj.Children != null)
+        {
+            double gk = obj.FrameW > 0 ? fw / obj.FrameW : k;
+            foreach (var (child, x, y) in obj.Children)
+                DrawObject(c, doc, child, cx - fw / 2 + (x + child.FrameW / 2) * gk, cy - fh / 2 + (y + child.FrameH / 2) * gk, gk);
+        }
+        else if (obj.Built is Frag f)
+        {
+            if (Math.Abs(k - 1) > 0.001) c.BeginTransform(cx - fw / 2, cy - fh / 2, k, 0, 0, k, 0, 0);
+            f.Draw(c, cx - fw / 2, cy - fh / 2);
+            if (Math.Abs(k - 1) > 0.001) c.EndTransform();
+        }
+        else if (doc.Media.TryGetValue(obj.PartName, out var bytes))
+        {
+            // Картинка внутри группы
+            if (obj.CropL != 0 || obj.CropT != 0 || obj.CropR != 0 || obj.CropB != 0)
+                c.ImageGeometry(obj.PartName, bytes, cx, cy, fw, fh, obj.CropL, obj.CropT, obj.CropR, obj.CropB, 0, false, false);
+            else c.Image(obj.PartName, bytes, cx - fw / 2, cy - fh / 2, fw, fh);
+            if (obj.Border is { } b) c.Shape(new ShapeSpec { Stroke = b.Color, StrokeWidth = b.Width }, cx, cy, fw, fh, 0, false, false);
+        }
+        if (rotated) c.EndTransform();
     }
 
     double NextX(int i) => i + 1 < Pieces.Count ? Pieces[i + 1].X : Pieces[i].X + Pieces[i].Width;
