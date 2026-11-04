@@ -18,6 +18,25 @@ public sealed class ChartFrag : Frag
     public void Sector(double cx, double cy, double r, double a0, double a1, Rgb col, double inner) =>
         _ops.Add((c, ox, oy) => c.FillSector(ox + cx, oy + cy, r, a0, a1, col, inner));
     public void Text(Frag t, double x, double y) => _ops.Add((c, ox, oy) => t.Draw(c, ox + x, oy + y));
+    public void SectorE(double cx, double cy, double r, double a0, double a1, Rgb col, double yScale, bool outline) =>
+        _ops.Add((c, ox, oy) => c.FillSector(ox + cx, oy + cy, r, a0, a1, col, 0, yScale, outline));
+    public void Marker(string kind, double x, double y, double size, Rgb col) => _ops.Add((c, ox, oy) =>
+    {
+        var spec = kind switch
+        {
+            "circle" or "dot" => new ShapeSpec { Geom = "ellipse", Fill = col },
+            "diamond" => new ShapeSpec { Geom = "diamond", Fill = col },
+            "triangle" => new ShapeSpec { Geom = "triangle", Fill = col },
+            "x" or "star" or "plus" or "dash" => null,
+            _ => new ShapeSpec { Geom = "rect", Fill = col },
+        };
+        double sz = kind == "dot" ? size * 0.5 : size;
+        if (spec != null) { c.Shape(spec, ox + x, oy + y, sz, sz, 0, false, false); return; }
+        double h = sz / 2, px = ox + x, py = oy + y;
+        if (kind is "x" or "star") { c.Line(px - h, py - h, px + h, py + h, 1, col); c.Line(px - h, py + h, px + h, py - h, 1, col); }
+        if (kind is "plus" or "star") { c.Line(px - h, py, px + h, py, 1, col); c.Line(px, py - h, px, py + h, 1, col); }
+        if (kind == "dash") c.Line(px - h, py, px + h, py, 1.5, col);
+    });
 
     public override void Draw(PdfCanvas c, double x, double y)
     {
@@ -99,113 +118,188 @@ public sealed class ChartLayout(BlockLayout layout)
         return f;
     }
 
+    static Rgb Shade(Rgb c, double k) => new(c.R * k, c.G * k, c.B * k);
+
     void BuildPie(ChartFrag f, ChartSpec ch, double l, double t, double r, double b)
     {
         var se = ch.Series[0];
         double sum = se.Values.Where(v => v > 0).Sum();
         if (sum <= 0) return;
-        double rad = Math.Max(5, Math.Min(r - l, b - t) / 2 - 4), cx = (l + r) / 2, cy = (t + b) / 2, a = 0;
+        bool d3 = ch.ThreeD && ch.Type == "pie";
+        double yScale = d3 ? 0.55 : 1;
+        double rad = Math.Max(5, Math.Min((r - l) / 2, (b - t) / 2 / (d3 ? 0.75 : 1)) - 4);
+        double depth = d3 ? rad * 0.18 : 0;
+        double cx = (l + r) / 2, cy = (t + b) / 2 - depth / 2;
+        var colors = Enumerable.Range(0, se.Values.Count).Select(i => se.PointColors.GetValueOrDefault(i, DocxReader.AccentColor(i))).ToList();
+        if (d3)
+        {
+            // Боковая стенка: слои затемнённых секторов снизу вверх
+            int layers = Math.Max(4, (int)depth);
+            for (int k = layers; k >= 1; k--)
+            {
+                double a = 0;
+                for (int i = 0; i < se.Values.Count; i++)
+                {
+                    if (se.Values[i] <= 0) continue;
+                    double sweep = se.Values[i] / sum * 360;
+                    f.SectorE(cx, cy + depth * k / layers, rad, a, a + sweep, Shade(colors[i], 0.7), yScale, false);
+                    a += sweep;
+                }
+            }
+        }
+        double acc = 0;
         for (int i = 0; i < se.Values.Count; i++)
         {
             if (se.Values[i] <= 0) continue;
             double sweep = se.Values[i] / sum * 360;
-            f.Sector(cx, cy, rad, a, a + sweep, se.PointColors.GetValueOrDefault(i, DocxReader.AccentColor(i)), ch.Type == "doughnut" ? rad * 0.5 : 0);
+            if (d3) f.SectorE(cx, cy, rad, acc, acc + sweep, colors[i], yScale, true);
+            else f.Sector(cx, cy, rad, acc, acc + sweep, colors[i], ch.Type == "doughnut" ? rad * 0.5 : 0);
             if (ch.DataLabels)
             {
-                double mid = (a + sweep / 2 - 90) * Math.PI / 180, lr = ch.Type == "doughnut" ? rad * 0.75 : rad * 0.65;
-                PutText(f, Num(se.Values[i]), 9, cx + lr * Math.Cos(mid), cy + lr * Math.Sin(mid), "center", false, Rgb.White);
+                double mid = (acc + sweep / 2 - 90) * Math.PI / 180, lr = ch.Type == "doughnut" ? rad * 0.75 : rad * 0.65;
+                PutText(f, Num(se.Values[i]), 9, cx + lr * Math.Cos(mid), cy + lr * yScale * Math.Sin(mid), "center", false, Rgb.White);
             }
-            a += sweep;
+            acc += sweep;
         }
+    }
+
+    /// <summary>Шкала оси значений: «красивый» шаг 1, 2, 5 × 10^n и границы.</summary>
+    static (double Min, double Max, double Step) NiceScale(double min, double max)
+    {
+        if (max - min < 1e-9) max = min + 1;
+        double raw = (max - min) / 6, mag = Math.Pow(10, Math.Floor(Math.Log10(raw))), step = mag;
+        foreach (var m in new[] { 1, 2, 5, 10 }) { step = m * mag; if (step >= raw) break; }
+        double vmin = Math.Floor(min / step) * step, vmax = Math.Ceiling(max / step - 1e-9) * step;
+        if (vmax <= vmin) vmax = vmin + step;
+        return (vmin, vmax, step);
+    }
+
+    /// <summary>Диапазон значений рядов одной оси (с учётом накопления).</summary>
+    static (double Min, double Max) Range(List<ChartSeries> series, int n)
+    {
+        double min = 0, max = 0;
+        foreach (var grp in series.GroupBy(s => s.Type + "/" + s.Grouping))
+        {
+            var list = grp.ToList();
+            bool stacked = list[0].Grouping is "stacked" or "percentStacked", percent = list[0].Grouping == "percentStacked";
+            for (int i = 0; i < n; i++)
+            {
+                if (stacked)
+                {
+                    double pos = 0, neg = 0;
+                    foreach (var s in list) { double v = i < s.Values.Count ? s.Values[i] : 0; if (v >= 0) pos += v; else neg += v; }
+                    if (percent) { pos = pos > 0 ? 100 : 0; neg = neg < 0 ? -100 : 0; }
+                    max = Math.Max(max, pos); min = Math.Min(min, neg);
+                }
+                else foreach (var s in list) if (i < s.Values.Count) { max = Math.Max(max, s.Values[i]); min = Math.Min(min, s.Values[i]); }
+            }
+        }
+        return (min, max);
     }
 
     void BuildAxes(ChartFrag f, ChartSpec ch, double l, double t, double r, double b)
     {
         int n = ch.Categories.Count;
         if (n == 0) return;
-        bool stacked = ch.Grouping is "stacked" or "percentStacked", percent = ch.Grouping == "percentStacked";
-        bool horizontal = ch.Type == "bar";
-        // Диапазон значений
-        double min = 0, max = 0;
-        for (int i = 0; i < n; i++)
-        {
-            if (stacked)
-            {
-                double pos = 0, neg = 0;
-                foreach (var s in ch.Series) { double v = i < s.Values.Count ? s.Values[i] : 0; if (v >= 0) pos += v; else neg += v; }
-                if (percent) { pos = pos > 0 ? 100 : 0; neg = neg < 0 ? -100 : 0; }
-                max = Math.Max(max, pos); min = Math.Min(min, neg);
-            }
-            else foreach (var s in ch.Series) if (i < s.Values.Count) { max = Math.Max(max, s.Values[i]); min = Math.Min(min, s.Values[i]); }
-        }
-        if (max - min < 1e-9) max = min + 1;
-        // «Красивый» шаг шкалы: 1, 2, 5 × 10^n, около 5–8 делений
-        double raw = (max - min) / 6, mag = Math.Pow(10, Math.Floor(Math.Log10(raw))), step = mag;
-        foreach (var m in new[] { 1, 2, 5, 10 }) { step = m * mag; if (step >= raw) break; }
-        double vmin = Math.Floor(min / step) * step, vmax = Math.Ceiling(max / step - 1e-9) * step;
-        if (vmax <= vmin) vmax = vmin + step;
+        bool horizontal = ch.Series.Any(s => s.Type == "bar") && ch.Series.All(s => s.Type == "bar");
+        var primary = ch.Series.Where(s => !s.Secondary).ToList();
+        var secondary = ch.Series.Where(s => s.Secondary).ToList();
+        if (primary.Count == 0) { primary = secondary; secondary = []; }
+        bool percent = primary.Any(s => s.Grouping == "percentStacked");
+        var (pmin, pmax) = Range(primary, n);
+        var (vmin, vmax, step) = NiceScale(pmin, pmax);
+        (double Min, double Max, double Step) sec = default;
+        if (secondary.Count > 0) { var (smin, smax) = Range(secondary, n); sec = NiceScale(smin, smax); }
         const double fs = 9;
-        // Подписи значений и категорий занимают место у осей
         var valLabels = new List<double>();
         for (double v = vmin; v <= vmax + step / 2; v += step) valLabels.Add(Math.Round(v / step) * step);
+        // Вторичная шкала — столько же делений, что и основная (как в Word при общей сетке)
+        int divs = Math.Max(1, valLabels.Count - 1);
+        var secLabels = secondary.Count > 0 ? Enumerable.Range(0, divs + 1).Select(i => sec.Min + (sec.Max - sec.Min) * i / divs).ToList() : [];
         double valW = valLabels.Max(v => Text(Num(v) + (percent ? "%" : ""), fs).W) + 6;
+        double secW = secLabels.Count > 0 ? secLabels.Max(v => Text(Num(v), fs).W) + 6 : 0;
         double catW = ch.Categories.Max(c => Text(c, fs).W) + 6;
-        double pl = l + (horizontal ? catW : valW), pr = r - 4, pt = t + 6, pb = b - 16;
+        // Объёмный вид: глубина столбцов и смещение задней стенки
+        double depth = ch.ThreeD ? 8 : 0;
+        double pl = l + (horizontal ? catW : valW), pr = r - 4 - secW - depth, pt = t + 6 + depth, pb = b - 16;
         if (pr - pl < 10 || pb - pt < 10) return;
-        double VPos(double v) => horizontal ? pl + (v - vmin) / (vmax - vmin) * (pr - pl) : pb - (v - vmin) / (vmax - vmin) * (pb - pt);
-        // Сетка и подписи шкалы
-        foreach (var v in valLabels)
+        double VPos(double v, bool secAxis = false)
         {
-            double p = VPos(v);
-            string lbl = Num(v) + (percent ? "%" : "");
+            double lo = secAxis ? sec.Min : vmin, hi = secAxis ? sec.Max : vmax;
+            double k = hi > lo ? (v - lo) / (hi - lo) : 0;
+            return horizontal ? pl + k * (pr - pl) : pb - k * (pb - pt);
+        }
+        var gridCol = new Rgb(0.85, 0.85, 0.85);
+        if (ch.ThreeD)
+        {
+            // Задняя и боковая стенки
+            f.Polygon([(pl, pt), (pl + depth, pt - depth), (pl + depth, pb - depth), (pl, pb)], new Rgb(0.95, 0.95, 0.95));
+            f.Polygon([(pl, pb), (pl + depth, pb - depth), (pr + depth, pb - depth), (pr, pb)], new Rgb(0.9, 0.9, 0.9));
+        }
+        // Сетка и подписи шкал
+        for (int i = 0; i < valLabels.Count; i++)
+        {
+            double p = VPos(valLabels[i]);
+            string lbl = Num(valLabels[i]) + (percent ? "%" : "");
             if (horizontal)
             {
-                if (ch.Gridlines) f.Line([(p, pt), (p, pb)], 0.75, Axis);
+                if (ch.Gridlines) f.Line([(p, pt), (p + depth, pt - depth), (p + depth, pb - depth)], 0.75, gridCol);
                 PutText(f, lbl, fs, p, pb + 8, "center");
             }
             else
             {
-                if (ch.Gridlines) f.Line([(pl, p), (pr, p)], 0.75, Axis);
+                if (ch.Gridlines) f.Line(ch.ThreeD ? [(pl, p), (pl + depth, p - depth), (pr + depth, p - depth)] : [(pl, p), (pr, p)], 0.75, gridCol);
                 PutText(f, lbl, fs, pl - 4, p, "right");
+                if (secLabels.Count > i) PutText(f, Num(secLabels[i]), fs, pr + depth + 4, p, "left");
             }
         }
-        // Ось категорий
-        double zero = VPos(Math.Clamp(0, vmin, vmax));
         double band = (horizontal ? pb - pt : pr - pl) / n;
         for (int i = 0; i < n; i++)
         {
-            // У горизонтальных полос первая категория внизу (как в Word)
             double c = horizontal ? pb - band * (i + 0.5) : pl + band * (i + 0.5);
             if (horizontal) PutText(f, ch.Categories[i], fs, pl - 4, c, "right");
             else PutText(f, ch.Categories[i], fs, c, pb + 8, "center");
         }
-        if (horizontal) f.Line([(zero, pt), (zero, pb)], 0.75, new Rgb(0.75, 0.75, 0.75));
-        else f.Line([(pl, zero), (pr, zero)], 0.75, new Rgb(0.75, 0.75, 0.75));
+        double zero = VPos(Math.Clamp(0, vmin, vmax));
+        var axisCol = new Rgb(0.75, 0.75, 0.75);
+        if (horizontal) f.Line([(zero, pt), (zero, pb)], 0.75, axisCol);
+        else f.Line([(pl, zero), (pr, zero)], 0.75, axisCol);
 
-        if (ch.Type is "col" or "bar")
+        // Столбцы/полосы (все ряды этих типов делят место в категории)
+        var barSeries = ch.Series.Where(s => s.Type is "col" or "bar").ToList();
+        if (barSeries.Count > 0)
         {
-            int ns = ch.Series.Count;
-            double gap = band * 0.4, groupW = band - gap, barW = stacked ? groupW : groupW / ns;
+            bool stacked = barSeries[0].Grouping is "stacked" or "percentStacked", pct = barSeries[0].Grouping == "percentStacked";
+            int slots = stacked ? 1 : barSeries.Count;
+            double gap = band * 0.4, groupW = band - gap, barW = groupW / slots;
             var posAcc = new double[n]; var negAcc = new double[n];
-            for (int si = 0; si < ns; si++)
+            for (int si = 0; si < barSeries.Count; si++)
             {
-                var s = ch.Series[si];
+                var s = barSeries[si];
                 for (int i = 0; i < n && i < s.Values.Count; i++)
                 {
                     double v = s.Values[i];
-                    if (percent)
+                    if (pct)
                     {
-                        double tot = ch.Series.Sum(q => i < q.Values.Count ? Math.Abs(q.Values[i]) : 0);
+                        double tot = barSeries.Sum(q => i < q.Values.Count ? Math.Abs(q.Values[i]) : 0);
                         v = tot > 0 ? v / tot * 100 : 0;
                     }
                     double from = 0;
                     if (stacked) { from = v >= 0 ? posAcc[i] : negAcc[i]; if (v >= 0) posAcc[i] += v; else negAcc[i] += v; }
-                    double a = VPos(from), e = VPos(from + v);
-                    double off = horizontal ? pb - band * (i + 1) + gap / 2 + (stacked ? 0 : barW * (ns - 1 - si))
+                    double a = VPos(from, s.Secondary), e = VPos(from + v, s.Secondary);
+                    double off = horizontal ? pb - band * (i + 1) + gap / 2 + (stacked ? 0 : barW * (slots - 1 - si))
                                             : pl + band * i + gap / 2 + (stacked ? 0 : barW * si);
                     var col = s.PointColors.GetValueOrDefault(i, s.Color ?? Rgb.Black);
-                    if (horizontal) f.Rect(Math.Min(a, e), off, Math.Abs(e - a), barW, col);
-                    else f.Rect(off, Math.Min(a, e), barW, Math.Abs(e - a), col);
+                    double x0 = horizontal ? Math.Min(a, e) : off, y0 = horizontal ? off : Math.Min(a, e);
+                    double bw = horizontal ? Math.Abs(e - a) : barW, bh = horizontal ? barW : Math.Abs(e - a);
+                    if (ch.ThreeD)
+                    {
+                        // Объёмный столбец: верхняя и правая грани
+                        double dd = Math.Min(depth, barW * 0.6);
+                        f.Polygon([(x0, y0), (x0 + dd, y0 - dd), (x0 + bw + dd, y0 - dd), (x0 + bw, y0)], Lighten(col));
+                        f.Polygon([(x0 + bw, y0), (x0 + bw + dd, y0 - dd), (x0 + bw + dd, y0 + bh - dd), (x0 + bw, y0 + bh)], Shade(col, 0.7));
+                    }
+                    f.Rect(x0, y0, bw, bh, col);
                     if (ch.DataLabels)
                     {
                         if (horizontal) PutText(f, Num(s.Values[i]), fs, e + 3, off + barW / 2);
@@ -214,35 +308,40 @@ public sealed class ChartLayout(BlockLayout layout)
                 }
             }
         }
-        else
+
+        // Графики, области, точечные (каждый ряд — по своей оси); маркеры поверх линий
+        var acc = new Dictionary<string, double[]>();
+        foreach (var s in ch.Series.Where(s => s.Type is "line" or "area" or "scatter"))
         {
-            // График / область / точечная: точки в центрах категорий
-            var acc = new double[n];
-            foreach (var s in ch.Series)
+            var pts = new List<(double X, double Y)>();
+            string key = s.Type + "/" + s.Grouping + "/" + s.Secondary;
+            if (!acc.TryGetValue(key, out var sum)) acc[key] = sum = new double[n];
+            bool stacked = s.Grouping is "stacked" or "percentStacked";
+            for (int i = 0; i < n && i < s.Values.Count; i++)
             {
-                var pts = new List<(double X, double Y)>();
-                for (int i = 0; i < n && i < s.Values.Count; i++)
-                {
-                    double v = s.Values[i];
-                    if (stacked) { acc[i] += v; v = acc[i]; }
-                    pts.Add((pl + band * (i + 0.5), VPos(v)));
-                }
-                if (pts.Count == 0) continue;
-                var col = s.Color ?? Rgb.Black;
-                if (ch.Type == "area")
-                {
-                    var poly = new List<(double X, double Y)>(pts) { (pts[^1].X, zero), (pts[0].X, zero) };
-                    f.Polygon(poly, col);
-                }
-                else
-                {
-                    f.Line(pts, ch.Type == "scatter" ? 0 : 2.25, col);
-                    if (ch.Type == "scatter" || pts.Count == 1)
-                        foreach (var (px, py) in pts) f.Rect(px - 2.5, py - 2.5, 5, 5, col);
-                }
-                if (ch.DataLabels)
-                    for (int i = 0; i < pts.Count; i++) PutText(f, Num(s.Values[i]), fs, pts[i].X, pts[i].Y - 8, "center");
+                double v = s.Values[i];
+                if (stacked) { sum[i] += v; v = sum[i]; }
+                double px = horizontal ? VPos(v, s.Secondary) : pl + band * (i + 0.5), py = horizontal ? pb - band * (i + 0.5) : VPos(v, s.Secondary);
+                pts.Add((px, py));
             }
+            if (pts.Count == 0) continue;
+            var col = s.Color ?? Rgb.Black;
+            if (s.Type == "area")
+            {
+                double z = VPos(Math.Clamp(0, s.Secondary ? sec.Min : vmin, s.Secondary ? sec.Max : vmax), s.Secondary);
+                var poly = new List<(double X, double Y)>(pts) { (pts[^1].X, z), (pts[0].X, z) };
+                f.Polygon(poly, col);
+            }
+            else
+            {
+                if (s.Line && pts.Count > 1) f.Line(pts, 2.25, col);
+                if (s.Marker != null || pts.Count == 1)
+                    foreach (var (px, py) in pts) f.Marker(s.Marker ?? "square", px, py, s.MarkerSize, col);
+            }
+            if (ch.DataLabels)
+                for (int i = 0; i < pts.Count; i++) PutText(f, Num(s.Values[i]), fs, pts[i].X, pts[i].Y - 8, "center");
         }
     }
+
+    static Rgb Lighten(Rgb c) => new(c.R + (1 - c.R) * 0.3, c.G + (1 - c.G) * 0.3, c.B + (1 - c.B) * 0.3);
 }

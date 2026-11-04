@@ -101,13 +101,103 @@ public sealed partial class DocxReader
 
     readonly string _docDir;
 
-    DocxReader(ZipArchive zip, string docDir) { _zip = zip; _docDir = docDir; }
+    readonly DocxOptions _options;
 
-    public static DocxDocument Read(string path)
+    DocxReader(ZipArchive zip, string docDir, DocxOptions options) { _zip = zip; _docDir = docDir; _options = options; }
+
+    public static DocxDocument Read(string path, DocxOptions? options = null)
     {
         using var fs = File.OpenRead(path);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
-        return new DocxReader(zip, Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".").ReadAll();
+        return new DocxReader(zip, Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".", options ?? new DocxOptions()).ReadAll();
+    }
+
+    // ================================================================
+    //  Исправления и примечания
+    // ================================================================
+
+    bool _markup = true;                        // исправления с разметкой
+    bool _settingsMarkup = true;
+    string? _commentMode;                       // balloons, end или null (не выводить)
+    readonly Dictionary<string, CommentInfo> _comments = [];
+    readonly HashSet<string> _activeComments = [];
+    readonly List<CommentInfo> _commentList = [];
+    readonly Dictionary<string, int> _authors = [];
+    int _revision;                              // 0 — нет, 1 — вставка, 2 — удаление, 3 — перемещено отсюда, 4 — перемещено сюда
+    string _revisionAuthor = "";
+
+    static readonly Rgb[] AuthorColors =
+    [
+        new(0.71, 0.05, 0.06), new(0.12, 0.3, 0.75), new(0.0, 0.5, 0.2), new(0.5, 0.15, 0.6),
+        new(0.75, 0.4, 0.0), new(0.0, 0.5, 0.55), new(0.55, 0.35, 0.15), new(0.4, 0.4, 0.4),
+    ];
+
+    Rgb AuthorColor(string author)
+    {
+        if (!_authors.TryGetValue(author, out int i)) _authors[author] = i = _authors.Count;
+        return AuthorColors[i % AuthorColors.Length];
+    }
+
+    /// <summary>Оформление фрагмента: разметка исправления и подсветка диапазона примечания.</summary>
+    TextStyle Decorate(TextStyle s)
+    {
+        if (_markup && _revision != 0)
+        {
+            var c = AuthorColor(_revisionAuthor);
+            s = _revision switch
+            {
+                1 => s with { Color = c, Underline = true, UnderlineStyle = "single", UnderlineColor = c, RevisionMark = true },
+                2 => s with { Color = c, Strike = true, RevisionMark = true },
+                3 => s with { Color = new Rgb(0.0, 0.5, 0.2), Strike = true, DoubleStrike = true, RevisionMark = true },
+                _ => s with { Color = new Rgb(0.0, 0.5, 0.2), Underline = true, DoubleUnderline = true, UnderlineStyle = "double", UnderlineColor = new Rgb(0.0, 0.5, 0.2), RevisionMark = true },
+            };
+        }
+        if (_commentMode != null && _activeComments.Count > 0 && s.Background == null)
+        {
+            // Диапазон примечания — бледным цветом автора
+            var c = _comments[_activeComments.First()].Color;
+            s = s with { Background = new Rgb(1 - (1 - c.R) * 0.2, 1 - (1 - c.G) * 0.2, 1 - (1 - c.B) * 0.2) };
+        }
+        return s;
+    }
+
+    /// <summary>Режим «список в конце»: заголовок и тексты примечаний с номерами.</summary>
+    void AppendCommentList(List<Block> blocks)
+    {
+        if (_commentMode != "end" || _commentList.Count == 0) return;
+        var hs = ToTextStyle(new RunProps { Bold = true, Size = 12 });
+        var head = new Paragraph { MarkStyle = hs, SpaceBefore = 18, SpaceAfter = 6, KeepNext = true };
+        head.Inlines.Add(new TextInline("Примечания", hs));
+        blocks.Add(head);
+        foreach (var c in _commentList)
+        {
+            var ms = ToTextStyle(new RunProps { Bold = true, Size = 9 }) with { Color = c.Color };
+            var p = new Paragraph { MarkStyle = ms, SpaceAfter = 2 };
+            p.Inlines.Add(new TextInline($"[{c.Number}] {c.Author}:", ms));
+            blocks.Add(p);
+            blocks.AddRange(c.Blocks);
+        }
+    }
+
+    void LoadComments(string? part)
+    {
+        if (part == null || _options.Comments == "none") return;
+        var x = LoadXml(part);
+        if (x?.Root == null) return;
+        var ctx = new PartContext { Rels = LoadRels(part), HeaderFooter = false };
+        foreach (var c in x.Root.Elements(W + "comment"))
+        {
+            string id = (string?)c.Attribute(W + "id") ?? "";
+            string author = (string?)c.Attribute(W + "author") ?? "";
+            var info = new CommentInfo
+            {
+                Author = author, Initials = (string?)c.Attribute(W + "initials") ?? "", Color = AuthorColor(author),
+            };
+            var saveMode = _commentMode; _commentMode = null;
+            ParseBlockContainer(c, ctx, info.Blocks);
+            _commentMode = saveMode;
+            _comments[id] = info;
+        }
     }
 
     // ================================================================
@@ -239,6 +329,7 @@ public sealed partial class DocxReader
         LoadCoreProps();
         LoadNotes(RelTarget("/footnotes"), _footnotes);
         LoadNotes(RelTarget("/endnotes"), _endnotes);
+        _markup = _options.Revisions switch { "final" => false, "markup" => true, _ => _settingsMarkup };
 
         var xdoc = LoadXml(mainPart) ?? throw new InvalidDataException("Не удалось прочитать " + mainPart);
         var body = xdoc.Root?.Element(W + "body") ?? throw new InvalidDataException("В документе нет w:body");
@@ -248,10 +339,21 @@ public sealed partial class DocxReader
         var blocks = new List<Block>();
         // Левое поле (для рамок и плавающих таблиц, привязанных к странице)
         _bodyMarginLeft = Twips((string?)body.Element(W + "sectPr")?.Element(W + "pgMar")?.Attribute(W + "left")) ?? 85.05;
+        _bodyContentWidth = (Twips((string?)body.Element(W + "sectPr")?.Element(W + "pgSz")?.Attribute(W + "w")) ?? 595.3)
+            - _bodyMarginLeft - (Twips((string?)body.Element(W + "sectPr")?.Element(W + "pgMar")?.Attribute(W + "right")) ?? 42.55);
         // Свойства нумерации сносок по разделам: settings → sectPr каждого раздела
         _noteSections = body.Descendants(W + "sectPr").ToList();
         _noteSection = -1;
         NextNoteSection();
+        // Примечания: выноски на правом поле, если оно достаточно широкое, иначе — список в конце документа
+        double rightMargin = (Twips((string?)body.Element(W + "sectPr")?.Element(W + "pgSz")?.Attribute(W + "w")) ?? 595.3) - _bodyMarginLeft - _bodyContentWidth;
+        _commentMode = _options.Comments switch
+        {
+            "none" => null, "balloons" => "balloons", "end" => "end",
+            _ => rightMargin >= 70 ? "balloons" : "end"
+        };
+        if (_commentMode != null) LoadComments(RelTarget("/comments"));
+        _doc.CommentBalloons = _commentMode == "balloons";
         ParseBlockContainer(body, ctx, blocks, isBody: true);
 
         // Финальный sectPr
@@ -260,6 +362,7 @@ public sealed partial class DocxReader
         _doc.Sections.Add(new Section { Props = finalProps, Blocks = blocks });
 
         AppendEndnotes(blocks);
+        AppendCommentList(blocks);
 
         // Разделы, завершённые абзацами с sectPr: разрезаем общий список
         SplitSections();
@@ -465,6 +568,9 @@ public sealed partial class DocxReader
         if (dts is > 1) _doc.DefaultTabStop = dts.Value;
         _doc.EvenAndOddHeaders = x.Root.Element(W + "evenAndOddHeaders") is { } e && IsOnVal(e);
         _doc.MirrorMargins = x.Root.Element(W + "mirrorMargins") is { } mm && IsOnVal(mm);
+        // Вид исправлений: w:revisionView w:markup/w:insDel = 0 — без разметки
+        var rv = x.Root.Element(W + "revisionView");
+        _settingsMarkup = !(rv != null && ((string?)rv.Attribute(W + "markup") is "0" or "false" || (string?)rv.Attribute(W + "insDel") is "0" or "false"));
         _footPrDefault = x.Root.Element(W + "footnotePr");
         _endPrDefault = x.Root.Element(W + "endnotePr");
     }
@@ -881,7 +987,7 @@ public sealed partial class DocxReader
                     carry = null;
                 }
                 // Удалённый знак абзаца (исправления): текст продолжается в следующем абзаце
-                if (el.Element(W + "pPr")?.Element(W + "rPr")?.Element(W + "del") != null && para.Section == null
+                if (!_markup && el.Element(W + "pPr")?.Element(W + "rPr")?.Element(W + "del") != null && para.Section == null
                     && el.ElementsAfterSelf().FirstOrDefault()?.Name == W + "p")
                 {
                     carry = para;
@@ -918,7 +1024,7 @@ public sealed partial class DocxReader
     /// Рамка-абзац w:framePr (не буквица) с обтеканием — плавающий блок у левого или правого края.
     /// Без обтекания (wrap="none"/"notBeside") абзац остаётся в потоке.
     /// </summary>
-    double _bodyMarginLeft = 85.05;
+    double _bodyMarginLeft = 85.05, _bodyContentWidth = 467.7;
 
     FloatBlock? FrameFloat(XElement? fp)
     {
@@ -1256,8 +1362,33 @@ public sealed partial class DocxReader
             {
                 if ((string?)el.Attribute(W + "name") is { Length: > 0 } bm) (st.Bookmarks ??= []).Add(bm);
             }
-            else if (n == W + "ins" || n == W + "moveTo" || n == W + "smartTag" || n == W + "customXml" || n == W + "dir" || n == W + "bdo")
+            else if (n == W + "dir" || n == W + "bdo")
+            {
+                // Явное направление: w:dir — встраивание (RLE/LRE), w:bdo — переопределение (RLO/LRO); в конце — PDF
+                bool rtlDir = (string?)el.Attribute(W + "val") == "rtl";
+                var cst = ToTextStyle(st.BaseR);
+                string open = n == W + "dir" ? (rtlDir ? "\u202B" : "\u202A") : (rtlDir ? "\u202E" : "\u202D");
+                output.Add(new TextInline(open, cst));
                 ParseInlineContainer(el, st, output);
+                output.Add(new TextInline("\u202C", cst));
+            }
+            else if ((n == W + "ins" || n == W + "moveTo" || n == W + "del" || n == W + "moveFrom") && _markup)
+            {
+                // Исправление с разметкой: цвет автора, подчёркивание/зачёркивание
+                int saveRev = _revision; string saveAuthor = _revisionAuthor;
+                _revision = n == W + "ins" ? 1 : n == W + "del" ? 2 : n == W + "moveFrom" ? 3 : 4;
+                _revisionAuthor = (string?)el.Attribute(W + "author") ?? "";
+                ParseInlineContainer(el, st, output);
+                _revision = saveRev; _revisionAuthor = saveAuthor;
+            }
+            else if (n == W + "ins" || n == W + "moveTo" || n == W + "smartTag" || n == W + "customXml")
+                ParseInlineContainer(el, st, output);
+            else if (n == W + "commentRangeStart" && _commentMode != null)
+            {
+                if ((string?)el.Attribute(W + "id") is { } cid && _comments.ContainsKey(cid)) _activeComments.Add(cid);
+            }
+            else if (n == W + "commentRangeEnd")
+                _activeComments.Remove((string?)el.Attribute(W + "id") ?? "");
             else if (n == W + "sdt")
             {
                 var c = el.Element(W + "sdtContent");
@@ -1270,7 +1401,7 @@ public sealed partial class DocxReader
             }
             else if (n == M + "oMathPara" || n == M + "oMath")
             {
-                // Формулы OMML — линейная запись с индексами
+                // Формулы OMML — двумерная вёрстка (дроби, индексы, корни, матрицы …)
                 if (!st.Suppressed)
                 {
                     var rr = ResolveRunProps(st.BaseR, null);
@@ -1350,7 +1481,7 @@ public sealed partial class DocxReader
     void ParseRun(XElement r, RunState st, List<Inline> output)
     {
         var rp = ResolveRunProps(st.BaseR, ParseRPr(r.Element(W + "rPr")));
-        var style = ToTextStyle(rp, st.Link);
+        var style = Decorate(ToTextStyle(rp, st.Link));
         bool hidden = rp.Vanish == true;
 
         foreach (var el in r.Elements())
@@ -1377,13 +1508,13 @@ public sealed partial class DocxReader
                     else if (HyperlinkTarget(instr) is { } target)
                     {
                         f.SetsLink = true; f.PrevLink = st.Link; st.Link = target;
-                        style = ToTextStyle(rp, st.Link);
+                        style = Decorate(ToTextStyle(rp, st.Link));
                     }
                 }
                 else if (type == "end" && st.Fields.Count > 0)
                 {
                     var f = st.Fields.Pop();
-                    if (f.SetsLink) { st.Link = f.PrevLink; style = ToTextStyle(rp, st.Link); }
+                    if (f.SetsLink) { st.Link = f.PrevLink; style = Decorate(ToTextStyle(rp, st.Link)); }
                     if (!f.InResult && !f.Emitted && !st.Suppressed)
                     {
                         var fi = MakeField(f.Instr.ToString().Trim(), f.Style ?? style);
@@ -1402,7 +1533,17 @@ public sealed partial class DocxReader
             if (st.Suppressed || hidden) continue;
             if (ParseNoteElement(el, style, output)) continue;
 
-            if (n == W + "t") { if (el.Value.Length > 0) AddScriptText(el.Value, rp, style, st.Link, output); }
+            if (n == W + "t" || (n == W + "delText" && _markup && _revision is 2 or 3)) { if (el.Value.Length > 0) AddScriptText(el.Value, rp, style, st.Link, output); }
+            else if (n == W + "commentReference" && _commentMode != null)
+            {
+                // Место примечания: выноска (на поле) или номер [n] (список в конце)
+                if ((string?)el.Attribute(W + "id") is { } cid && _comments.TryGetValue(cid, out var info))
+                {
+                    if (info.Number == 0) { info.Number = _commentList.Count + 1; _commentList.Add(info); }
+                    if (_commentMode == "balloons") output.Add(new CommentInline(info, style));
+                    else output.Add(new TextInline($"[{info.Number}]", style with { VertAlign = 1, Color = info.Color, Underline = false, Strike = false }));
+                }
+            }
             else if (n == W + "tab") output.Add(new TabInline(style));
             else if (n == W + "ptab")
                 output.Add(new TabInline(style)
@@ -1462,7 +1603,7 @@ public sealed partial class DocxReader
         cp.Bold = rp.BoldCs ?? false;
         cp.Italic = rp.ItalicCs ?? false;
         if (rp.FontCs != null) { cp.FontAscii = cp.FontHAnsi = cp.FontEastAsia = rp.FontCs; cp.ThemeAscii = cp.ThemeHAnsi = cp.ThemeEastAsia = null; }
-        var csStyle = ToTextStyle(cp, link);
+        var csStyle = Decorate(ToTextStyle(cp, link));
         if (allCs) { output.Add(new TextInline(text, csStyle)); return; }
         int start = 0;
         bool? curCs = null;

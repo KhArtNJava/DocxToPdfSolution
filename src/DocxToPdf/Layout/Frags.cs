@@ -65,8 +65,11 @@ public sealed class Piece
     public FieldKind? Field;
     /// <summary>Для PAGEREF — имя закладки.</summary>
     public string? FieldArg;
+    /// <summary>Место примечания (выноска на правом поле).</summary>
+    public CommentInfo? Comment;
     /// <summary>Направление: 0 — нейтральный, 1 — слева направо, 2 — справа налево.</summary>
-    public int Dir;
+    /// <summary>Уровень встраивания bidi (нечётный — справа налево).</summary>
+    public byte Level;
     /// <summary>Разрыв колонки (а не страницы).</summary>
     public bool ColumnBreak;
     /// <summary>Текст сноски, на которую ссылается этот фрагмент.</summary>
@@ -117,6 +120,9 @@ public sealed class LineFrag : Frag
 
         double baseY = y + TopPad + Baseline;
         double lx = x + Left;
+
+        // Черта изменений на левом поле у строк с исправлениями
+        if (Pieces.Any(p => p.Style.RevisionMark)) c.Line(x - 8, y, x - 8, y + Height, 0.75, Rgb.Black);
 
         // Барная табуляция: вертикальная черта на всю высоту строки (позиция — от левого поля)
         foreach (var t in Para.Tabs)
@@ -207,7 +213,7 @@ public sealed class LineFrag : Frag
         {
             var p = Pieces[i];
             double px = lx + p.X;
-            if (p.Kind == PieceKind.Image && p.Image is { } obj && (obj.Shape != null || obj.Content != null || obj.Children != null || obj.Chart != null))
+            if (p.Kind == PieceKind.Image && p.Image is { } obj && (obj.Shape != null || obj.Content != null || obj.Children != null || obj.Chart != null || obj.Math != null))
             {
                 // Фигура, надпись или группа: рамка неповёрнутая, поворот вокруг центра
                 double sh = p.Ascent + p.Descent, sk = obj.Width > 0 ? p.Width / obj.Width : 1;
@@ -670,6 +676,8 @@ public sealed class BoxFrag : Frag
 public sealed class GroupFrag : Frag
 {
     public List<(Frag Frag, double X, double Y)> Items = [];
+    /// <summary>Объекты с привязкой к странице/полям: верх объекта в группе (без MarginTop) и его высота.</summary>
+    public List<(FloatBlock Fb, double Top, double Height)> AbsFloats = [];
     public override IEnumerable<List<Block>> Notes => Items.SelectMany(i => i.Frag.Notes);
 
     public override void Draw(PdfCanvas c, double x, double y)

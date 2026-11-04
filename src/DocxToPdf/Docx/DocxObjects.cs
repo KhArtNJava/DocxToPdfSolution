@@ -285,7 +285,16 @@ public sealed partial class DocxReader
             sh.Gradient = gs.Elements(A + "gs").Select(g => (EmuRaw(g.Attribute("pos")) / 100000, DrawingColor(g) ?? Rgb.White))
                 .OrderBy(t => t.Item1).ToList();
             sh.GradientAngle = EmuRaw(gf.Element(A + "lin")?.Attribute("ang")) / 60000;
-            if (gf.Element(A + "path") != null) sh.GradientAngle = 90;
+            if (gf.Element(A + "path") is { } gpath)
+            {
+                // Радиальный: центр — середина fillToRect (отступы от краёв в долях 100000)
+                sh.GradientRadial = true;
+                var ftr = gpath.Element(A + "fillToRect");
+                double l = EmuRaw(ftr?.Attribute("l")) / 100000, t = EmuRaw(ftr?.Attribute("t")) / 100000;
+                double r = EmuRaw(ftr?.Attribute("r")) / 100000, b = EmuRaw(ftr?.Attribute("b")) / 100000;
+                if (ftr == null) { l = r = t = b = 0.5; }
+                sh.GradientCx = (l + (1 - r)) / 2; sh.GradientCy = (t + (1 - b)) / 2;
+            }
             sh.Fill = sh.Gradient.Count > 0 ? sh.Gradient[0].Color : null;
             if (sh.Gradient.Count < 2) sh.Gradient = null;
         }
@@ -493,21 +502,62 @@ public sealed partial class DocxReader
             e?.Descendants().FirstOrDefault(d => d.Name.LocalName is "strCache" or "numCache")?.Elements(CH + "pt")
                 .OrderBy(pt => (int)EmuRaw(pt.Attribute("idx"))).Select(pt => (string?)pt.Element(CH + "v") ?? "").ToList() ?? [];
 
-        foreach (var ser in kind.Elements(CH + "ser"))
+        // Все группы рядов (комбинированная диаграмма: например, столбцы на основной оси и график на вторичной)
+        var valAxes = plot.Elements(CH + "valAx").ToList();
+        string[] autoMarkers = ["diamond", "square", "triangle", "x", "star", "circle", "plus", "dash"];
+        int markerIdx = 0;
+        foreach (var group in plot.Elements().Where(e => e.Name.LocalName.EndsWith("Chart")))
         {
-            var cs = new ChartSeries
+            string gn = group.Name.LocalName;
+            string gtype = gn switch
             {
-                Name = string.Concat(ser.Element(CH + "tx")?.Descendants(CH + "v").Select(v => v.Value) ?? []),
-                Color = DrawingColor(ser.Element(CH + "spPr")?.Element(A + "solidFill"))
-                        ?? DrawingColor(ser.Element(CH + "spPr")?.Element(A + "ln")?.Element(A + "solidFill")),
+                "barChart" or "bar3DChart" => (string?)group.Element(CH + "barDir")?.Attribute("val") == "bar" ? "bar" : "col",
+                "lineChart" or "line3DChart" or "stockChart" or "radarChart" => "line",
+                "areaChart" or "area3DChart" => "area",
+                "pieChart" or "pie3DChart" or "ofPieChart" => "pie",
+                "doughnutChart" => "doughnut",
+                "scatterChart" or "bubbleChart" => "scatter",
+                _ => "col"
             };
-            var vals = Cache(ser.Element(CH + "val") ?? ser.Element(CH + "yVal"));
-            cs.Values = vals.Select(v => double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : 0).ToList();
-            foreach (var dpt in ser.Elements(CH + "dPt"))
-                if (DrawingColor(dpt.Element(CH + "spPr")?.Element(A + "solidFill")) is { } pc)
-                    cs.PointColors[(int)EmuRaw(dpt.Element(CH + "idx")?.Attribute("val"))] = pc;
-            if (spec.Categories.Count == 0) spec.Categories = Cache(ser.Element(CH + "cat") ?? ser.Element(CH + "xVal"));
-            spec.Series.Add(cs);
+            if (gn.Contains("3D")) spec.ThreeD = true;
+            string grouping = (string?)group.Element(CH + "grouping")?.Attribute("val") ?? (gtype is "col" or "bar" ? "clustered" : "standard");
+            // Вторичная ось: ось значений группы справа (или пересекающая по максимуму)
+            var axIds = group.Elements(CH + "axId").Select(a => (string?)a.Attribute("val")).ToHashSet();
+            var vax = valAxes.FirstOrDefault(v => axIds.Contains((string?)v.Element(CH + "axId")?.Attribute("val")));
+            bool secondary = vax != null && valAxes.IndexOf(vax) > 0
+                             && ((string?)vax.Element(CH + "axPos")?.Attribute("val") == "r" || (string?)vax.Element(CH + "crosses")?.Attribute("val") == "max");
+            bool groupMarkers = gtype == "line" && (string?)group.Element(CH + "marker")?.Attribute("val") is "1" or "true";
+            string scatterStyle = (string?)group.Element(CH + "scatterStyle")?.Attribute("val") ?? "lineMarker";
+            foreach (var ser in group.Elements(CH + "ser"))
+            {
+                var cs = new ChartSeries
+                {
+                    Name = string.Concat(ser.Element(CH + "tx")?.Descendants(CH + "v").Select(v => v.Value) ?? []),
+                    Color = DrawingColor(ser.Element(CH + "spPr")?.Element(A + "solidFill"))
+                            ?? DrawingColor(ser.Element(CH + "spPr")?.Element(A + "ln")?.Element(A + "solidFill")),
+                    Type = gtype, Grouping = grouping, Secondary = secondary,
+                };
+                var vals = Cache(ser.Element(CH + "val") ?? ser.Element(CH + "yVal"));
+                cs.Values = vals.Select(v => double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : 0).ToList();
+                foreach (var dpt in ser.Elements(CH + "dPt"))
+                    if (DrawingColor(dpt.Element(CH + "spPr")?.Element(A + "solidFill")) is { } pc)
+                        cs.PointColors[(int)EmuRaw(dpt.Element(CH + "idx")?.Attribute("val"))] = pc;
+                if (spec.Categories.Count == 0) spec.Categories = Cache(ser.Element(CH + "cat") ?? ser.Element(CH + "xVal"));
+                // Маркеры: явный символ ряда; иначе — по умолчанию для «графика с маркерами» и точечной
+                string? sym = (string?)ser.Element(CH + "marker")?.Element(CH + "symbol")?.Attribute("val");
+                bool defaultMarkers = groupMarkers || (gtype == "scatter" && scatterStyle is "lineMarker" or "marker" or "smoothMarker");
+                if (gtype is "line" or "scatter")
+                {
+                    if (sym == "none") cs.Marker = null;
+                    else if (sym != null && sym != "auto") cs.Marker = sym;
+                    else if (defaultMarkers || sym == "auto") cs.Marker = autoMarkers[markerIdx % autoMarkers.Length];
+                    if (cs.Marker != null) markerIdx++;
+                    if (double.TryParse((string?)ser.Element(CH + "marker")?.Element(CH + "size")?.Attribute("val"), NumberStyles.Float, CultureInfo.InvariantCulture, out var ms))
+                        cs.MarkerSize = Math.Clamp(ms, 2, 72);
+                    cs.Line = !(gtype == "scatter" && scatterStyle == "marker") && ser.Element(CH + "spPr")?.Element(A + "ln")?.Element(A + "noFill") == null;
+                }
+                spec.Series.Add(cs);
+            }
         }
         if (spec.Series.Count == 0) return null;
         int count = spec.Series.Max(se => se.Values.Count);
@@ -567,6 +617,33 @@ public sealed partial class DocxReader
         // Обтекание с вертикальной позицией от страницы/полей: объект ставится на своё место на странице
         // (обтекание в потоке возможно только для привязки к абзацу)
         bool absoluteV = vRel is "page" or "margin" or "topMargin" or "bottomMargin" or "insideMargin" or "outsideMargin";
+        if (wrap is "wrapSquare" or "wrapTight" or "wrapThrough" && !behind && absoluteV)
+        {
+            // Привязка к странице/полям с обтеканием: плавающий блок, вертикальное место уточняется после разбивки на страницы
+            // По горизонтали: заданная координата; объект «прижимается» к той стороне, где меньше места (текст идёт с другой)
+            double xRel = hRel == "page" ? hOff - _bodyMarginLeft : hOff;
+            string sideA = hAlign switch { "right" or "outside" => "right", "left" or "inside" => "left", "center" => "left", _ => xRel + w / 2 > _bodyContentWidth / 2 ? "right" : "left" };
+            double mlA = sideA == "left" && hAlign == null ? Math.Max(0, xRel) : hAlign == "center" ? Math.Max(0, (_bodyContentWidth - w) / 2) : 0;
+            double mrA = sideA == "right" && hAlign == null ? Math.Max(0, _bodyContentWidth - xRel - w) : 0;
+            var fallback = new PositionedBlock
+            {
+                Width = w, Box = box, Blocks = content, ZIndex = 1,
+                HRel = hRel switch { "page" => "page", "character" or "paragraph" => "flow", _ => "margin" },
+                VRel = vRel == "page" ? "page" : "margin",
+                AlignX = hAlign, AlignY = vAlign, Left = hAlign == null ? hOff : null, Top = vAlign == null ? vOff : null,
+            };
+            var wpA = a.Elements().FirstOrDefault(e => e.Name.LocalName is "wrapTight" or "wrapThrough")?.Element(WP + "wrapPolygon");
+            var ptsA = wpA?.Elements().Where(e => e.Name.LocalName is "start" or "lineTo")
+                .Select(e => (EmuRaw(e.Attribute("x")) / 21600.0, EmuRaw(e.Attribute("y")) / 21600.0)).ToList();
+            (_pending ?? []).Add(new FloatBlock
+            {
+                Side = sideA, Width = w, Box = box, Blocks = content,
+                MarginBottom = dB, MarginLeft = mlA + (sideA == "right" ? dL : 0), MarginRight = sideA == "left" ? dR : mrA,
+                WrapPolygon = ptsA is { Count: >= 3 } ? ptsA : null, WrapGap = Math.Max(dL, dR) > 0 ? Math.Max(dL, dR) : 9,
+                AbsVRel = vRel, AbsVAlign = vAlign, AbsVOffset = vOff, AbsFallback = fallback,
+            });
+            return;
+        }
         if (wrap is "wrapSquare" or "wrapTight" or "wrapThrough" && !behind && !absoluteV)
         {
             // Обтекание: плавающий блок у левого или правого края
@@ -579,6 +656,22 @@ public sealed partial class DocxReader
             };
             double ml = side == "left" && hAlign == null && hRel is "margin" or "column" ? Math.Max(0, hOff) : 0;
             double mt = vRel is "paragraph" or "line" && vAlign == null ? Math.Max(0, vOff) : 0;
+            // «По контуру»/«сквозное»: многоугольник обтекания (единицы 21600 от размера объекта); поля — вокруг контура
+            var wp = a.Elements().FirstOrDefault(e => e.Name.LocalName is "wrapTight" or "wrapThrough")?.Element(WP + "wrapPolygon");
+            if (wp != null)
+            {
+                var pts = wp.Elements().Where(e => e.Name.LocalName is "start" or "lineTo")
+                    .Select(e => (EmuRaw(e.Attribute("x")) / 21600.0, EmuRaw(e.Attribute("y")) / 21600.0)).ToList();
+                if (pts.Count >= 3)
+                {
+                    (_pending ?? []).Add(new FloatBlock
+                    {
+                        Side = side, Width = w, Box = box, Blocks = content, MarginTop = mt, MarginBottom = dB, MarginLeft = ml,
+                        WrapPolygon = pts, WrapGap = Math.Max(dL, dR) > 0 ? Math.Max(dL, dR) : 9,
+                    });
+                    return;
+                }
+            }
             AddFloat(side, w, h, content, box, mt, dB, ml + (side == "right" ? dL : 0), side == "left" ? dR : 0);
             return;
         }
@@ -628,6 +721,15 @@ public sealed partial class DocxReader
     //  VML: картинки, надписи, WordArt (водяные знаки)
     // ================================================================
 
+    /// <summary>Шаблон фигуры VML (v:shapetype) по ссылке type="#id": ищется в документе, содержащем фигуру.</summary>
+    static XElement? VmlShapeType(XElement pict, string? type)
+    {
+        if (string.IsNullOrEmpty(type)) return null;
+        string id = type.TrimStart('#');
+        var root = pict.Document?.Root ?? pict.AncestorsAndSelf().Last();
+        return root.Descendants(V + "shapetype").FirstOrDefault(t => (string?)t.Attribute("id") == id);
+    }
+
     static Dictionary<string, string> CssMap(string css) =>
         css.Split(';').Select(p => p.Split(':', 2)).Where(kv => kv.Length == 2)
            .GroupBy(kv => kv[0].Trim().ToLowerInvariant()).ToDictionary(g => g.Key, g => g.Last()[1].Trim());
@@ -648,7 +750,7 @@ public sealed partial class DocxReader
 
     void ParseVml(XElement pict, RunState st, TextStyle style, List<Inline> output)
     {
-        foreach (var shape in pict.Elements().Where(e => e.Name.Namespace == V && e.Name.LocalName is "shape" or "rect" or "roundrect" or "oval" or "line"))
+        foreach (var shape in pict.Elements().Where(e => e.Name.Namespace == V && e.Name.LocalName is "shape" or "rect" or "roundrect" or "oval" or "line" or "polyline"))
         {
             var css = CssMap((string?)shape.Attribute("style") ?? "");
             double w = CssLength((string?)shape.Attribute("style") ?? "", "width"), h = CssLength((string?)shape.Attribute("style") ?? "", "height");
@@ -712,10 +814,11 @@ public sealed partial class DocxReader
                 p.Inlines.AddRange(tmp);
                 content = [p];
             }
-            else if (shape.Name.LocalName is "rect" or "roundrect" or "oval" or "line"
-                     || (shape.Name.LocalName == "shape" && ((string?)shape.Attribute("type") ?? "").Replace("#", "") is "_x0000_t32" or "_x0000_t202" or "_x0000_t1" or "" && shape.Element(V + "path") == null))
+            else if (shape.Name.LocalName is "rect" or "roundrect" or "oval" or "line" or "polyline" or "shape")
             {
-                // Фигура VML без текста
+                // Фигура VML без текста: стандартная, произвольный контур (path, в т. ч. из v:shapetype) или ломаная
+                var stype = VmlShapeType(pict, (string?)shape.Attribute("type"));
+                string? A(string n) => (string?)shape.Attribute(n) ?? (string?)stype?.Attribute(n);
                 var sh = new ShapeSpec
                 {
                     Geom = shape.Name.LocalName switch
@@ -724,12 +827,46 @@ public sealed partial class DocxReader
                         _ => ((string?)shape.Attribute("type") ?? "").EndsWith("t32") ? "line" : "rect"
                     },
                 };
-                bool filled = (string?)shape.Attribute("filled") is not ("f" or "false") && sh.Geom != "line";
-                if (filled) sh.Fill = VmlColor((string?)shape.Attribute("fillcolor")) ?? Rgb.White;
-                if ((string?)shape.Attribute("stroked") is not ("f" or "false"))
+                if (shape.Name.LocalName == "polyline")
                 {
-                    sh.Stroke = VmlColor((string?)shape.Attribute("strokecolor")) ?? Rgb.Black;
-                    double swv = CssLength("w:" + ((string?)shape.Attribute("strokeweight") ?? "0.75pt"), "w");
+                    // points="x1,y1 x2,y2 …" (единицы CSS) → доли рамки по габаритам точек
+                    var nums = ((string?)shape.Attribute("points") ?? "").Split([',', ' '], StringSplitOptions.RemoveEmptyEntries)
+                        .Select(v => CssLength("v:" + v, "v")).ToList();
+                    if (nums.Count >= 4)
+                    {
+                        double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+                        for (int i = 0; i + 1 < nums.Count; i += 2) { minX = Math.Min(minX, nums[i]); maxX = Math.Max(maxX, nums[i]); minY = Math.Min(minY, nums[i + 1]); maxY = Math.Max(maxY, nums[i + 1]); }
+                        double pw = Math.Max(0.01, maxX - minX), ph = Math.Max(0.01, maxY - minY);
+                        var cp = new CustomPath();
+                        for (int i = 0; i + 1 < nums.Count; i += 2) cp.Commands.Add((i == 0 ? 'M' : 'L', [(nums[i] - minX) / pw, (nums[i + 1] - minY) / ph]));
+                        sh.Geom = "custom"; sh.Paths = [cp];
+                        if (w <= 0) w = pw; if (h <= 0) h = ph;
+                    }
+                }
+                else if (shape.Name.LocalName == "shape" && (A("path") ?? (string?)shape.Element(V + "path")?.Attribute("v") ?? (string?)stype?.Element(V + "path")?.Attribute("v")) is { Length: > 0 } vpath)
+                {
+                    // Система координат фигуры, параметры adj и формулы
+                    var cs = (A("coordsize") ?? "21600,21600").Split(',');
+                    var co = (A("coordorigin") ?? "0,0").Split(',');
+                    double P0(string[] a, int i, double d) => i < a.Length && double.TryParse(a[i], NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : d;
+                    double cw = P0(cs, 0, 21600), chh = P0(cs, 1, 21600), ox = P0(co, 0, 0), oy = P0(co, 1, 0);
+                    var adjDef = ((string?)stype?.Attribute("adj") ?? "").Split(',');
+                    var adjOwn = ((string?)shape.Attribute("adj") ?? "").Split(',');
+                    var adj = new double[Math.Max(adjDef.Length, adjOwn.Length)];
+                    for (int i = 0; i < adj.Length; i++)
+                        adj[i] = i < adjOwn.Length && adjOwn[i].Length > 0 ? P0(adjOwn, i, 0) : P0(adjDef, i, 0);
+                    var eqns = (shape.Element(V + "formulas") ?? stype?.Element(V + "formulas"))?.Elements(V + "f")
+                        .Select(f => (string?)f.Attribute("eqn") ?? "").ToList() ?? [];
+                    var formulas = VmlPath.EvalFormulas(eqns, adj, cw, chh, ox, oy);
+                    if (VmlPath.Parse(vpath, cw, chh, ox, oy, formulas) is { } paths) { sh.Geom = "custom"; sh.Paths = paths; }
+                }
+                else if (shape.Name.LocalName == "shape" && shape.Elements().Any(e => e.Name.LocalName is "textbox" or "imagedata" or "textpath")) continue;
+                bool filled = A("filled") is not ("f" or "false") && sh.Geom != "line";
+                if (filled) sh.Fill = VmlColor(A("fillcolor")) ?? Rgb.White;
+                if (A("stroked") is not ("f" or "false"))
+                {
+                    sh.Stroke = VmlColor(A("strokecolor")) ?? Rgb.Black;
+                    double swv = CssLength("w:" + (A("strokeweight") ?? "0.75pt"), "w");
                     sh.StrokeWidth = swv > 0 ? swv : 0.75;
                     var stroke = shape.Element(V + "stroke");
                     string ds = (string?)stroke?.Attribute("dashstyle") ?? "solid";
@@ -758,7 +895,21 @@ public sealed partial class DocxReader
             }
 
             string wrapType = (string?)shape.Element(W10 + "wrap")?.Attribute("type") ?? (absolute ? "none" : "inline");
-            if (!absolute || wrapType is "square" or "tight" or "through")
+            if (!absolute)
+            {
+                // Надпись (или WordArt) в строке — строчный элемент, как надпись DrawingML
+                double vdeg = css.TryGetValue("rotation", out var rs2) && double.TryParse(rs2.Replace("fd", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out var d2)
+                    ? (rs2.EndsWith("fd") ? d2 / 65536 : d2) : 0;
+                var tbi = new ImageInline("", w, Math.Max(h, 1), style) { Content = content, Box = box, FrameW = w, FrameH = Math.Max(h, 1), Rotation = vdeg };
+                if (vdeg != 0)
+                {
+                    double ra = vdeg * Math.PI / 180, ca = Math.Abs(Math.Cos(ra)), sa = Math.Abs(Math.Sin(ra));
+                    tbi.Width = w * ca + h * sa; tbi.Height = w * sa + h * ca;
+                }
+                output.Add(tbi);
+                continue;
+            }
+            if (wrapType is "square" or "tight" or "through")
             {
                 string side = css.TryGetValue("mso-position-horizontal", out var mh) && mh is "right" or "outside" ? "right" : "left";
                 (_pending ?? []).Add(new FloatBlock { Side = side, Width = w, Box = box, Blocks = content, Transform = rot, MarginRight = side == "left" ? 9 : 0, MarginLeft = side == "right" ? 9 : 0 });

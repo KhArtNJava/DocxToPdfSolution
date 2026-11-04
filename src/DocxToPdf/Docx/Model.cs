@@ -251,6 +251,8 @@ public sealed record TextStyle
     /// <summary>Цвет подчёркивания (w:u w:color); null — цвет текста.</summary>
     public Rgb? UnderlineColor { get; init; }
     public bool DoubleStrike { get; init; }
+    /// <summary>Фрагмент исправления (вставка/удаление/перемещение) — черта изменений на левом поле.</summary>
+    public bool RevisionMark { get; init; }
     /// <summary>Знаки ударения (w:em): dot, comma, circle — над символами, underDot — под ними.</summary>
     public string? Emphasis { get; init; }
     public bool Strike { get; init; }
@@ -341,6 +343,11 @@ public sealed class ImageInline(string partName, double width, double height, Te
     public bool Grayscale;
     /// <summary>Диаграмма (c:chart).</summary>
     public ChartSpec? Chart;
+    /// <summary>Формула OMML (двумерная вёрстка); Display — отдельной строкой (m:oMathPara).</summary>
+    public MathNode? Math;
+    public bool MathDisplay;
+    /// <summary>Глубина формулы под базовой линией (заполняется при вёрстке).</summary>
+    public double MathDescent;
     public bool HasGeometry => CropL != 0 || CropT != 0 || CropR != 0 || CropB != 0 || Rotation != 0 || FlipH || FlipV;
 }
 
@@ -360,6 +367,9 @@ public sealed class ShapeSpec
     /// <summary>Градиентная заливка: опорные точки (0…1) и угол направления (градусы, по часовой от оси x).</summary>
     public List<(double Pos, Rgb Color)>? Gradient;
     public double GradientAngle;
+    /// <summary>Радиальный градиент (a:path circle/rect/shape): центр (доли рамки), иначе — линейный.</summary>
+    public bool GradientRadial;
+    public double GradientCx = 0.5, GradientCy = 0.5;
     /// <summary>Первый параметр фигуры (a:avLst adj), в долях 100000; null — по умолчанию.</summary>
     public double? Adj;
 }
@@ -378,6 +388,10 @@ public sealed class ChartSpec
     public string LegendPos = "r";
     public bool Gridlines = true;
     public bool DataLabels;
+    /// <summary>Объёмный вид (bar3DChart, pie3DChart …).</summary>
+    public bool ThreeD;
+    /// <summary>Есть ряды на вторичной оси значений (справа).</summary>
+    public bool HasSecondary => Series.Any(s => s.Secondary);
 }
 
 public sealed class ChartSeries
@@ -385,6 +399,16 @@ public sealed class ChartSeries
     public string Name = "";
     public List<double> Values = [];
     public Rgb? Color;
+    /// <summary>Тип ряда (у комбинированных диаграмм свой у каждой группы): col, bar, line, area, scatter, pie …</summary>
+    public string Type = "col";
+    public string Grouping = "clustered";
+    /// <summary>Ряд на вторичной оси значений.</summary>
+    public bool Secondary;
+    /// <summary>Маркер точек: circle, square, diamond, triangle, x, star, plus, dash, dot; null — без маркеров.</summary>
+    public string? Marker;
+    public double MarkerSize = 5;
+    /// <summary>Соединять точки линией (точечная диаграмма может быть только с маркерами).</summary>
+    public bool Line = true;
     /// <summary>Цвета отдельных точек (круговая диаграмма, c:dPt).</summary>
     public Dictionary<int, Rgb> PointColors = [];
 }
@@ -395,6 +419,52 @@ public sealed class CustomPath
     public List<(char Cmd, double[] Pts)> Commands = [];
     public bool Fill = true, Stroke = true;
 }
+
+/// <summary>Параметры чтения DOCX: показ исправлений и примечаний.</summary>
+public sealed class DocxOptions
+{
+    /// <summary>auto (как в настройках документа; по умолчанию — с разметкой), final — итоговый вид, markup — с разметкой.</summary>
+    public string Revisions = "auto";
+    /// <summary>auto (выноски, если позволяет правое поле, иначе — список в конце), balloons, end, none.</summary>
+    public string Comments = "auto";
+}
+
+/// <summary>Примечание (w:comment): номер, автор, текст; цвет автора.</summary>
+public sealed class CommentInfo
+{
+    public int Number;
+    public string Author = "", Initials = "";
+    public List<Block> Blocks = [];
+    public Rgb Color;
+}
+
+/// <summary>Место примечания в тексте (конец диапазона): выноска на правом поле.</summary>
+public sealed class CommentInline(CommentInfo info, TextStyle style) : Inline
+{
+    public CommentInfo Info = info;
+    public TextStyle Style = style;
+}
+
+// ---------------- Формулы (OMML) ----------------
+
+public abstract class MathNode { }
+/// <summary>Последовательность элементов формулы.</summary>
+public sealed class MRow(List<MathNode> items) : MathNode { public List<MathNode> Items = items; }
+/// <summary>Текст формулы: Plain — прямой шрифт (m:sty p, m:nor), иначе буквы курсивом.</summary>
+public sealed class MText(string text, bool plain, bool bold) : MathNode { public string Text = text; public bool Plain = plain, Bold = bold; }
+public sealed class MFrac(MathNode num, MathNode den, string type) : MathNode { public MathNode Num = num, Den = den; public string Type = type; }
+public sealed class MScript(MathNode b, MathNode? sub, MathNode? sup, bool pre) : MathNode { public MathNode Base = b; public MathNode? Sub = sub, Sup = sup; public bool Pre = pre; }
+public sealed class MRad(MathNode? deg, MathNode e) : MathNode { public MathNode? Deg = deg; public MathNode E = e; }
+public sealed class MNary(string chr, MathNode? sub, MathNode? sup, MathNode e, bool undOvr) : MathNode { public string Chr = chr; public MathNode? Sub = sub, Sup = sup; public MathNode E = e; public bool UndOvr = undOvr; }
+public sealed class MDelim(string beg, string end, string sep, List<MathNode> items) : MathNode { public string Beg = beg, End = end, Sep = sep; public List<MathNode> Items = items; }
+public sealed class MMatrix(List<List<MathNode>> rows) : MathNode { public List<List<MathNode>> Rows = rows; }
+public sealed class MFunc(MathNode name, MathNode e) : MathNode { public MathNode Name = name, E = e; }
+public sealed class MAcc(string chr, MathNode e) : MathNode { public string Chr = chr; public MathNode E = e; }
+public sealed class MBar(bool top, MathNode e) : MathNode { public bool Top = top; public MathNode E = e; }
+public sealed class MGroupChr(string chr, bool top, MathNode e) : MathNode { public string Chr = chr; public bool Top = top; public MathNode E = e; }
+public sealed class MLim(MathNode e, MathNode lim, bool upper) : MathNode { public MathNode E = e, Lim = lim; public bool Upper = upper; }
+public sealed class MEqArr(List<MathNode> rows) : MathNode { public List<MathNode> Rows = rows; }
+public sealed class MBox(MathNode e, bool border) : MathNode { public MathNode E = e; public bool Border = border; }
 
 public enum FieldKind { Page, NumPages, PageRef }
 
@@ -572,6 +642,17 @@ public sealed class FloatBlock : Block
     public List<Block> Blocks = [];
     /// <summary>Для рамок w:framePr: подпись свойств рамки (соседние абзацы с той же рамкой объединяются).</summary>
     public string? FrameKey;
+    /// <summary>Обтекание по контуру (wp:wrapPolygon): точки в долях рамки; расстояние от контура до текста, pt.</summary>
+    public List<(double X, double Y)>? WrapPolygon;
+    public double WrapGap;
+    /// <summary>
+    /// Обтекаемый объект, привязанный по вертикали к странице/полям: положение (VRel, выравнивание, смещение) уточняется
+    /// после разбивки на страницы (MarginTop — сдвиг от абзаца привязки); если сдвинуть нельзя — выводится AbsFallback без обтекания.
+    /// </summary>
+    public string? AbsVRel, AbsVAlign;
+    public double AbsVOffset;
+    public PositionedBlock? AbsFallback;
+    public bool UseFallback;
 }
 
 /// <summary>Абсолютно/фиксированно позиционированный блок (вне потока).</summary>
@@ -693,6 +774,8 @@ public sealed class DocxDocument
     public bool EvenAndOddHeaders;
     /// <summary>Зеркальные поля (w:mirrorMargins): на чётных страницах левое и правое поля меняются местами.</summary>
     public bool MirrorMargins;
+    /// <summary>Примечания выводятся выносками на правом поле.</summary>
+    public bool CommentBalloons;
     /// <summary>Цвет фона страниц (w:background).</summary>
     public Rgb? Background;
     public double DefaultTabStop = 35.4;

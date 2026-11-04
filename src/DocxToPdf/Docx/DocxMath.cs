@@ -2,130 +2,117 @@ using System.Xml.Linq;
 
 namespace DocxToPdf.Docx;
 
-/// <summary>Формулы Office Math (OMML) → линейная запись: дроби, индексы, корни, скобки, суммы, матрицы.</summary>
+/// <summary>Формулы Office Math (OMML) → дерево для двумерной вёрстки (Layout/MathLayout.cs).</summary>
 public sealed partial class DocxReader
 {
     static string MVal(XElement? e, string name) => (string?)e?.Element(M + name)?.Attribute(M + "val") ?? "";
+    static bool MHas(XElement? e, string name) => e?.Element(M + name) != null;
+    static bool MOn(XElement? e, string name) => e?.Element(M + name) is { } x && (string?)x.Attribute(M + "val") is null or "1" or "on" or "true";
 
-    /// <summary>«Простое» выражение — без скобок в линейной записи (одна буква/число).</summary>
-    static bool SimpleMath(XElement? e)
+    /// <summary>Содержимое элемента (m:e, m:num …) как строка формулы.</summary>
+    MathNode MathRow(XElement? e)
     {
-        if (e == null) return true;
-        var runs = e.Elements().ToList();
-        if (runs.Count != 1 || runs[0].Name != M + "r") return false;
-        string t = string.Concat(runs[0].Elements(M + "t").Select(x => x.Value));
-        return t.Length <= 3 && t.All(char.IsLetterOrDigit);
+        var items = new List<MathNode>();
+        if (e != null)
+            foreach (var c in e.Elements())
+                if (MathElement(c) is { } node) items.Add(node);
+        return items.Count == 1 ? items[0] : new MRow(items);
     }
 
+    MathNode? MathElement(XElement c)
+    {
+        var n = c.Name;
+        if (n.Namespace == W)
+        {
+            // Обычные фрагменты внутри формулы
+            if (n == W + "r") { var t = string.Concat(c.Elements(W + "t").Select(x => x.Value)); return t.Length > 0 ? new MText(t, true, false) : null; }
+            return null;
+        }
+        if (n.Namespace != M) return null;
+        var pr = c.Elements().FirstOrDefault(x => x.Name.LocalName.EndsWith("Pr"));
+        switch (n.LocalName)
+        {
+            case "r":
+            {
+                string t = string.Concat(c.Elements(M + "t").Select(x => x.Value));
+                if (t.Length == 0) return null;
+                var rp = c.Element(M + "rPr");
+                string sty = MVal(rp, "sty");
+                bool plain = sty is "p" or "b" || MHas(rp, "nor");
+                return new MText(t, plain, sty is "b" or "bi");
+            }
+            case "f":
+            {
+                string type = MVal(pr, "type");
+                return new MFrac(MathRow(c.Element(M + "num")), MathRow(c.Element(M + "den")), type.Length > 0 ? type : "bar");
+            }
+            case "sSup": return new MScript(MathRow(c.Element(M + "e")), null, MathRow(c.Element(M + "sup")), false);
+            case "sSub": return new MScript(MathRow(c.Element(M + "e")), MathRow(c.Element(M + "sub")), null, false);
+            case "sSubSup": return new MScript(MathRow(c.Element(M + "e")), MathRow(c.Element(M + "sub")), MathRow(c.Element(M + "sup")), false);
+            case "sPre": return new MScript(MathRow(c.Element(M + "e")), MathRow(c.Element(M + "sub")), MathRow(c.Element(M + "sup")), true);
+            case "rad":
+            {
+                bool hide = MOn(pr, "degHide");
+                var deg = c.Element(M + "deg");
+                return new MRad(hide || deg == null || !deg.HasElements ? null : MathRow(deg), MathRow(c.Element(M + "e")));
+            }
+            case "nary":
+            {
+                string chr = MHas(pr, "chr") ? MVal(pr, "chr") : "∫";
+                bool integral = chr is "∫" or "∬" or "∭" or "∮" or "∯" or "∰";
+                string loc = MVal(pr, "limLoc");
+                bool undOvr = loc.Length > 0 ? loc == "undOvr" : !integral;
+                var sub = MOn(pr, "subHide") ? null : c.Element(M + "sub");
+                var sup = MOn(pr, "supHide") ? null : c.Element(M + "sup");
+                return new MNary(chr, sub is { HasElements: true } ? MathRow(sub) : null, sup is { HasElements: true } ? MathRow(sup) : null,
+                    MathRow(c.Element(M + "e")), undOvr);
+            }
+            case "d":
+            {
+                string beg = MHas(pr, "begChr") ? MVal(pr, "begChr") : "(";
+                string end = MHas(pr, "endChr") ? MVal(pr, "endChr") : ")";
+                string sep = MHas(pr, "sepChr") ? MVal(pr, "sepChr") : "|";
+                return new MDelim(beg, end, sep, c.Elements(M + "e").Select(MathRow).ToList());
+            }
+            case "m":
+                return new MMatrix(c.Elements(M + "mr").Select(r => r.Elements(M + "e").Select(MathRow).ToList()).ToList());
+            case "func": return new MFunc(MathRow(c.Element(M + "fName")), MathRow(c.Element(M + "e")));
+            case "acc": return new MAcc(MHas(pr, "chr") ? MVal(pr, "chr") : "̂", MathRow(c.Element(M + "e")));
+            case "bar": return new MBar(MVal(pr, "pos") == "top", MathRow(c.Element(M + "e")));
+            case "groupChr":
+            {
+                string chr = MHas(pr, "chr") ? MVal(pr, "chr") : "⏟";
+                bool top = MVal(pr, "pos") == "top";
+                return new MGroupChr(chr, top, MathRow(c.Element(M + "e")));
+            }
+            case "limLow": return new MLim(MathRow(c.Element(M + "e")), MathRow(c.Element(M + "lim")), false);
+            case "limUpp": return new MLim(MathRow(c.Element(M + "e")), MathRow(c.Element(M + "lim")), true);
+            case "eqArr": return new MEqArr(c.Elements(M + "e").Select(MathRow).ToList());
+            case "box": return new MBox(MathRow(c.Element(M + "e")), false);
+            case "borderBox": return new MBox(MathRow(c.Element(M + "e")), true);
+            case "phant": return MOn(pr, "show") || pr == null ? MathRow(c.Element(M + "e")) : null;
+            case "oMath": return MathRow(c);
+            default:
+                if (n.LocalName.EndsWith("Pr")) return null;
+                return c.HasElements ? MathRow(c) : null;
+        }
+    }
+
+    /// <summary>Формула (m:oMath / m:oMathPara) → строчные объекты двумерной вёрстки.</summary>
     void MathToInlines(XElement e, TextStyle st, List<Inline> output)
     {
-        void Text(string s, TextStyle? style = null) { if (s.Length > 0) output.Add(new TextInline(s, style ?? st)); }
-        void Arg(XElement? x, TextStyle style) { if (x != null) MathToInlines(x, style, output); }
-        TextStyle Sup(TextStyle s) => s with { VertAlign = s.VertAlign == -1 ? 0 : 1, Size = s.VertAlign != 0 ? s.Size * 0.8 : s.Size };
-        TextStyle Sub(TextStyle s) => s with { VertAlign = s.VertAlign == 1 ? 0 : -1, Size = s.VertAlign != 0 ? s.Size * 0.8 : s.Size };
-        void Wrapped(XElement? x) { if (SimpleMath(x)) Arg(x, st); else { Text("("); Arg(x, st); Text(")"); } }
-
-        foreach (var c in e.Elements())
+        if (e.Name == M + "oMathPara")
         {
-            var n = c.Name;
-            if (n.Namespace == W) { if (n == W + "r") foreach (var t in c.Elements(W + "t")) Text(t.Value); continue; }
-            if (n.Namespace != M) continue;
-            switch (n.LocalName)
+            // Каждая формула блока — отдельной строкой
+            bool first = true;
+            foreach (var om in e.Elements(M + "oMath"))
             {
-                case "r":
-                {
-                    string t = string.Concat(c.Elements(M + "t").Select(x => x.Value));
-                    // Переменные — курсивом, если не задан прямой стиль (m:sty p)
-                    bool plain = MVal(c.Element(M + "rPr"), "sty") == "p" || c.Element(M + "rPr")?.Element(M + "nor") != null;
-                    var rs = st;
-                    if (!plain && t.Any(char.IsLetter) && t.Length <= 2) rs = st with { Italic = true };
-                    Text(t, rs);
-                    break;
-                }
-                case "f":
-                    Wrapped(c.Element(M + "num"));
-                    Text(MVal(c.Element(M + "fPr"), "type") == "lin" ? "/" : "/");
-                    Wrapped(c.Element(M + "den"));
-                    break;
-                case "sSup": Arg(c.Element(M + "e"), st); Arg(c.Element(M + "sup"), Sup(st)); break;
-                case "sSub": Arg(c.Element(M + "e"), st); Arg(c.Element(M + "sub"), Sub(st)); break;
-                case "sSubSup": Arg(c.Element(M + "e"), st); Arg(c.Element(M + "sub"), Sub(st)); Arg(c.Element(M + "sup"), Sup(st)); break;
-                case "sPre": Arg(c.Element(M + "sub"), Sub(st)); Arg(c.Element(M + "sup"), Sup(st)); Arg(c.Element(M + "e"), st); break;
-                case "rad":
-                {
-                    var deg = c.Element(M + "deg");
-                    bool hide = MVal(c.Element(M + "radPr"), "degHide") is "1" or "on" or "true";
-                    if (!hide && deg != null && deg.HasElements) Arg(deg, Sup(st));
-                    Text("√");
-                    Wrapped(c.Element(M + "e"));
-                    break;
-                }
-                case "d":
-                {
-                    var pr = c.Element(M + "dPr");
-                    string beg = pr?.Element(M + "begChr") != null ? MVal(pr, "begChr") : "(";
-                    string end = pr?.Element(M + "endChr") != null ? MVal(pr, "endChr") : ")";
-                    string sep = pr?.Element(M + "sepChr") != null ? MVal(pr, "sepChr") : "|";
-                    Text(beg);
-                    bool first = true;
-                    foreach (var arg in c.Elements(M + "e")) { if (!first) Text(sep); Arg(arg, st); first = false; }
-                    Text(end);
-                    break;
-                }
-                case "nary":
-                {
-                    var pr = c.Element(M + "naryPr");
-                    string chr = pr?.Element(M + "chr") != null ? MVal(pr, "chr") : "∫";
-                    Text(chr, st with { Size = st.Size * 1.2 });
-                    Arg(c.Element(M + "sub"), Sub(st));
-                    Arg(c.Element(M + "sup"), Sup(st));
-                    Text(" ");
-                    Arg(c.Element(M + "e"), st);
-                    break;
-                }
-                case "func": Arg(c.Element(M + "fName"), st); Text(" "); Wrapped(c.Element(M + "e")); break;
-                case "limLow": Arg(c.Element(M + "e"), st); Arg(c.Element(M + "lim"), Sub(st)); break;
-                case "limUpp": Arg(c.Element(M + "e"), st); Arg(c.Element(M + "lim"), Sup(st)); break;
-                case "acc":
-                {
-                    var pr = c.Element(M + "accPr");
-                    string chr = pr?.Element(M + "chr") != null ? MVal(pr, "chr") : "̂";
-                    Arg(c.Element(M + "e"), st);
-                    Text(chr);
-                    break;
-                }
-                case "bar": Arg(c.Element(M + "e"), st); Text("̅"); break;
-                case "eqArr":
-                {
-                    bool first = true;
-                    foreach (var row in c.Elements(M + "e"))
-                    {
-                        if (!first) output.Add(new BreakInline(BreakKind.Line, st));
-                        Arg(row, st);
-                        first = false;
-                    }
-                    break;
-                }
-                case "m":
-                {
-                    Text("[");
-                    bool firstRow = true;
-                    foreach (var mr in c.Elements(M + "mr"))
-                    {
-                        if (!firstRow) Text("; ");
-                        bool firstCell = true;
-                        foreach (var me in mr.Elements(M + "e")) { if (!firstCell) Text("  "); Arg(me, st); firstCell = false; }
-                        firstRow = false;
-                    }
-                    Text("]");
-                    break;
-                }
-                case "rPr" or "ctrlPr" or "oMathParaPr" or "fPr" or "dPr" or "naryPr" or "radPr" or "accPr" or "sSupPr" or "sSubPr" or "funcPr":
-                    break;
-                default:
-                    MathToInlines(c, st, output);   // oMath, e, groupChr, box, borderBox, phant …
-                    break;
+                if (!first) output.Add(new BreakInline(BreakKind.Line, st));
+                first = false;
+                output.Add(new ImageInline("", 0, 0, st) { Math = MathRow(om), MathDisplay = true });
             }
+            return;
         }
+        output.Add(new ImageInline("", 0, 0, st) { Math = MathRow(e), MathDisplay = false });
     }
 }

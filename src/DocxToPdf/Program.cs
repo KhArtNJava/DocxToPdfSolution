@@ -10,12 +10,18 @@ namespace DocxToPdf;
 public static class Converter
 {
     /// <summary>Конвертирует DOCX- или HTML-файл в PDF (формат определяется по содержимому).</summary>
-    public static int Convert(string input, string output, FontManager fonts, HtmlOptions? htmlOptions = null)
+    public static int Convert(string input, string output, FontManager fonts, HtmlOptions? htmlOptions = null, DocxOptions? docxOptions = null)
     {
-        var doc = IsZip(input) ? DocxReader.Read(input) : HtmlReader.Read(input, fonts, htmlOptions);
+        var doc = IsZip(input) ? DocxReader.Read(input, docxOptions) : HtmlReader.Read(input, fonts, htmlOptions);
         var ctx = new LayoutContext(doc, fonts);
+        // Объекты с обтеканием, привязанные к странице/полям, уточняются повторной вёрсткой (до 4 проходов)
         var paginator = new Paginator(ctx);
         var pages = paginator.Run();
+        for (int pass = 0; pass < 3 && paginator.ApplyFloatAdjustments(); pass++)
+        {
+            paginator = new Paginator(ctx);
+            pages = paginator.Run();
+        }
         var pdf = new PdfDocument { Title = doc.Title, Author = doc.Author, Subject = doc.Subject, FontManager = fonts };
         Paginator.Render(pages, pdf, paginator.Destinations);
         foreach (var (name, (page, x, y)) in paginator.Destinations) pdf.Destinations[name] = (page, x, y);
@@ -38,6 +44,7 @@ public static class Program
         var fontDirs = new List<string>();
         string? output = null;
         var html = new HtmlOptions();
+        var docx = new DocxOptions();
         for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
@@ -57,6 +64,8 @@ public static class Program
                     break;
                 case "--page-numbers": html.PageNumbers = true; break;
                 case "--no-remote": html.AllowRemote = false; break;
+                case "--revisions" when i + 1 < args.Length: docx.Revisions = args[++i].ToLowerInvariant(); break;
+                case "--comments" when i + 1 < args.Length: docx.Comments = args[++i].ToLowerInvariant(); break;
                 case "-h" or "--help": PrintUsage(); return 0;
                 default: inputs.Add(args[i]); break;
             }
@@ -81,7 +90,7 @@ public static class Program
             var sw = Stopwatch.StartNew();
             try
             {
-                int pages = Converter.Convert(input, target, fonts, html);
+                int pages = Converter.Convert(input, target, fonts, html, docx);
                 Console.WriteLine($"{input} -> {target}: {pages} стр., {sw.ElapsedMilliseconds} мс");
             }
             catch (Exception e)
@@ -107,7 +116,13 @@ public static class Program
             Опции:
               -o, --output     Выходной PDF (или каталог для нескольких файлов).
                                По умолчанию — рядом с исходным файлом.
-              --fonts <dir>    Дополнительный каталог со шрифтами TTF/TTC (можно несколько раз).
+              --fonts <dir>    Дополнительный каталог со шрифтами TTF/OTF/TTC (можно несколько раз).
+
+            Только для DOCX:
+              --revisions <auto|final|markup>   Исправления: как в настройках документа (по умолчанию — с разметкой),
+                               итоговый вид или с разметкой (вставки, удаления, черта на поле).
+              --comments <auto|balloons|end|none>   Примечания: выноски на правом поле (если поле ≥ 2,5 см),
+                               список в конце документа или не выводить.
 
             Только для HTML (CSS @page имеет приоритет):
               --page-size <A3|A4|A5|Letter|Legal>   Размер страницы (по умолчанию A4).

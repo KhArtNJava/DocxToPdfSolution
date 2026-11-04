@@ -19,7 +19,30 @@ public sealed class BlockLayout(LayoutContext ctx)
         double? NextBottom(double y);
     }
 
-    sealed record FloatBox(string Side, double X0, double X1, double Top, double Bottom);
+    /// <summary>Плавающий блок в группе; Polygon — контур обтекания (координаты группы), если обтекание «по контуру».</summary>
+    sealed record FloatBox(string Side, double X0, double X1, double Top, double Bottom, List<(double X, double Y)>? Polygon = null, double Gap = 0)
+    {
+        /// <summary>Горизонтальные границы контура в полосе [y0, y1]; null — контур полосу не задевает.</summary>
+        public (double Min, double Max)? Extent(double y0, double y1)
+        {
+            if (Polygon == null) return (X0, X1);
+            double min = double.MaxValue, max = double.MinValue;
+            int n = Polygon.Count;
+            for (int i = 0; i < n; i++)
+            {
+                var (ax, ay) = Polygon[i]; var (bx, by) = Polygon[(i + 1) % n];
+                if (ay >= y0 && ay <= y1) { min = Math.Min(min, ax); max = Math.Max(max, ax); }
+                // Пересечения ребра с границами полосы
+                foreach (double yy in new[] { y0, y1 })
+                    if ((ay - yy) * (by - yy) < 0)
+                    {
+                        double x = ax + (bx - ax) * (yy - ay) / (by - ay);
+                        min = Math.Min(min, x); max = Math.Max(max, x);
+                    }
+            }
+            return min <= max ? (min - Gap, max + Gap) : null;
+        }
+    }
 
     /// <summary>Плавающие блоки текущей группы; координаты относительно верха группы.</summary>
     sealed class FloatArea(double width, double offsetY) : IExclusion
@@ -35,8 +58,9 @@ public sealed class BlockLayout(LayoutContext ctx)
             foreach (var b in Boxes)
             {
                 if (b.Top >= y1 - 0.01 || b.Bottom <= y0 + 0.01) continue;
-                if (b.Side == "left") l = Math.Max(l, b.X1);
-                else r = Math.Max(r, _width - b.X0);
+                if (b.Extent(y0, y1) is not { } ext) continue;
+                if (b.Side == "left") l = Math.Max(l, ext.Max);
+                else r = Math.Max(r, _width - ext.Min);
             }
             return (l, r);
         }
@@ -155,6 +179,9 @@ public sealed class BlockLayout(LayoutContext ctx)
                     prev = null; prevLast = null;
                     break;
                 }
+                case FloatBlock fb when fb.UseFallback && fb.AbsFallback != null:
+                    Emit(MakeAbs(fb.AbsFallback, 0, width, relative: false));
+                    break;
                 case FloatBlock fb:
                 {
                     if (fb.DropLines > 0) PrepareDropCap(fb, bi + 1 < blocks.Count ? blocks[bi + 1] as Paragraph : null, width);
@@ -162,7 +189,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                     double w = fb.Width + fb.MarginLeft + fb.MarginRight;
                     var box = Transformed(BuildBox(fb.Blocks, fb.Width, fb.Box), fb.Transform);
                     double h = box.Height + fb.MarginTop + fb.MarginBottom;
-                    if (w > width + 0.5 || h > _ctx.MaxImageHeight * 0.9)
+                    if (w > width + 0.5 || h - (fb.AbsVRel != null ? fb.MarginTop : 0) > _ctx.MaxImageHeight * 0.9)
                     {
                         // Слишком большой для обтекания — выводим в потоке
                         if (group != null) { Clear("both"); EndGroup(); }
@@ -183,7 +210,12 @@ public sealed class BlockLayout(LayoutContext ctx)
                         top = nb.Value;
                     }
                     group.Items.Add((box, x + fb.MarginLeft, top + fb.MarginTop));
-                    area.Boxes.Add(new FloatBox(fb.Side, x, x + w, top, top + h));
+                    // Контур обтекания (доли рамки) → координаты группы
+                    var poly = fb.WrapPolygon?.Select(pt => (x + fb.MarginLeft + pt.X * fb.Width, top + fb.MarginTop + pt.Y * box.Height)).ToList();
+                    // Объект, сдвинутый к позиции на странице: промежуток над ним не занят (текст идёт во всю ширину)
+                    double boxTop = fb.AbsVRel != null ? top + fb.MarginTop : top;
+                    area.Boxes.Add(new FloatBox(fb.Side, x, x + w, boxTop, top + h, poly, fb.WrapGap));
+                    if (fb.AbsVRel != null) group.AbsFloats.Add((fb, top, box.Height));
                     break;
                 }
                 case PositionedBlock pb:
@@ -245,6 +277,15 @@ public sealed class BlockLayout(LayoutContext ctx)
             }
         }
         if (img.Chart != null) img.Built = new ChartLayout(this).Build(img.Chart, Math.Max(20, img.FrameW), Math.Max(20, img.FrameH));
+        if (img.Math != null)
+        {
+            // Формула: размеры по вёрстке, базовая линия формулы совпадает с базовой линией строки
+            var mf = new MathLayout(_ctx, img.Style).Build(img.Math, img.MathDisplay);
+            img.Built = mf;
+            img.Width = img.FrameW = Math.Max(0.1, mf.Width);
+            img.Height = img.FrameH = Math.Max(0.1, mf.Ascent + mf.Descent);
+            img.MathDescent = mf.Descent;
+        }
         if (img.Children != null)
             foreach (var (child, _, _) in img.Children) BuildObject(child);
     }
@@ -381,12 +422,41 @@ public sealed class BlockLayout(LayoutContext ctx)
         return (size, rise);
     }
 
+    /// <summary>Текст инлайна для алгоритма bidi (те же строки, что выводит Itemize; объекты — U+FFFC).</summary>
+    string BidiTextOf(Inline inl, Func<TextStyle, TextStyle>? overlay)
+    {
+        TextStyle St(TextStyle s0) => overlay != null ? overlay(s0) : s0;
+        string Caps(string t, TextStyle s0) => St(s0).Caps ? t.ToUpperInvariant() : t;
+        return inl switch
+        {
+            TextInline t => Caps(t.Text, t.Style),
+            FieldInline f => Caps(f.Kind == FieldKind.PageRef ? (string.IsNullOrEmpty(f.Cached) ? "99" : f.Cached) : _ctx.FieldText?.Invoke(f.Kind) ?? "99", f.Style),
+            FootnoteInline fn => Caps(fn.Mark, fn.Style),
+            TabInline => "\t",
+            BreakInline => "\u2028",
+            _ => "\uFFFC",
+        };
+    }
+
     /// <summary>Превращает инлайны в последовательность кусков для переноса строк.</summary>
     List<Piece> Itemize(Paragraph para, Func<TextStyle, TextStyle>? overlay = null)
     {
         var pieces = new List<Piece>();
         bool breakNext = false;
         int src = -1;
+
+        // Уровни встраивания (UAX #9) для текста всего абзаца
+        var bidiText = new StringBuilder();
+        var inlineStart = new int[para.Inlines.Count];
+        for (int k = 0; k < para.Inlines.Count; k++)
+        {
+            inlineStart[k] = bidiText.Length;
+            bidiText.Append(BidiTextOf(para.Inlines[k], overlay));
+        }
+        var levels = Bidi.ResolveLevels(bidiText.ToString(), para.Rtl);
+        byte paraLevel = (byte)(para.Rtl ? 1 : 0);
+        byte LevelAt(int i) => i >= 0 && i < levels.Length ? levels[i] : paraLevel;
+        int textBase = 0;
 
         void AddText(string text, TextStyle st)
         {
@@ -395,13 +465,20 @@ public sealed class BlockLayout(LayoutContext ctx)
             Piece? cur = null;
             int pos = 0;
             var shaped = Bidi.ShapeArabic(text);
-            bool afterArabic = false;   // числа после арабских букв входят в фрагмент справа налево (UAX #9, W2)
             foreach (var rune in text.EnumerateRunes())
             {
                 int cp = rune.Value;
                 int at = pos;
                 pos += rune.Utf16SequenceLength;
                 if (cp == 0xAD) continue;          // мягкий перенос не отображаем
+                if (Bidi.IsControl(cp)) continue;  // управляющие символы направления не выводятся
+                byte level = LevelAt(textBase + at);
+                if (shaped != null && shaped[at] == -1)
+                {
+                    // Алеф вошёл в лигатуру лам-алеф: глифа нет, буква добавляется к тексту лигатуры (для копирования)
+                    if (cur != null && cur.Texts.Count > 0) cur.Texts[^1] += char.ConvertFromUtf32(cp);
+                    continue;
+                }
                 if (cp == '\t') { var tp = MakeTab(st); tp.Pos.Add(at); pieces.Add(tp); cur = null; breakNext = true; continue; }
                 if (cp is '\n' or '\r') { pieces.Add(new Piece { Kind = PieceKind.LineBreak, Style = st, Src = src, Pos = [at] }); cur = null; continue; }
                 if (cp == 0x200B) { cur = null; breakNext = true; continue; } // нулевой пробел — точка переноса
@@ -413,28 +490,23 @@ public sealed class BlockLayout(LayoutContext ctx)
                     cp = Rune.ToUpperInvariant(rune).Value;
                     gsize = size * 0.75;
                 }
-                // Арабские буквы — контекстная форма для глифа, исходная буква для копирования
-                int glyphCp = shaped != null && shaped[at] != 0 ? shaped[at] : cp;
+                // Арабские буквы — контекстная форма для глифа, исходная буква для копирования;
+                // на нечётном уровне (справа налево) скобки и т. п. зеркалируются
+                int glyphCp = shaped != null && shaped[at] != 0 ? shaped[at] : level % 2 == 1 ? Bidi.Mirror(cp) : cp;
                 var (face, gid, outCp) = ResolveGlyph(glyphCp, st);
                 if (glyphCp != cp) outCp = cp;
                 bool cjk = IsCjk(cp);
                 var kind = space ? PieceKind.Space : PieceKind.Text;
-                int dir = space ? 0 : Bidi.Direction(cp);
-                if (dir == 2) afterArabic = cp is >= 0x0600 and <= 0x08FF or >= 0xFB50 and <= 0xFEFF;
-                else if (dir == 1) afterArabic = false;
-                if (afterArabic && (cp is >= '0' and <= '9' or >= 0x0660 and <= 0x0669)) dir = 3;
-                // В абзаце справа налево знаки после латинского слова — отдельный нейтральный кусок:
-                // его направление определяет окружение (точка в конце абзаца — слева, как в UAX #9)
-                bool splitNeutral = para.Rtl && cur != null && kind == PieceKind.Text && dir == 0 && cur.Dir == 1;
-                if (cur == null || cur.Kind != kind || cur.Face != face || cur.Size != gsize || cjk || (dir != 0 && cur.Dir != 0 && dir != cur.Dir) || splitNeutral)
+                // Кусок не смешивает символы разных уровней встраивания
+                bool newLevel = cur != null && cur.Level != level && kind == PieceKind.Text && cur.Kind == PieceKind.Text;
+                if (cur == null || cur.Kind != kind || cur.Face != face || cur.Size != gsize || cjk || cur.Level != level)
                 {
-                    cur = new Piece { Kind = kind, Style = st, Face = face, Size = gsize, Rise = rise, Src = src };
-                    cur.BreakBefore = kind == PieceKind.Text && (breakNext || cjk) && !splitNeutral;
+                    cur = new Piece { Kind = kind, Style = st, Face = face, Size = gsize, Rise = rise, Src = src, Level = level };
+                    cur.BreakBefore = kind == PieceKind.Text && (breakNext || cjk) && !newLevel;
                     SetMetrics(cur, st, PrimaryFace(cp, st));
                     pieces.Add(cur);
                     breakNext = false;
                 }
-                if (cur.Dir == 0 && dir != 0) cur.Dir = dir;
                 double adv = face.Font.Advance(gid) * gsize * st.HScale + (space ? st.WordSpacing : st.LetterSpacing);
                 cur.Gids.Add(gid);
                 cur.Pos.Add(at);
@@ -498,6 +570,8 @@ public sealed class BlockLayout(LayoutContext ctx)
                 BreakInline bi => bi.Style, ImageInline ii => ii.Style, _ => null
             };
             if (inlStyle != null) SyncBoxes(inlStyle);
+            textBase = inlineStart[src];
+            int piecesBefore = pieces.Count;
             switch (inl)
             {
                 case TextInline t: AddText(t.Text, t.Style); break;
@@ -510,6 +584,15 @@ public sealed class BlockLayout(LayoutContext ctx)
                     for (int k = before; k < pieces.Count; k++) { pieces[k].Field = f.Kind; pieces[k].FieldArg = f.Arg; }
                 }
                     break;
+                case CommentInline cm:
+                {
+                    // Невидимая метка места примечания (нулевой ширины)
+                    var face = _ctx.Fonts.Get(cm.Style.FontHAnsi, cm.Style.Bold, cm.Style.Italic);
+                    var mp = new Piece { Kind = PieceKind.Text, Style = cm.Style, Face = face, Size = cm.Style.Size, Src = src, Comment = cm.Info };
+                    SetMetrics(mp, cm.Style, face);
+                    pieces.Add(mp);
+                    break;
+                }
                 case FootnoteInline fn:
                 {
                     int before = pieces.Count;
@@ -546,7 +629,8 @@ public sealed class BlockLayout(LayoutContext ctx)
                     double fsz = img.Style.Size, iasc = h, idesc = 0;
                     var mf = _ctx.Fonts.Get(img.Style.FontHAnsi, img.Style.Bold, img.Style.Italic).Font;
                     double fAsc = mf.Ascent / (double)mf.UnitsPerEm * fsz, fDesc = mf.Descent / (double)mf.UnitsPerEm * fsz;
-                    switch (img.VAlign)
+                    if (img.Math != null) { idesc = img.MathDescent * h / Math.Max(0.1, img.Height); iasc = h - idesc; }
+                    else switch (img.VAlign)
                     {
                         case "middle": iasc = h / 2 + fsz * 0.25; idesc = h - iasc; break;   // центр на высоте x/2
                         case "text-top" or "top": iasc = fAsc; idesc = h - fAsc; break;
@@ -562,6 +646,9 @@ public sealed class BlockLayout(LayoutContext ctx)
                     break;
                 }
             }
+            // Нетекстовые куски (картинки, табуляции, распорки) — уровень начала инлайна
+            for (int k = piecesBefore; k < pieces.Count; k++)
+                if (pieces[k].Kind is not (PieceKind.Text or PieceKind.Space)) pieces[k].Level = LevelAt(textBase);
         }
         src = -1;
         if (openBoxes.Count > 0) SyncBoxes(para.MarkStyle with { Box = null });

@@ -181,6 +181,12 @@ public sealed class PdfDocument
                 for (int fi = 0; fi < c.Forms.Count; fi++) res.Append($" /{c.Forms[fi].Name} {formIds[fi]} 0 R");
                 res.Append(" >>");
             }
+            if (c.Shadings.Count > 0)
+            {
+                res.Append(" /Shading <<");
+                foreach (var (name, dict) in c.Shadings) res.Append($" /{name} {dict}");
+                res.Append(" >>");
+            }
             if (c.GStates.Count > 0)
             {
                 res.Append(" /ExtGState <<");
@@ -363,6 +369,37 @@ public sealed class PdfCanvas
     /// <summary>Графические состояния прозрачности страницы: имя → непрозрачность.</summary>
     internal readonly List<(string Name, double Alpha)> GStates = [];
 
+    /// <summary>Шейдинги страницы: имя → словарь.</summary>
+    internal readonly List<(string Name, string Dict)> Shadings = [];
+
+    string Shading(string dict)
+    {
+        foreach (var (n, d) in Shadings) if (d == dict) return n;
+        string name = "Sh" + (Shadings.Count + 1);
+        Shadings.Add((name, dict));
+        return name;
+    }
+
+    /// <summary>Функция цвета градиента: одна экспоненциальная (2 точки) или склейка (Type 3) по опорным точкам.</summary>
+    static string GradientFunction(List<(double Pos, Rgb Color)> stops)
+    {
+        string C(Rgb c) => $"[{F(c.R)} {F(c.G)} {F(c.B)}]";
+        string Seg(Rgb a, Rgb b) => $"<< /FunctionType 2 /Domain [0 1] /C0 {C(a)} /C1 {C(b)} /N 1 >>";
+        var st = stops.OrderBy(t => t.Pos).ToList();
+        // Опорные точки не в 0 и 1 — продлеваем крайние цвета
+        if (st[0].Pos > 0) st.Insert(0, (0, st[0].Color));
+        if (st[^1].Pos < 1) st.Add((1, st[^1].Color));
+        if (st.Count == 2) return Seg(st[0].Color, st[1].Color);
+        var funcs = new StringBuilder(); var bounds = new StringBuilder(); var enc = new StringBuilder();
+        for (int i = 0; i + 1 < st.Count; i++)
+        {
+            funcs.Append(Seg(st[i].Color, st[i + 1].Color)).Append(' ');
+            if (i > 0) bounds.Append(F(Math.Clamp(st[i].Pos, 0, 1))).Append(' ');
+            enc.Append("0 1 ");
+        }
+        return $"<< /FunctionType 3 /Domain [0 1] /Functions [{funcs}] /Bounds [{bounds}] /Encode [{enc}] >>";
+    }
+
     /// <summary>Имя ExtGState с заданной непрозрачностью (для «/GSn gs»).</summary>
     string GState(double alpha)
     {
@@ -489,10 +526,11 @@ public sealed class PdfCanvas
     }
 
     /// <summary>Сектор круга (углы в градусах по часовой стрелке от 12 часов), с белой обводкой.</summary>
-    public void FillSector(double cx, double cy, double r, double a0, double a1, Rgb color, double innerR = 0)
+    public void FillSector(double cx, double cy, double r, double a0, double a1, Rgb color, double innerR = 0, double yScale = 1, bool outline = true)
     {
         if (Collecting > 0 || SkipGraphics || a1 - a0 < 0.01) return;
-        (double, double) Pt(double ang, double rr) { double t = (ang - 90) * Math.PI / 180; return (cx + rr * Math.Cos(t), cy + rr * Math.Sin(t)); }
+        // yScale < 1 — эллипс (объёмная круговая диаграмма)
+        (double, double) Pt(double ang, double rr) { double t = (ang - 90) * Math.PI / 180; return (cx + rr * Math.Cos(t), cy + rr * yScale * Math.Sin(t)); }
         var sb = new StringBuilder();
         void Arc(double from, double to, double rr, bool move)
         {
@@ -505,14 +543,14 @@ public sealed class PdfCanvas
                 double s0 = from + i * step, s1 = s0 + step, k = 4.0 / 3 * Math.Tan(step * Math.PI / 180 / 4);
                 var (ax, ay) = Pt(s0, rr); var (bx, by) = Pt(s1, rr);
                 double t0 = (s0 - 90) * Math.PI / 180, t1 = (s1 - 90) * Math.PI / 180;
-                double c1x = ax - k * rr * Math.Sin(t0), c1y = ay + k * rr * Math.Cos(t0);
-                double c2x = bx + k * rr * Math.Sin(t1), c2y = by - k * rr * Math.Cos(t1);
+                double c1x = ax - k * rr * Math.Sin(t0), c1y = ay + k * rr * yScale * Math.Cos(t0);
+                double c2x = bx + k * rr * Math.Sin(t1), c2y = by - k * rr * yScale * Math.Cos(t1);
                 sb.Append($"{F(c1x)} {F(Y(c1y))} {F(c2x)} {F(Y(c2y))} {F(bx)} {F(Y(by))} c ");
             }
         }
         if (innerR > 0) { Arc(a0, a1, r, true); Arc(a1, a0, innerR, false); }
         else { sb.Append($"{F(cx)} {F(Y(cy))} m "); Arc(a0, a1, r, false); }
-        _sb.Append($"q {Color(color)} rg 1 1 1 RG 0.75 w ").Append(sb).Append("h B Q\n");
+        _sb.Append($"q {Color(color)} rg 1 1 1 RG 0.75 w ").Append(sb).Append(outline ? "h B Q\n" : "h f Q\n");
     }
 
     public void Rect(double x, double y, double w, double h, double width, Rgb color)
@@ -921,24 +959,25 @@ public sealed class PdfCanvas
         bool fill = sh.Fill != null && !open, stroke = sh.Stroke != null && sh.StrokeWidth > 0;
         if (fill && sh.Gradient is { Count: >= 2 } grad)
         {
-            // Градиент: обрезка по контуру и полосы с интерполированным цветом поперёк направления
-            _sb.Append("q ").Append(path).Append("W n ");
-            double ang = -sh.GradientAngle * Math.PI / 180, ca = Math.Cos(ang), sa = Math.Sin(ang);
-            double half = Math.Abs(w / 2 * ca) + Math.Abs(h / 2 * sa), across = Math.Sqrt(w * w + h * h);
-            _sb.Append($"{F(ca)} {F(sa)} {F(-sa)} {F(ca)} 0 0 cm ");
-            const int bands = 64;
-            for (int i = 0; i < bands; i++)
+            // Градиент — шейдинг PDF (axial / radial) внутри контура фигуры (локальная система: центр, ось y вверх)
+            string fn = GradientFunction(grad);
+            string coords;
+            if (sh.GradientRadial)
             {
-                double t0 = (double)i / bands, t1 = (double)(i + 1) / bands, tm = (t0 + t1) / 2;
-                int j = 0;
-                while (j < grad.Count - 2 && grad[j + 1].Pos < tm) j++;
-                var (p0, c0) = grad[j]; var (p1, c1) = grad[j + 1];
-                double u = p1 > p0 ? Math.Clamp((tm - p0) / (p1 - p0), 0, 1) : 0;
-                var col = new Rgb(c0.R + (c1.R - c0.R) * u, c0.G + (c1.G - c0.G) * u, c0.B + (c1.B - c0.B) * u);
-                double x0 = -half + 2 * half * t0, x1 = -half + 2 * half * t1;
-                _sb.Append($"{Color(col)} rg {F(x0)} {F(-across)} {F(x1 - x0 + 0.05)} {F(2 * across)} re f ");
+                double cxL = (sh.GradientCx - 0.5) * w, cyL = (0.5 - sh.GradientCy) * h;
+                double rr = 0;
+                foreach (var (px, py) in new[] { (-w / 2, -h / 2), (w / 2, -h / 2), (-w / 2, h / 2), (w / 2, h / 2) })
+                    rr = Math.Max(rr, Math.Sqrt((px - cxL) * (px - cxL) + (py - cyL) * (py - cyL)));
+                coords = $"/ShadingType 3 /Coords [{F(cxL)} {F(cyL)} 0 {F(cxL)} {F(cyL)} {F(rr)}]";
             }
-            _sb.Append("Q ");
+            else
+            {
+                double ang = sh.GradientAngle * Math.PI / 180, dx = Math.Cos(ang), dy = -Math.Sin(ang);
+                double half = Math.Abs(w / 2 * dx) + Math.Abs(h / 2 * dy);
+                coords = $"/ShadingType 2 /Coords [{F(-half * dx)} {F(-half * dy)} {F(half * dx)} {F(half * dy)}]";
+            }
+            string name = Shading($"<< {coords} /ColorSpace /DeviceRGB /Function {fn} /Extend [true true] >>");
+            _sb.Append("q ").Append(path).Append($"W n /{name} sh Q ");
             fill = false;
         }
         if (fill) _sb.Append($"{Color(sh.Fill!.Value)} rg ");

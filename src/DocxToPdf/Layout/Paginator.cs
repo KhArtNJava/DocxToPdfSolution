@@ -23,6 +23,8 @@ public sealed class Page
     public string NumberText = "1";
     /// <summary>Номера строк: правый край номера, базовая линия, текст, стиль.</summary>
     public List<(Frag Frag, double X, double Y)> LineNumbers = [];
+    /// <summary>Места примечаний на странице (для выносок).</summary>
+    public List<(CommentInfo Info, double X, double Y)> Comments = [];
     /// <summary>Индексы элементов Items, относящихся к основному тексту (для вертикального выравнивания).</summary>
     public List<int> BodyItems = [];
     /// <summary>Верх области сносок на странице (если есть).</summary>
@@ -131,6 +133,7 @@ public sealed class Paginator(LayoutContext ctx)
             }
 
         foreach (var page in _pages) AlignPageVertically(page);
+        if (_ctx.Doc.CommentBalloons) foreach (var page in _pages) PlaceBalloons(page);
         AddHeadersFooters();
         return _pages;
     }
@@ -248,9 +251,55 @@ public sealed class Paginator(LayoutContext ctx)
 
     bool PageEmpty => _page!.Items.Count == 0 || (_col > 0 && Math.Abs(_y - _colTop) < 0.01);
 
+    /// <summary>Нужные сдвиги объектов, привязанных к странице/полям (по итогам разбивки): объект → новый MarginTop или null (без обтекания).</summary>
+    readonly Dictionary<FloatBlock, double?> _absAdjust = [];
+
+    /// <summary>
+    /// Применяет сдвиги обтекаемых объектов с привязкой к странице/полям; true — что-то изменилось и вёрстку нужно повторить.
+    /// </summary>
+    public bool ApplyFloatAdjustments()
+    {
+        bool changed = false;
+        foreach (var (fb, m) in _absAdjust)
+        {
+            if (m == null) { if (!fb.UseFallback) { fb.UseFallback = true; changed = true; } }
+            else if (Math.Abs(m.Value - fb.MarginTop) > 0.5) { fb.MarginTop = m.Value; changed = true; }
+        }
+        return changed;
+    }
+
+    void TrackAbsFloats(GroupFrag gf, double groupY)
+    {
+        var sp = _page!.Section;
+        foreach (var (fb, top, hh) in gf.AbsFloats)
+        {
+            if (_absAdjust.ContainsKey(fb)) continue;
+            double H = sp.PageHeight;
+            (double baseY, double areaH) = fb.AbsVRel switch
+            {
+                "page" => (0, H),
+                "topMargin" => (0, sp.MarginTop),
+                "bottomMargin" => (H - sp.MarginBottom, sp.MarginBottom),
+                _ => (sp.MarginTop, H - sp.MarginTop - sp.MarginBottom),
+            };
+            double desired = fb.AbsVAlign switch
+            {
+                "top" or "inside" => baseY,
+                "center" => baseY + (areaH - hh) / 2,
+                "bottom" or "outside" => baseY + areaH - hh,
+                _ => baseY + fb.AbsVOffset,
+            };
+            double current = groupY + top + fb.MarginTop;
+            double newMargin = fb.MarginTop + (desired - current);
+            // Выше абзаца привязки или за низом области текста — без обтекания, на своём месте
+            _absAdjust[fb] = newMargin < -0.5 || desired + hh > _bottom + 0.5 ? null : Math.Max(0, newMargin);
+        }
+    }
+
     void Put(Frag f, double spaceBefore)
     {
         _y += spaceBefore;
+        if (f is GroupFrag agf && agf.AbsFloats.Count > 0) TrackAbsFloats(agf, _y);
         _page!.BodyItems.Add(_page.Items.Count);
         _page!.Items.Add((f, _page.MarginLeft + _colX[_col], _y));
         CollectBookmarks(f, _page.MarginLeft + _colX[_col], _y);
@@ -440,6 +489,46 @@ public sealed class Paginator(LayoutContext ctx)
         }
     }
 
+    /// <summary>Выноски примечаний на правом поле: столбиком без перекрытий, пунктир от места в тексте.</summary>
+    void PlaceBalloons(Page page)
+    {
+        if (page.Comments.Count == 0) return;
+        var sp = page.Section;
+        double contentRight = page.MarginLeft + sp.PageWidth - sp.MarginLeft - sp.MarginRight;
+        double x0 = contentRight + 10, bw = page.Width - x0 - 8;
+        if (bw < 40) return;
+        var bl = new BlockLayout(_ctx);
+        double prevBottom = 0;
+        foreach (var (info, ax, ay) in page.Comments.OrderBy(c => c.Y))
+        {
+            // Текст выноски: автор и текст примечания мелким шрифтом
+            var font = info.Blocks.OfType<Paragraph>().SelectMany(b => b.Inlines).OfType<TextInline>().FirstOrDefault()?.Style.FontHAnsi ?? "Arial";
+            var hs = new TextStyle { FontAscii = font, FontHAnsi = font, FontEastAsia = font, Size = 7, Bold = true, Color = info.Color };
+            var ts = hs with { Bold = false, Color = Rgb.Black };
+            var blocks = new List<Block>();
+            bool first = true;
+            foreach (var b in info.Blocks.OfType<Paragraph>())
+            {
+                var p = new Paragraph { MarkStyle = ts, SnapToGrid = false };
+                if (first) { p.Inlines.Add(new TextInline(info.Author + ": ", hs)); first = false; }
+                foreach (var inl in b.Inlines) if (inl is TextInline ti) p.Inlines.Add(new TextInline(ti.Text, ts with { Bold = ti.Style.Bold, Italic = ti.Style.Italic }));
+                blocks.Add(p);
+            }
+            if (blocks.Count == 0) { var p = new Paragraph { MarkStyle = ts }; p.Inlines.Add(new TextInline(info.Author, hs)); blocks.Add(p); }
+            var border = new BorderDef { Width = 0.5, Color = info.Color };
+            var box = bl.BuildBox(blocks, bw, new BoxStyle
+            {
+                Background = new Rgb(1 - (1 - info.Color.R) * 0.12, 1 - (1 - info.Color.G) * 0.12, 1 - (1 - info.Color.B) * 0.12),
+                BorderTop = border, BorderBottom = border, BorderLeft = border, BorderRight = border,
+                PadLeft = 3, PadRight = 3, PadTop = 2, PadBottom = 2,
+            });
+            double y = Math.Max(ay - 8, prevBottom + 4);
+            prevBottom = y + box.Height;
+            page.Overlays.Add((new ConnectorFrag { Points = [(ax, ay + 2), (contentRight + 4, ay + 2), (x0, y + 6)], Color = info.Color }, 0, 0, 19));
+            page.Overlays.Add((box, x0, y, 20));
+        }
+    }
+
     int _lineNo = 1;
     Page? _lineNoPage;
     SectionProps? _lineNoSection;
@@ -488,8 +577,12 @@ public sealed class Paginator(LayoutContext ctx)
     {
         switch (f)
         {
-            case LineFrag lf when lf.IsFirst && lf.Para.Bookmarks != null:
-                foreach (var b in lf.Para.Bookmarks) Destinations.TryAdd(b, (_pages.Count - 1, x, y));
+            case LineFrag lf:
+                if (lf.IsFirst && lf.Para.Bookmarks != null)
+                    foreach (var b in lf.Para.Bookmarks) Destinations.TryAdd(b, (_pages.Count - 1, x, y));
+                // Места примечаний — для выносок на правом поле
+                foreach (var pc in lf.Pieces)
+                    if (pc.Comment != null) _page!.Comments.Add((pc.Comment, x + lf.Left + pc.X, y + lf.TopPad + lf.Baseline));
                 break;
             case RowFrag rf:
                 foreach (var cell in rf.Cells)
@@ -641,6 +734,18 @@ public sealed class Paginator(LayoutContext ctx)
         L(sp.PageBorderBottom, x1, y2, x2, y2);
         L(sp.PageBorderLeft, x1, y1, x1, y2);
         L(sp.PageBorderRight, x2, y1, x2, y2);
+    }
+}
+
+/// <summary>Пунктирная линия от места примечания к выноске (координаты страницы).</summary>
+public sealed class ConnectorFrag : Frag
+{
+    public List<(double X, double Y)> Points = [];
+    public Rgb Color;
+    public override void Draw(PdfCanvas c, double x, double y)
+    {
+        for (int i = 0; i + 1 < Points.Count; i++)
+            c.Line(x + Points[i].X, y + Points[i].Y, x + Points[i + 1].X, y + Points[i + 1].Y, 0.5, Color, dashed: true);
     }
 }
 
