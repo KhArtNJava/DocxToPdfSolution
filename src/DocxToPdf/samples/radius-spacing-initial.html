@@ -1,0 +1,31 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><style>
+ @page { size: A4; margin: 15mm } body { font-family: "Times New Roman", serif; font-size: 12pt; line-height: 1.4 }
+ h3 { font-family: Arial, sans-serif; margin: 12pt 0 4pt }
+ p { margin: 0 0 8pt; text-align: justify }
+ .il3::first-letter { initial-letter: 3; color: #8b1a1a; font-weight: bold }
+ .il2::first-letter { initial-letter: 2; color: #1a4f8b }
+ .il32::first-letter { initial-letter: 3 2; color: #2a6 }
+ .ws { word-spacing: 12px } .ws2 { word-spacing: -2px }
+ .card { border-radius: 12px; background: #eef4fb; border: 1px solid #7aa7d8; padding: 10px 14px; margin: 8px 0; font-family: Arial }
+ .pill { border-radius: 999px; background: #2a6; color: #fff; padding: 2px 10px; font-family: Arial; font-size: 9pt }
+ .tag { border-radius: 4px; border: 1px solid #c80; padding: 0 5px; font-family: Arial; font-size: 10pt }
+ .avatar { border-radius: 50%; width: 60px; height: 60px; vertical-align: middle }
+ .row { display: flex; gap: 10px } .box { flex: 1; border-radius: 8px 0 8px 0; background: #fdf2e0; border: 2px dashed #d90; padding: 8px; font-family: Arial }
+ .flt { float: right; width: 140px; border-radius: 10px; background: #f3eefc; border: 1px solid #a8c; padding: 8px; margin-left: 10px; font-family: Arial; font-size: 10pt }
+ .rot { transform: rotate(-3deg); border-radius: 8px; background: #ffe; border: 1px solid #cc8; padding: 6px; font-family: Arial }
+</style></head><body>
+<h3>initial-letter</h3>
+<p class="il3">Жили-были старик со старухой у самого синего моря; они жили в ветхой землянке ровно тридцать лет и три года. Старик ловил неводом рыбу, старуха пряла свою пряжу. Раз он в море закинул невод, — пришёл невод с одною тиной. Он в другой раз закинул невод, — пришёл невод с травой морскою.</p>
+<p class="il2">Второй вариант — буквица на две строки. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок.</p>
+<p class="il32">Третий — размер в три строки, но погружение на две (буква приподнята). Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю.</p>
+<h3>word-spacing</h3>
+<p class="ws">Интервал между словами увеличен на двенадцать пикселей с помощью word-spacing.</p>
+<p class="ws2">Интервал между словами уменьшен на два пикселя с помощью word-spacing.</p>
+<h3>border-radius</h3>
+<div class="card">Карточка со скруглёнными углами 12px, фоном и рамкой.</div>
+<p style="font-family: Arial">Строчные: <span class="pill">в работе</span> <span class="pill" style="background:#c33">срочно</span> и метка <span class="tag">v2.0</span>; аватар <img class="avatar" src="img.png"> в строке.</p>
+<div class="row"><div class="box">Разные радиусы 8px 0 8px 0 и пунктирная рамка.</div><div class="box">Второй блок.</div></div>
+<div class="flt">Плавающая врезка со скруглением.</div>
+<p>Текст обтекает скруглённую врезку. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю.</p>
+<div class="rot">transform вместе со скруглением: rotate(-3deg) + border-radius.</div>
+</body></html>

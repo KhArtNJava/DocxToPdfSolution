@@ -442,7 +442,7 @@ public sealed class CssStyle
     public int VertAlign;
     public Rgb? TextBackground;
     public bool Hidden;     // visibility: hidden
-    public double LetterSpacing;
+    public double LetterSpacing, WordSpacing;
     public Dictionary<string, string>? Vars;   // пользовательские свойства (--x), наследуются
     public InlineBox? InlineBox;               // ближайший строчный блок с рамкой/отступами
     public string? Quotes;
@@ -480,6 +480,13 @@ public sealed class CssStyle
     public string? GridTemplateColumns, GridTemplateRows;
     public string? GridColumnStart, GridColumnEnd, GridRowStart, GridRowEnd;
 
+    // Скругление углов (TL, TR, BR, BL — исходные значения, % — от ширины)
+    public string?[] Radius = new string?[4];
+    public bool HasRadius => Radius.Any(r => r != null && r != "0");
+    // initial-letter: размер в строках и «погружение»
+    public string? InitialLetter;
+    public double? ExactLineHeight;
+
     // Преобразования
     public string? Transform, TransformOrigin, Translate, Rotate, Scale;
 
@@ -492,7 +499,7 @@ public sealed class CssStyle
         return new CssStyle
         {
             FontFamily = FontFamily, FontSize = FontSize, Bold = Bold, Italic = Italic, Underline = Underline, Strike = Strike,
-            Upper = Upper, Lower = Lower, SmallCaps = SmallCaps, LetterSpacing = LetterSpacing, Color = Color, TextAlign = TextAlign, LineHeightFactor = LineHeightFactor, LineHeightPt = LineHeightPt,
+            Upper = Upper, Lower = Lower, SmallCaps = SmallCaps, LetterSpacing = LetterSpacing, WordSpacing = WordSpacing, Color = Color, TextAlign = TextAlign, LineHeightFactor = LineHeightFactor, LineHeightPt = LineHeightPt,
             WhiteSpace = WhiteSpace, TextIndent = TextIndent, ListStyleType = ListStyleType, Link = Link, VertAlign = VertAlign,
             TextBackground = TextBackground, Hidden = Hidden, Vars = Vars, Quotes = Quotes, InlineBox = InlineBox,
         };

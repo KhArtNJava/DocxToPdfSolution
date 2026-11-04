@@ -13,12 +13,13 @@ public sealed partial class HtmlReader
     //  Общие помощники
     // =================================================================
 
-    static BoxStyle BoxOf(CssStyle s, bool withBackground = true) => new()
+    static BoxStyle BoxOf(CssStyle s, double width = 0) => new()
     {
+        Radius = RadiusOf(s, width),
         MinHeight = s.Height == null || s.Height.EndsWith('%') ? 0
             : (CssValues.Length(s.Height, s.FontSize) ?? 0) + (s.BoxSizing == "border-box" ? 0
                 : s.PaddingTop + s.PaddingBottom + (s.BorderTop?.ToBorderDef()?.Width ?? 0) + (s.BorderBottom?.ToBorderDef()?.Width ?? 0)),
-        Background = withBackground ? s.Background : null,
+        Background = s.Background,
         BorderTop = s.BorderTop?.ToBorderDef(),
         BorderBottom = s.BorderBottom?.ToBorderDef(),
         BorderLeft = s.BorderLeft?.ToBorderDef(),
@@ -115,6 +116,8 @@ public sealed partial class HtmlReader
         s.Display == "block" && n.Tag is not ("html" or "body" or "ul" or "ol")
         && (s.BorderLeft?.ToBorderDef() != null || s.BorderRight?.ToBorderDef() != null
             || (s.Height != null && !s.Height.EndsWith('%') && CssValues.Length(s.Height, s.FontSize) is > 0)
+            // скругление с фоном или рамкой
+            || (s.HasRadius && (s.Background != null || s.BorderTop?.ToBorderDef() != null || s.BorderBottom?.ToBorderDef() != null))
             // фон с внутренними отступами должен заливать и отступы
             || (s.Background != null && (s.PaddingLeft > 0 || s.PaddingRight > 0 || s.PaddingTop > 0 || s.PaddingBottom > 0)));
 
@@ -124,6 +127,7 @@ public sealed partial class HtmlReader
         var cell = new TableCell
         {
             Shading = s.Background,
+            Radius = RadiusOf(s, width),
             Borders = new CellBorders
             {
                 Top = s.BorderTop?.ToBorderDef() ?? new BorderDef { Val = "nil" },
@@ -219,7 +223,7 @@ public sealed partial class HtmlReader
             MarginTop = s.MarginTop, MarginBottom = s.MarginBottom,
             MarginLeft = Math.Max(0, s.MarginLeft) + (side == "left" ? b.IndL : 0),
             MarginRight = Math.Max(0, s.MarginRight) + (side == "right" ? b.IndR : 0),
-            Box = BoxOf(s),
+            Box = BoxOf(s, width),
         };
         // У картинки рамка/отступы уже учтены в блоке — сама картинка без отступов
         if (n.Tag == "img")
@@ -273,7 +277,7 @@ public sealed partial class HtmlReader
             Mode = mode,
             Left = left + (left != null ? s.MarginLeft : 0), Right = right + (right != null ? s.MarginRight : 0),
             Top = top + (top != null ? s.MarginTop : 0), Bottom = bottom + (bottom != null ? s.MarginBottom : 0),
-            Width = width, ZIndex = s.ZIndex, Box = BoxOf(s), Transform = transform,
+            Width = width, ZIndex = s.ZIndex, Box = BoxOf(s, width), Transform = transform,
         };
         pb.Blocks = WalkInto(n, s, width - extra, anchor: true);
 
@@ -321,6 +325,7 @@ public sealed partial class HtmlReader
         {
             GridSpan = span,
             Shading = (!isText ? itemStyle.Background : null) ?? container.Background,
+            Radius = isText ? null : RadiusOf(itemStyle, width),
             VAlign = VAlignFor(container, isText ? null : itemStyle),
             Borders = new CellBorders(),
             Margins = new Margins { Top = 0, Bottom = 0, Left = 0, Right = 0 },

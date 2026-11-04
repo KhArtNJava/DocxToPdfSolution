@@ -326,7 +326,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                     pieces.Add(cur);
                     breakNext = false;
                 }
-                double adv = face.Font.Advance(gid) * gsize + (space ? 0 : st.LetterSpacing);
+                double adv = face.Font.Advance(gid) * gsize + (space ? st.WordSpacing : st.LetterSpacing);
                 cur.Gids.Add(gid);
                 cur.Pos.Add(at);
                 cur.Texts.Add(char.ConvertFromUtf32(outCp == 0xA0 ? ' ' : outCp));
@@ -410,11 +410,22 @@ public sealed class BlockLayout(LayoutContext ctx)
                     double maxW = _contentWidthHint - para.IndLeft - para.IndRight;
                     if (maxW > 10 && w > maxW) { h *= maxW / w; w = maxW; }
                     if (h > _ctx.MaxImageHeight) { w *= _ctx.MaxImageHeight / h; h = _ctx.MaxImageHeight; }
-                    pieces.Add(new Piece
+                    // vertical-align картинки относительно текста строки
+                    double fsz = img.Style.Size, iasc = h, idesc = 0;
+                    var mf = _ctx.Fonts.Get(img.Style.FontHAnsi, img.Style.Bold, img.Style.Italic).Font;
+                    double fAsc = mf.Ascent / (double)mf.UnitsPerEm * fsz, fDesc = mf.Descent / (double)mf.UnitsPerEm * fsz;
+                    switch (img.VAlign)
                     {
-                        Kind = PieceKind.Image, Style = img.Style, Image = img, Width = w, Ascent = h, Descent = 0, Src = src,
+                        case "middle": iasc = h / 2 + fsz * 0.25; idesc = h - iasc; break;   // центр на высоте x/2
+                        case "text-top" or "top": iasc = fAsc; idesc = h - fAsc; break;
+                        case "text-bottom" or "bottom": idesc = fDesc; iasc = h - fDesc; break;
+                    }
+                    var ip = new Piece
+                    {
+                        Kind = PieceKind.Image, Style = img.Style, Image = img, Width = w, Ascent = iasc, Descent = Math.Max(0, idesc), Src = src,
                         BreakBefore = true, Size = img.Style.Size
-                    });
+                    };
+                    pieces.Add(ip);
                     breakNext = true;
                     break;
                 }
@@ -838,7 +849,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 {
                     X = x0 + colX[g], Width = colX[g + span] - colX[g],
                     MarginLeft = m.Left ?? 5.4, MarginRight = m.Right ?? 5.4, MarginTop = m.Top ?? 0, MarginBottom = m.Bottom ?? 0,
-                    Shading = cell.Shading, VAlign = cell.VAlign, VMerge = cell.VMerge, GridIndex = g, Span = span,
+                    Shading = cell.Shading, VAlign = cell.VAlign, VMerge = cell.VMerge, GridIndex = g, Span = span, Radius = cell.Radius,
                 };
                 var b = cell.Borders;
                 box.Top = b?.Top ?? (ri == 0 ? t.Borders.Top : t.Borders.InsideH);

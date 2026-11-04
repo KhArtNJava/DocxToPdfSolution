@@ -94,6 +94,10 @@ public sealed record TabStop(double Pos, string Align, string Leader);
 
 public sealed class BorderDef
 {
+    /// <summary>Одинаковы ли две рамки (для обводки скруглённым контуром).</summary>
+    public static bool Same(BorderDef? a, BorderDef? b) =>
+        a is { IsNone: false } && b is { IsNone: false } && a.Val == b.Val && Math.Abs(a.Width - b.Width) < 0.01 && a.Color == b.Color;
+
     public string Val = "single";
     public double Width = 0.5;    // pt
     public double Space;          // pt
@@ -181,6 +185,7 @@ public sealed class InlineBox
     public BorderDef? Top, Bottom, Left, Right;
     public double PadTop, PadBottom, PadLeft, PadRight;
     public double MarginLeft, MarginRight;
+    public double[]? Radius;
 
     public double StartWidth => MarginLeft + (Left?.Width ?? 0) + PadLeft;
     public double EndWidth => MarginRight + (Right?.Width ?? 0) + PadRight;
@@ -218,6 +223,8 @@ public sealed record TextStyle
     public bool SmallCaps { get; init; }
     /// <summary>Дополнительный интервал после каждого символа, pt (letter-spacing / w:spacing).</summary>
     public double LetterSpacing { get; init; }
+    /// <summary>Дополнительный интервал у пробелов, pt (word-spacing).</summary>
+    public double WordSpacing { get; init; }
     public double Size { get; init; } = 10;
     public Rgb Color { get; init; } = Rgb.Black;
     public Rgb? Background { get; init; }
@@ -252,6 +259,8 @@ public sealed class BreakInline(BreakKind kind, TextStyle style) : Inline
 public sealed class ImageInline(string partName, double width, double height, TextStyle style) : Inline
 {
     public TransformResolver? Transform;
+    public double[]? Radius;             // скругление картинки (обрезка)
+    public string? VAlign;               // vertical-align: middle / top / bottom …
     public string PartName = partName;
     public double Width = width;   // pt
     public double Height = height; // pt
@@ -322,6 +331,7 @@ public enum VMerge { None, Restart, Continue }
 
 public sealed class TableCell
 {
+    public double[]? Radius;
     public int GridSpan = 1;
     public VMerge VMerge;
     public CellBorders? Borders;
@@ -361,6 +371,7 @@ public sealed class BoxStyle
     public BorderDef? BorderTop, BorderBottom, BorderLeft, BorderRight;
     public double PadTop, PadBottom, PadLeft, PadRight;
     public double MinHeight;             // CSS height (рамка целиком)
+    public double[]? Radius;             // border-radius: TL, TR, BR, BL (pt)
     public double HorizontalExtra => PadLeft + PadRight + (BorderLeft?.Width ?? 0) + (BorderRight?.Width ?? 0);
 }
 

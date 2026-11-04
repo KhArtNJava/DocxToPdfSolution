@@ -361,6 +361,89 @@ public sealed class PdfCanvas
         if (face.SynthBold) _sb.Append("0 Tr\n");
     }
 
+    // ---------------------------------------------------------------
+    //  Скруглённые прямоугольники (border-radius)
+    // ---------------------------------------------------------------
+
+    /// <summary>Радиусы углов: левый верхний, правый верхний, правый нижний, левый нижний.</summary>
+    static double[] ClampRadii(double w, double h, double[] r)
+    {
+        var c = new double[4];
+        for (int i = 0; i < 4; i++) c[i] = Math.Max(0, r[i]);
+        // Как в CSS: если сумма радиусов на стороне больше стороны — все уменьшаются пропорционально
+        double k = 1;
+        if (c[0] + c[1] > w) k = Math.Min(k, w / (c[0] + c[1]));
+        if (c[3] + c[2] > w) k = Math.Min(k, w / (c[3] + c[2]));
+        if (c[0] + c[3] > h) k = Math.Min(k, h / (c[0] + c[3]));
+        if (c[1] + c[2] > h) k = Math.Min(k, h / (c[1] + c[2]));
+        for (int i = 0; i < 4; i++) c[i] *= k;
+        return c;
+    }
+
+    void RoundedPath(double x, double y, double w, double h, double[] radii)
+    {
+        var r = ClampRadii(w, h, radii);
+        const double K = 0.5523;   // аппроксимация четверти окружности кривой Безье
+        double x2 = x + w, y2 = y + h;
+        void M(double px, double py) => _sb.Append($"{F(px)} {F(Y(py))} m ");
+        void L(double px, double py) => _sb.Append($"{F(px)} {F(Y(py))} l ");
+        void C(double ax, double ay, double bx, double by, double px, double py) =>
+            _sb.Append($"{F(ax)} {F(Y(ay))} {F(bx)} {F(Y(by))} {F(px)} {F(Y(py))} c ");
+        M(x + r[0], y);
+        L(x2 - r[1], y);
+        if (r[1] > 0) C(x2 - r[1] + r[1] * K, y, x2, y + r[1] - r[1] * K, x2, y + r[1]);
+        L(x2, y2 - r[2]);
+        if (r[2] > 0) C(x2, y2 - r[2] + r[2] * K, x2 - r[2] + r[2] * K, y2, x2 - r[2], y2);
+        L(x + r[3], y2);
+        if (r[3] > 0) C(x + r[3] - r[3] * K, y2, x, y2 - r[3] + r[3] * K, x, y2 - r[3]);
+        L(x, y + r[0]);
+        if (r[0] > 0) C(x, y + r[0] - r[0] * K, x + r[0] - r[0] * K, y, x + r[0], y);
+        _sb.Append("h ");
+    }
+
+    public static bool HasRadius(double[]? r) => r != null && (r[0] > 0 || r[1] > 0 || r[2] > 0 || r[3] > 0);
+
+    public void FillRoundedRect(double x, double y, double w, double h, double[] radii, Rgb color)
+    {
+        if (w <= 0 || h <= 0) return;
+        _sb.Append($"{Color(color)} rg ");
+        RoundedPath(x, y, w, h, radii);
+        _sb.Append("f\n");
+    }
+
+    /// <summary>Обводка скруглённого прямоугольника; линия идёт по середине толщины (внутри рамки).</summary>
+    public void StrokeRoundedRect(double x, double y, double w, double h, double[] radii, BorderDef b)
+    {
+        if (b.IsNone || w <= 0 || h <= 0) return;
+        if (b.Val == "double")
+        {
+            double d = b.Width / 3;
+            var thin = new BorderDef { Val = "single", Width = d, Color = b.Color };
+            StrokeRoundedRect(x, y, w, h, radii, thin);
+            var inner = radii.Select(r => Math.Max(0, r - 2 * d)).ToArray();
+            StrokeRoundedRect(x + 2 * d, y + 2 * d, w - 4 * d, h - 4 * d, inner, thin);
+            return;
+        }
+        double t = b.Width, half = t / 2;
+        var rr = radii.Select(r => Math.Max(0, r - half)).ToArray();
+        _sb.Append("q ");
+        if (b.Val.Contains("dash")) _sb.Append($"[{F(t * 3)} {F(t * 2)}] 0 d ");
+        else if (b.Val.Contains("dot")) _sb.Append($"1 J [0 {F(t * 2)}] 0 d ");
+        _sb.Append($"{F(t)} w {Color(b.Color)} RG ");
+        RoundedPath(x + half, y + half, w - t, h - t, rr);
+        _sb.Append("S Q\n");
+    }
+
+    /// <summary>Ограничивает рисование скруглённой областью до EndClip().</summary>
+    public void BeginRoundedClip(double x, double y, double w, double h, double[] radii)
+    {
+        _sb.Append("q ");
+        RoundedPath(x, y, w, h, radii);
+        _sb.Append("W n\n");
+    }
+
+    public void EndClip() => _sb.Append("Q\n");
+
     /// <summary>
     /// Начинает преобразованную область: матрица задана в координатах "y вниз" относительно точки (ox, oy) страницы.
     /// </summary>

@@ -119,7 +119,7 @@ public sealed class LineFrag : Frag
                 if (q.Kind is not (PieceKind.Text or PieceKind.Space) || q.Face != p.Face || q.Size != p.Size || q.Rise != p.Rise || q.Style.Color != p.Style.Color || q.Gids.Count == 0)
                     break;
                 gids.AddRange(q.Gids); texts.AddRange(q.Texts);
-                double ls = q.Kind == PieceKind.Text ? q.Style.LetterSpacing : 0;
+                double ls = q.Kind == PieceKind.Text ? q.Style.LetterSpacing : q.Style.WordSpacing;
                 for (int g = 0; g < q.Gids.Count; g++) extra.Add(ls);
                 if (ls != 0) anyExtra = true;
                 // Зазор до следующего куска (выравнивание по ширине)
@@ -138,9 +138,13 @@ public sealed class LineFrag : Frag
             double px = lx + p.X;
             if (p.Kind == PieceKind.Image && p.Image != null && Doc.Media.TryGetValue(p.Image.PartName, out var bytes))
             {
-                var tr = p.Image.Transform?.Invoke(p.Width, p.Ascent);
+                double ih = p.Ascent + p.Descent;
+                var tr = p.Image.Transform?.Invoke(p.Width, ih);
                 if (tr is { } t) c.BeginTransform(px + t.Ox, baseY - p.Ascent + t.Oy, t.A, t.B, t.C, t.D, t.E, t.F);
-                c.Image(p.Image.PartName, bytes, px, baseY - p.Ascent, p.Width, p.Ascent);
+                bool clip = PdfCanvas.HasRadius(p.Image.Radius);
+                if (clip) c.BeginRoundedClip(px, baseY - p.Ascent, p.Width, ih, p.Image.Radius!);
+                c.Image(p.Image.PartName, bytes, px, baseY - p.Ascent, p.Width, ih);
+                if (clip) c.EndClip();
                 if (tr != null) c.EndTransform();
             }
             if (p.Kind == PieceKind.Tab && p.Tab != null && p.Tab.Leader is not ("none" or "") && p.Width > 4)
@@ -212,7 +216,23 @@ public sealed class LineFrag : Frag
             double bt = box.Top?.Width ?? 0, bb = box.Bottom?.Width ?? 0;
             double top = baseY - asc - box.PadTop - bt;
             double bottom = baseY + desc + box.PadBottom + bb;
-            if (box.Background is { } bg) c.FillRect(x1, top, x2 - x1, bottom - top, bg);
+            double[]? rad = null;
+            if (PdfCanvas.HasRadius(box.Radius))
+            {
+                var r = box.Radius!;
+                // углы со стороны разрыва строки не скругляются
+                rad = [hasStart ? r[0] : 0, hasEnd ? r[1] : 0, hasEnd ? r[2] : 0, hasStart ? r[3] : 0];
+            }
+            if (box.Background is { } bg)
+            {
+                if (rad != null) c.FillRoundedRect(x1, top, x2 - x1, bottom - top, rad, bg);
+                else c.FillRect(x1, top, x2 - x1, bottom - top, bg);
+            }
+            if (rad != null && hasStart && hasEnd && BorderDef.Same(box.Top, box.Bottom) && BorderDef.Same(box.Top, box.Left) && BorderDef.Same(box.Top, box.Right))
+            {
+                c.StrokeRoundedRect(x1, top, x2 - x1, bottom - top, rad, box.Top!);
+                continue;
+            }
             void L(BorderDef? b, double ax, double ay, double bx, double by)
             {
                 if (b is { IsNone: false }) c.Line(ax, ay, bx, by, b.Width, b.Color, b.Val.Contains("dash"), b.Val.Contains("dot"));
@@ -270,6 +290,7 @@ public sealed class CellBox
     public BorderDef? Top, Bottom, Left, Right;
     public Rgb? Shading;
     public string VAlign = "top";
+    public double[]? Radius;
     public VMerge VMerge;
     public int GridIndex, Span;
     public List<(Frag Frag, double Y)> Items = [];
@@ -294,7 +315,11 @@ public sealed class RowFrag : Frag
     {
         foreach (var cell in Cells)
             if (cell.Shading is { } shd && cell.VMerge != VMerge.Continue)
-                c.FillRect(x + cell.X, y, cell.Width, cell.VMerge == VMerge.Restart ? Math.Max(Height, cell.MergedHeight) : Height, shd);
+            {
+                double ch = cell.VMerge == VMerge.Restart ? Math.Max(Height, cell.MergedHeight) : Height;
+                if (PdfCanvas.HasRadius(cell.Radius)) c.FillRoundedRect(x + cell.X, y, cell.Width, ch, cell.Radius!, shd);
+                else c.FillRect(x + cell.X, y, cell.Width, ch, shd);
+            }
 
         foreach (var cell in Cells)
         {
@@ -313,6 +338,11 @@ public sealed class RowFrag : Frag
         foreach (var cell in Cells)
         {
             double x1 = x + cell.X, x2 = x1 + cell.Width, y1 = y, y2 = y + Height;
+            if (PdfCanvas.HasRadius(cell.Radius) && BorderDef.Same(cell.Top, cell.Bottom) && BorderDef.Same(cell.Top, cell.Left) && BorderDef.Same(cell.Top, cell.Right))
+            {
+                c.StrokeRoundedRect(x1, y1, cell.Width, Height, cell.Radius!, cell.Top!);
+                continue;
+            }
             if (cell.Top is { IsNone: false } t) DrawBorder(c, t, x1, y1, x2, y1);
             if (cell.Bottom is { IsNone: false } b) DrawBorder(c, b, x1, y2, x2, y2);
             if (cell.Left is { IsNone: false } l) DrawBorder(c, l, x1, y1, x1, y2);
@@ -384,7 +414,7 @@ public sealed class RowFrag : Frag
     static CellBox Copy(CellBox c) => new()
     {
         X = c.X, Width = c.Width, MarginTop = c.MarginTop, MarginBottom = c.MarginBottom, MarginLeft = c.MarginLeft, MarginRight = c.MarginRight,
-        Top = c.Top, Bottom = c.Bottom, Left = c.Left, Right = c.Right, Shading = c.Shading, VAlign = c.VAlign, VMerge = c.VMerge,
+        Top = c.Top, Bottom = c.Bottom, Left = c.Left, Right = c.Right, Shading = c.Shading, VAlign = c.VAlign, VMerge = c.VMerge, Radius = c.Radius,
         GridIndex = c.GridIndex, Span = c.Span
     };
 }
@@ -398,7 +428,12 @@ public sealed class BoxFrag : Frag
 
     public override void Draw(PdfCanvas c, double x, double y)
     {
-        if (Box.Background is { } bg) c.FillRect(x, y, Width, Height, bg);
+        bool round = PdfCanvas.HasRadius(Box.Radius);
+        if (Box.Background is { } bg)
+        {
+            if (round) c.FillRoundedRect(x, y, Width, Height, Box.Radius!, bg);
+            else c.FillRect(x, y, Width, Height, bg);
+        }
         double cx = x + Box.PadLeft + (Box.BorderLeft?.Width ?? 0);
         double cy = y + Box.PadTop + (Box.BorderTop?.Width ?? 0);
         foreach (var (f, fy) in Items) f.Draw(c, cx, cy + fy);
@@ -416,6 +451,11 @@ public sealed class BoxFrag : Frag
                 return;
             }
             c.Line(x1, y1, x2, y2, b.Width, b.Color, b.Val.Contains("dash"), b.Val.Contains("dot"));
+        }
+        if (round && BorderDef.Same(Box.BorderTop, Box.BorderBottom) && BorderDef.Same(Box.BorderTop, Box.BorderLeft) && BorderDef.Same(Box.BorderTop, Box.BorderRight))
+        {
+            c.StrokeRoundedRect(x, y, Width, Height, Box.Radius!, Box.BorderTop!);
+            return;
         }
         double h2 = (Box.BorderTop?.Width ?? 0) / 2, w2 = (Box.BorderLeft?.Width ?? 0) / 2;
         B(Box.BorderTop, x, y + h2, x + Width, y + h2);

@@ -334,6 +334,7 @@ public sealed partial class HtmlReader
         var ps = owner.Style.InheritFrom();
         ps.Display = "inline";
         ApplyAll(ps, owner.Style, decls);
+        if (ps.InitialLetter != null) SetupInitialLetter(ps, owner.Style, n.Style ?? owner.Style);
         Blockify(ps, owner.Style);
         FixTextBackground(ps);
         SetupInlineBox(ps);
@@ -341,6 +342,61 @@ public sealed partial class HtmlReader
         pseudo.Children.Add(new Node { Tag = "#text", Text = text[start..i], Parent = pseudo });
         t.Text = text[i..];
         owner.Children.Insert(owner.Children.IndexOf(t), pseudo);
+    }
+
+    /// <summary>
+    /// initial-letter: N [погружение] — буквица высотой ровно в N строк. Верх заглавной буквы
+    /// выравнивается по высоте прописных первой строки, базовая линия — по базовой линии строки «погружения».
+    /// Реализуется как плавающий блок с точно рассчитанными размером шрифта и высотой.
+    /// </summary>
+    void SetupInitialLetter(CssStyle ps, CssStyle owner, CssStyle block)
+    {
+        var tok = CssValues.Tokens(ps.InitialLetter!);
+        if (tok.Count == 0 || !double.TryParse(tok[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double size) || size < 1)
+            return;
+        int sink = tok.Count > 1 && int.TryParse(tok[1], out var sk) ? Math.Max(1, sk) : (int)Math.Round(size);
+        if (tok.Count > 1 && tok[1] == "drop") sink = (int)Math.Round(size);
+        if (tok.Count > 1 && tok[1] == "raise") sink = 1;
+
+        // Метрики основного текста (как их считает вёрстка)
+        var bodyFace = _fonts.Get(block.FontFamily, block.Bold, block.Italic).Font;
+        double em = bodyFace.UnitsPerEm, bs = block.FontSize;
+        double asc = bodyFace.Ascent / em * bs, desc = bodyFace.Descent / em * bs, natural = asc + desc;
+        double factor = block.LineHeightFactor is double lf ? lf / 1.15 : 1;
+        double lh = block.LineHeightPt is double lp ? Math.Max(lp, natural) : natural * factor;
+        double baseline1 = block.LineHeightPt != null ? lh - desc : factor >= 1 ? asc : asc * factor;
+        double capBody = bodyFace.CapHeight / em * bs;
+
+        // Размер буквицы: от высоты прописных первой строки до базовой линии строки N
+        var letterFace = _fonts.Get(ps.FontFamily, ps.Bold, ps.Italic).Font;
+        double capRatio = Math.Max(0.3, letterFace.CapHeight / (double)letterFace.UnitsPerEm);
+        double capLetter = (size - 1) * lh + capBody;
+        double fsLetter = capLetter / capRatio;
+        double descLetter = letterFace.Descent / (double)letterFace.UnitsPerEm * fsLetter;
+
+        double baselineSink = (sink - 1) * lh + baseline1;
+        // Приподнятая буквица (погружение меньше размера) выступает над первой строкой —
+        // абзац сдвигается вниз, чтобы буква не наезжала на предыдущий текст
+        double raise = Math.Max(0, capLetter - baselineSink + capBody * 0.1);
+        ps.FontSize = fsLetter;
+        ps.Float = "left";
+        ps.ExactLineHeight = raise + baselineSink + descLetter;   // базовая линия буквы = базовая линия строки sink
+        ps.LineHeightFactor = null; ps.LineHeightPt = null;
+        ps.PaddingTop = ps.PaddingBottom = 0;
+        ps.MarginTop = -raise;
+        // Обтекание — ровно sink строк
+        ps.MarginBottom = sink * lh - ps.ExactLineHeight.Value + raise;
+        if (raise > 0) block.PaddingTop += raise;
+        ps.MarginRight = Math.Max(ps.MarginRight, fsLetter * 0.1);
+    }
+
+    /// <summary>Радиусы скругления (pt) по исходным значениям CSS; % — от basis.</summary>
+    static double[]? RadiusOf(CssStyle s, double basis)
+    {
+        if (!s.HasRadius) return null;
+        var r = new double[4];
+        for (int i = 0; i < 4; i++) r[i] = CssValues.Length(s.Radius[i], s.FontSize, basis) ?? 0;
+        return r.Any(x => x > 0) ? r : null;
     }
 
     /// <summary>Назначает стиль ::first-line первому абзацу, созданному внутри элемента.</summary>
@@ -401,7 +457,7 @@ public sealed partial class HtmlReader
         {
             Parent = s.InlineBox, Background = s.Background, Top = t, Bottom = b, Left = l, Right = r,
             PadTop = s.PaddingTop, PadBottom = s.PaddingBottom, PadLeft = s.PaddingLeft, PadRight = s.PaddingRight,
-            MarginLeft = s.MarginLeft, MarginRight = s.MarginRight,
+            MarginLeft = s.MarginLeft, MarginRight = s.MarginRight, Radius = RadiusOf(s, s.FontSize * 4),
         };
         if (box.Background != null) s.TextBackground = null;   // фон рисует сам блок (вместе с padding)
         s.InlineBox = box;
@@ -805,7 +861,7 @@ public sealed partial class HtmlReader
             case "text-transform": s.Upper = lv == "uppercase"; s.Lower = lv == "lowercase"; break;
             case "vertical-align":
                 s.VertAlign = lv switch { "super" => 1, "sub" => -1, _ => 0 };
-                if (lv is "top" or "middle" or "bottom" or "baseline") s.VerticalAlign = lv;
+                if (lv is "top" or "middle" or "bottom" or "baseline" or "text-top" or "text-bottom") s.VerticalAlign = lv;
                 break;
             case "list-style-type": s.ListStyleType = lv; break;
             case "list-style":
@@ -834,6 +890,26 @@ public sealed partial class HtmlReader
             case "translate": s.Translate = lv is "none" ? null : lv; break;
             case "rotate": s.Rotate = lv is "none" ? null : lv; break;
             case "scale": s.Scale = lv is "none" ? null : lv; break;
+            case "word-spacing": s.WordSpacing = lv == "normal" ? 0 : CssValues.Length(lv, fs) ?? 0; break;
+            case "border-radius" or "-webkit-border-radius" or "-moz-border-radius":
+            {
+                string h = lv.Split('/')[0].Trim();   // эллиптические радиусы: берём горизонтальные
+                // порядок в CSS: TL TR BR BL
+                var tok = CssValues.Tokens(h);
+                s.Radius = tok.Count switch
+                {
+                    1 => [tok[0], tok[0], tok[0], tok[0]],
+                    2 => [tok[0], tok[1], tok[0], tok[1]],
+                    3 => [tok[0], tok[1], tok[2], tok[1]],
+                    _ => [tok[0], tok[1], tok[2], tok[3]],
+                };
+                break;
+            }
+            case "border-top-left-radius": s.Radius[0] = lv.Split(' ')[0]; break;
+            case "border-top-right-radius": s.Radius[1] = lv.Split(' ')[0]; break;
+            case "border-bottom-right-radius": s.Radius[2] = lv.Split(' ')[0]; break;
+            case "border-bottom-left-radius": s.Radius[3] = lv.Split(' ')[0]; break;
+            case "initial-letter" or "-webkit-initial-letter": s.InitialLetter = lv is "normal" ? null : lv; break;
             case "letter-spacing": s.LetterSpacing = lv == "normal" ? 0 : CssValues.Length(lv, fs) ?? 0; break;
             case "font-variant" or "font-variant-caps":
                 if (lv.Contains("small-caps")) s.SmallCaps = true;
@@ -1051,7 +1127,7 @@ public sealed partial class HtmlReader
     TextStyle ToTextStyle(CssStyle s) => new()
     {
         FontAscii = s.FontFamily, FontHAnsi = s.FontFamily, FontEastAsia = s.FontFamily,
-        Bold = s.Bold, Italic = s.Italic, Underline = s.Underline, Strike = s.Strike, Caps = s.Upper, SmallCaps = s.SmallCaps, LetterSpacing = s.LetterSpacing,
+        Bold = s.Bold, Italic = s.Italic, Underline = s.Underline, Strike = s.Strike, Caps = s.Upper, SmallCaps = s.SmallCaps, LetterSpacing = s.LetterSpacing, WordSpacing = s.WordSpacing,
         Size = Math.Max(1, s.FontSize), Color = s.Color, Background = s.TextBackground, VertAlign = s.VertAlign, Link = s.Link,
         Box = s.InlineBox,
     };
@@ -1073,7 +1149,8 @@ public sealed partial class HtmlReader
             MarkStyle = ToTextStyle(o),
             WidowControl = true,
         };
-        if (o.LineHeightFactor is double lf) { p.LineRule = "auto"; p.LineValue = 240 * lf / 1.15; }
+        if (o.ExactLineHeight is double ex) { p.LineRule = "exact"; p.LineValue = ex; }
+        else if (o.LineHeightFactor is double lf) { p.LineRule = "auto"; p.LineValue = 240 * lf / 1.15; }
         else if (o.LineHeightPt is double lp) { p.LineRule = "atLeast"; p.LineValue = lp; }
         f.PendingMargin = 0;
         f.PendingBreak = false;
@@ -1481,7 +1558,7 @@ public sealed partial class HtmlReader
         if (block) { Flush(f); f.PendingMargin = Math.Max(f.PendingMargin, s.MarginTop); }
         var p = EnsureParagraph(f, b);
         if (block && s.MarginLeftAuto && s.MarginRightAuto) p.Align = "center";
-        AddInline(f, b, new ImageInline(key, w.Value, h.Value, ToTextStyle(s)) { Transform = TransformOf(s) });
+        AddInline(f, b, new ImageInline(key, w.Value, h.Value, ToTextStyle(s)) { Transform = TransformOf(s), Radius = RadiusOf(s, Math.Min(w.Value, h.Value)), VAlign = s.VerticalAlign });
         f.LastSpace = false;
         if (block) { Flush(f); f.PendingMargin = Math.Max(f.PendingMargin, s.MarginBottom); }
     }
@@ -1769,12 +1846,17 @@ public sealed partial class HtmlReader
                     }
                     return;
                 }
-                foreach (var word in text.Split([' ', '\n', '\t', '\r'], StringSplitOptions.RemoveEmptyEntries))
+                // Пробелы — только между словами (и по краям, если они есть в тексте)
+                var words = text.Split([' ', '\n', '\t', '\r'], StringSplitOptions.RemoveEmptyEntries);
+                if (words.Length == 0) { if (text.Length > 0 && line > 0) line += spaceW + st.WordSpacing; return; }
+                if (char.IsWhiteSpace(text[0]) && line > 0) line += spaceW + st.WordSpacing;
+                for (int wi = 0; wi < words.Length; wi++)
                 {
-                    double w = Width(face, word, size);
+                    double w = Width(face, words[wi], size) + st.LetterSpacing * words[wi].Length;
                     min = Math.Max(min, w);
-                    line += w + spaceW;
+                    line += w + (wi < words.Length - 1 ? spaceW + st.WordSpacing : 0);
                 }
+                if (char.IsWhiteSpace(text[^1])) line += spaceW + st.WordSpacing;
                 return;
             }
             if (!x.IsElement) { foreach (var c in x.Children) Walk(c); return; }

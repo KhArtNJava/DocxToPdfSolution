@@ -87,6 +87,14 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
   `rotate` (deg, rad, grad, turn), `skew`/`skewX`/`skewY`, `matrix()`, цепочки функций; `transform-origin`
   (ключевые слова, длины, %); отдельные свойства `translate`, `rotate`, `scale`. Применяется к блокам, картинкам,
   float, absolute/fixed, элементам flex/grid; на раскладку не влияет (как в браузере), выводится матрицей PDF
+- **`border-radius`** (сокращение 1–4 значения и `border-*-*-radius`, px/em/%): блоки, рамки-ячейки, элементы flex/grid,
+  float, absolute/fixed, строчные элементы (при переносе скругляются только «внешние» углы), картинки (обрезка
+  по контуру, `50%` — круг); рамки любого стиля (сплошная, пунктир, точки, двойная) идут по скруглённому контуру
+- **`word-spacing`** — дополнительный интервал между словами (в т.ч. отрицательный)
+- **`initial-letter: N [погружение]`** (и `-webkit-initial-letter`) у `::first-letter`: буквица высотой ровно в N строк —
+  верх прописной по линии прописных первой строки, базовая линия по строке погружения, обтекание ровно на число строк
+  погружения; приподнятая буквица (`3 2`, `raise`) раздвигает текст сверху
+- `vertical-align` у картинок в строке: `middle`, `top`/`text-top`, `bottom`/`text-bottom`
 - Блоки с фоном и внутренними отступами заливаются целиком (фон под padding), рамка `double` у блоков
 - **Счётчики**: `counter-reset`, `counter-increment`, `counter-set` с областями видимости (многоуровневая нумерация)
 - **CSS-переменные**: `--имя` (наследуются, задаются в `:root`, классах, `style=""`), `var(--x, запасное)` с вложенностью
@@ -103,8 +111,8 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - Нет колонок, сносок, примечаний, RTL и сложного шейпинга (арабский, индийские письменности), кернинга и автопереносов
 - Только TrueType-контуры (OTF с CFF пропускаются)
 - Условное форматирование стилей таблиц (firstRow, banded rows) не применяется
-- HTML: нет JavaScript, SVG, 3D-преобразований (`rotateX`, `perspective` игнорируются), `border-radius` (углы прямые),
-  `word-spacing`, `initial-letter`; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
+- HTML: нет JavaScript, SVG, 3D-преобразований (`rotateX`, `perspective` игнорируются), эллиптических радиусов
+  (`10px / 20px` — берётся горизонтальный); рамка с разными сторонами при скруглении рисуется прямыми отрезками; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
   преобразования); ссылки внутри преобразованного блока кликабельны по исходной (неповёрнутой) области;
   динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
 - float: таблица рядом с плавающим блоком размещается ниже него; float выше страницы выводится в потоке;
@@ -116,4 +124,5 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 `layout.html` → `layout.pdf` (float, flex, grid, position), `css-features.html` → `css-features.pdf`
 (переменные, calc, ::before/::after, счётчики, :nth-child), `inline-boxes.html` → `inline-boxes.pdf` (рамки внутри строки),
 `first-letter-line.html` → `first-letter-line.pdf` (буквицы, `::first-letter`, `::first-line`, капитель),
-`transform.html` → `transform.pdf` (повороты, масштаб, наклон, центрирование, штамп).
+`transform.html` → `transform.pdf` (повороты, масштаб, наклон, центрирование, штамп),
+`radius-spacing-initial.html` → `radius-spacing-initial.pdf` (`border-radius`, `word-spacing`, `initial-letter`).
