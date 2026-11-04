@@ -144,8 +144,9 @@ public sealed class LineFrag : Frag
                 double iy = baseY - p.Ascent, iw = p.Width;
                 void DrawImg()
                 {
-                    bool clip = PdfCanvas.HasRadius(img.Radius);
-                    if (clip) c.BeginRoundedClip(px, iy, iw, ih, img.Radius!);
+                    var ir = img.Radius?.Resolve(iw, ih);
+                    bool clip = PdfCanvas.HasRadius(ir);
+                    if (clip) c.BeginRoundedClip(px, iy, iw, ih, ir!);
                     c.Image(img.PartName, bytes, px, iy, iw, ih);
                     if (clip) c.EndClip();
                 }
@@ -222,11 +223,12 @@ public sealed class LineFrag : Frag
             double top = baseY - asc - box.PadTop - bt;
             double bottom = baseY + desc + box.PadBottom + bb;
             double[]? rad = null;
-            if (PdfCanvas.HasRadius(box.Radius))
+            if (box.Radius is { Any: true })
             {
-                var r = box.Radius!;
+                var r = box.Radius.Resolve(x2 - x1, bottom - top);
                 // углы со стороны разрыва строки не скругляются
-                rad = [hasStart ? r[0] : 0, hasEnd ? r[1] : 0, hasEnd ? r[2] : 0, hasStart ? r[3] : 0];
+                rad = [hasStart ? r[0] : 0, hasEnd ? r[1] : 0, hasEnd ? r[2] : 0, hasStart ? r[3] : 0,
+                       hasStart ? r[4] : 0, hasEnd ? r[5] : 0, hasEnd ? r[6] : 0, hasStart ? r[7] : 0];
             }
             if (box.Background is { } bg)
             {
@@ -295,7 +297,7 @@ public sealed class CellBox
     public BorderDef? Top, Bottom, Left, Right;
     public Rgb? Shading;
     public string VAlign = "top";
-    public double[]? Radius;
+    public RadiusSpec? Radius;
     public VMerge VMerge;
     public int GridIndex, Span;
     public List<(Frag Frag, double Y)> Items = [];
@@ -322,7 +324,7 @@ public sealed class RowFrag : Frag
             if (cell.Shading is { } shd && cell.VMerge != VMerge.Continue)
             {
                 double ch = cell.VMerge == VMerge.Restart ? Math.Max(Height, cell.MergedHeight) : Height;
-                if (PdfCanvas.HasRadius(cell.Radius)) c.FillRoundedRect(x + cell.X, y, cell.Width, ch, cell.Radius!, shd);
+                if (cell.Radius is { Any: true }) c.FillRoundedRect(x + cell.X, y, cell.Width, ch, cell.Radius.Resolve(cell.Width, ch), shd);
                 else c.FillRect(x + cell.X, y, cell.Width, ch, shd);
             }
 
@@ -343,9 +345,9 @@ public sealed class RowFrag : Frag
         foreach (var cell in Cells)
         {
             double x1 = x + cell.X, x2 = x1 + cell.Width, y1 = y, y2 = y + Height;
-            if (PdfCanvas.HasRadius(cell.Radius) && BorderDef.Same(cell.Top, cell.Bottom) && BorderDef.Same(cell.Top, cell.Left) && BorderDef.Same(cell.Top, cell.Right))
+            if (cell.Radius is { Any: true } && BorderDef.Same(cell.Top, cell.Bottom) && BorderDef.Same(cell.Top, cell.Left) && BorderDef.Same(cell.Top, cell.Right))
             {
-                c.StrokeRoundedRect(x1, y1, cell.Width, Height, cell.Radius!, cell.Top!);
+                c.StrokeRoundedRect(x1, y1, cell.Width, Height, cell.Radius.Resolve(cell.Width, Height), cell.Top!);
                 continue;
             }
             if (cell.Top is { IsNone: false } t) DrawBorder(c, t, x1, y1, x2, y1);
@@ -433,10 +435,11 @@ public sealed class BoxFrag : Frag
 
     public override void Draw(PdfCanvas c, double x, double y)
     {
-        bool round = PdfCanvas.HasRadius(Box.Radius);
+        var rad = Box.Radius?.Resolve(Width, Height);
+        bool round = PdfCanvas.HasRadius(rad);
         if (Box.Background is { } bg)
         {
-            if (round) c.FillRoundedRect(x, y, Width, Height, Box.Radius!, bg);
+            if (round) c.FillRoundedRect(x, y, Width, Height, rad!, bg);
             else c.FillRect(x, y, Width, Height, bg);
         }
         double cx = x + Box.PadLeft + (Box.BorderLeft?.Width ?? 0);
@@ -459,7 +462,7 @@ public sealed class BoxFrag : Frag
         }
         if (round && BorderDef.Same(Box.BorderTop, Box.BorderBottom) && BorderDef.Same(Box.BorderTop, Box.BorderLeft) && BorderDef.Same(Box.BorderTop, Box.BorderRight))
         {
-            c.StrokeRoundedRect(x, y, Width, Height, Box.Radius!, Box.BorderTop!);
+            c.StrokeRoundedRect(x, y, Width, Height, rad!, Box.BorderTop!);
             return;
         }
         double h2 = (Box.BorderTop?.Width ?? 0) / 2, w2 = (Box.BorderLeft?.Width ?? 0) / 2;

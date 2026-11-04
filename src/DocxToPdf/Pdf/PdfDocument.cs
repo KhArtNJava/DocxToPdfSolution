@@ -394,43 +394,51 @@ public sealed class PdfCanvas
     //  Скруглённые прямоугольники (border-radius)
     // ---------------------------------------------------------------
 
-    /// <summary>Радиусы углов: левый верхний, правый верхний, правый нижний, левый нижний.</summary>
+    /// <summary>
+    /// Радиусы (pt): rx TL, TR, BR, BL, затем ry TL, TR, BR, BL. Как в CSS: если сумма радиусов
+    /// вдоль стороны больше стороны — все радиусы уменьшаются в одной пропорции.
+    /// </summary>
     static double[] ClampRadii(double w, double h, double[] r)
     {
-        var c = new double[4];
-        for (int i = 0; i < 4; i++) c[i] = Math.Max(0, r[i]);
-        // Как в CSS: если сумма радиусов на стороне больше стороны — все уменьшаются пропорционально
+        var c = r.Select(v => Math.Max(0, v)).ToArray();
         double k = 1;
-        if (c[0] + c[1] > w) k = Math.Min(k, w / (c[0] + c[1]));
-        if (c[3] + c[2] > w) k = Math.Min(k, w / (c[3] + c[2]));
-        if (c[0] + c[3] > h) k = Math.Min(k, h / (c[0] + c[3]));
-        if (c[1] + c[2] > h) k = Math.Min(k, h / (c[1] + c[2]));
-        for (int i = 0; i < 4; i++) c[i] *= k;
+        void Side(double len, double sum) { if (sum > len && sum > 0) k = Math.Min(k, len / sum); }
+        Side(w, c[0] + c[1]);   // верх: rx TL + rx TR
+        Side(w, c[3] + c[2]);   // низ: rx BL + rx BR
+        Side(h, c[4] + c[7]);   // лево: ry TL + ry BL
+        Side(h, c[5] + c[6]);   // право: ry TR + ry BR
+        for (int i = 0; i < 8; i++) c[i] *= k;
+        // Угол с одним нулевым радиусом — прямой
+        for (int i = 0; i < 4; i++) if (c[i] <= 0 || c[i + 4] <= 0) c[i] = c[i + 4] = 0;
         return c;
     }
 
     void RoundedPath(double x, double y, double w, double h, double[] radii)
     {
         var r = ClampRadii(w, h, radii);
-        const double K = 0.5523;   // аппроксимация четверти окружности кривой Безье
+        const double K = 0.5523;   // аппроксимация четверти эллипса кривой Безье
         double x2 = x + w, y2 = y + h;
+        double txl = r[0], trx = r[1], brx = r[2], blx = r[3], tly = r[4], try_ = r[5], bry = r[6], bly = r[7];
         void M(double px, double py) => _sb.Append($"{F(px)} {F(Y(py))} m ");
         void L(double px, double py) => _sb.Append($"{F(px)} {F(Y(py))} l ");
         void C(double ax, double ay, double bx, double by, double px, double py) =>
             _sb.Append($"{F(ax)} {F(Y(ay))} {F(bx)} {F(Y(by))} {F(px)} {F(Y(py))} c ");
-        M(x + r[0], y);
-        L(x2 - r[1], y);
-        if (r[1] > 0) C(x2 - r[1] + r[1] * K, y, x2, y + r[1] - r[1] * K, x2, y + r[1]);
-        L(x2, y2 - r[2]);
-        if (r[2] > 0) C(x2, y2 - r[2] + r[2] * K, x2 - r[2] + r[2] * K, y2, x2 - r[2], y2);
-        L(x + r[3], y2);
-        if (r[3] > 0) C(x + r[3] - r[3] * K, y2, x, y2 - r[3] + r[3] * K, x, y2 - r[3]);
-        L(x, y + r[0]);
-        if (r[0] > 0) C(x, y + r[0] - r[0] * K, x + r[0] - r[0] * K, y, x + r[0], y);
+        M(x + txl, y);
+        L(x2 - trx, y);
+        if (trx > 0) C(x2 - trx + trx * K, y, x2, y + try_ - try_ * K, x2, y + try_);
+        L(x2, y2 - bry);
+        if (brx > 0) C(x2, y2 - bry + bry * K, x2 - brx + brx * K, y2, x2 - brx, y2);
+        L(x + blx, y2);
+        if (blx > 0) C(x + blx - blx * K, y2, x, y2 - bly + bly * K, x, y2 - bly);
+        L(x, y + tly);
+        if (txl > 0) C(x, y + tly - tly * K, x + txl - txl * K, y, x + txl, y);
         _sb.Append("h ");
     }
 
-    public static bool HasRadius(double[]? r) => r != null && (r[0] > 0 || r[1] > 0 || r[2] > 0 || r[3] > 0);
+    public static bool HasRadius(double[]? r) => r != null && r.Any(v => v > 0);
+
+    /// <summary>Уменьшает радиусы на величину inset (для внутренних контуров рамки).</summary>
+    static double[] Inset(double[] r, double d) => r.Select(v => Math.Max(0, v - d)).ToArray();
 
     public void FillRoundedRect(double x, double y, double w, double h, double[] radii, Rgb color)
     {
@@ -450,13 +458,14 @@ public sealed class PdfCanvas
         {
             double d = b.Width / 3;
             var thin = new BorderDef { Val = "single", Width = d, Color = b.Color };
-            StrokeRoundedRect(x, y, w, h, radii, thin);
-            var inner = radii.Select(r => Math.Max(0, r - 2 * d)).ToArray();
+            var outer = ClampRadii(w, h, radii);
+            StrokeRoundedRect(x, y, w, h, outer, thin);
+            var inner = Inset(outer, 2 * d);
             StrokeRoundedRect(x + 2 * d, y + 2 * d, w - 4 * d, h - 4 * d, inner, thin);
             return;
         }
         double t = b.Width, half = t / 2;
-        var rr = radii.Select(r => Math.Max(0, r - half)).ToArray();
+        var rr = Inset(ClampRadii(w, h, radii), half);
         _sb.Append("q ");
         if (b.Val.Contains("dash")) _sb.Append($"[{F(t * 3)} {F(t * 2)}] 0 d ");
         else if (b.Val.Contains("dot")) _sb.Append($"1 J [0 {F(t * 2)}] 0 d ");

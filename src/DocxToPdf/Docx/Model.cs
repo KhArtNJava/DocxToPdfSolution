@@ -185,7 +185,7 @@ public sealed class InlineBox
     public BorderDef? Top, Bottom, Left, Right;
     public double PadTop, PadBottom, PadLeft, PadRight;
     public double MarginLeft, MarginRight;
-    public double[]? Radius;
+    public RadiusSpec? Radius;
 
     public double StartWidth => MarginLeft + (Left?.Width ?? 0) + PadLeft;
     public double EndWidth => MarginRight + (Right?.Width ?? 0) + PadRight;
@@ -259,7 +259,7 @@ public sealed class BreakInline(BreakKind kind, TextStyle style) : Inline
 public sealed class ImageInline(string partName, double width, double height, TextStyle style) : Inline
 {
     public TransformResolver? Transform;
-    public double[]? Radius;             // скругление картинки (обрезка)
+    public RadiusSpec? Radius;           // скругление картинки (обрезка)
     public string? VAlign;               // vertical-align: middle / top / bottom …
     public string PartName = partName;
     public double Width = width;   // pt
@@ -331,7 +331,7 @@ public enum VMerge { None, Restart, Continue }
 
 public sealed class TableCell
 {
-    public double[]? Radius;
+    public RadiusSpec? Radius;
     public int GridSpan = 1;
     public VMerge VMerge;
     public CellBorders? Borders;
@@ -364,6 +364,26 @@ public sealed class Table : Block
     public string? Clear;
 }
 
+/// <summary>
+/// Радиусы скругления углов (CSS border-radius), в т.ч. эллиптические.
+/// Порядок: горизонтальные TL, TR, BR, BL, затем вертикальные TL, TR, BR, BL.
+/// Проценты хранятся долями и вычисляются при отрисовке: горизонтальные — от ширины, вертикальные — от высоты.
+/// </summary>
+public sealed class RadiusSpec
+{
+    public double[] V = new double[8];
+    public bool[] Pct = new bool[8];
+
+    public bool Any => V.Any(v => v > 0);
+
+    public double[] Resolve(double w, double h)
+    {
+        var r = new double[8];
+        for (int i = 0; i < 8; i++) r[i] = Pct[i] ? V[i] * (i < 4 ? w : h) : V[i];
+        return r;
+    }
+}
+
 /// <summary>Оформление блока-контейнера (фон, рамка, внутренние отступы).</summary>
 public sealed class BoxStyle
 {
@@ -371,7 +391,7 @@ public sealed class BoxStyle
     public BorderDef? BorderTop, BorderBottom, BorderLeft, BorderRight;
     public double PadTop, PadBottom, PadLeft, PadRight;
     public double MinHeight;             // CSS height (рамка целиком)
-    public double[]? Radius;             // border-radius: TL, TR, BR, BL (pt)
+    public RadiusSpec? Radius;           // border-radius
     public double HorizontalExtra => PadLeft + PadRight + (BorderLeft?.Width ?? 0) + (BorderRight?.Width ?? 0);
 }
 

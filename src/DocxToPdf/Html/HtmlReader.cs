@@ -392,13 +392,23 @@ public sealed partial class HtmlReader
         ps.MarginRight = Math.Max(ps.MarginRight, fsLetter * 0.1);
     }
 
-    /// <summary>Радиусы скругления (pt) по исходным значениям CSS; % — от basis.</summary>
-    static double[]? RadiusOf(CssStyle s, double basis)
+    /// <summary>Радиусы скругления по исходным значениям CSS; проценты вычисляются при отрисовке.</summary>
+    static RadiusSpec? RadiusOf(CssStyle s)
     {
         if (!s.HasRadius) return null;
-        var r = new double[4];
-        for (int i = 0; i < 4; i++) r[i] = CssValues.Length(s.Radius[i], s.FontSize, basis) ?? 0;
-        return r.Any(x => x > 0) ? r : null;
+        var r = new RadiusSpec();
+        for (int i = 0; i < 8; i++)
+        {
+            string? v = s.Radius[i];
+            if (v == null) continue;
+            if (v.EndsWith('%') && double.TryParse(v[..^1], NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
+            {
+                r.V[i] = Math.Max(0, pct / 100);
+                r.Pct[i] = true;
+            }
+            else r.V[i] = Math.Max(0, CssValues.Length(v, s.FontSize, 0) ?? 0);
+        }
+        return r.Any ? r : null;
     }
 
     /// <summary>Назначает стиль ::first-line первому абзацу, созданному внутри элемента.</summary>
@@ -459,7 +469,7 @@ public sealed partial class HtmlReader
         {
             Parent = s.InlineBox, Background = s.Background, Top = t, Bottom = b, Left = l, Right = r,
             PadTop = s.PaddingTop, PadBottom = s.PaddingBottom, PadLeft = s.PaddingLeft, PadRight = s.PaddingRight,
-            MarginLeft = s.MarginLeft, MarginRight = s.MarginRight, Radius = RadiusOf(s, s.FontSize * 4),
+            MarginLeft = s.MarginLeft, MarginRight = s.MarginRight, Radius = RadiusOf(s),
         };
         if (box.Background != null) s.TextBackground = null;   // фон рисует сам блок (вместе с padding)
         s.InlineBox = box;
@@ -900,22 +910,34 @@ public sealed partial class HtmlReader
             case "word-spacing": s.WordSpacing = lv == "normal" ? 0 : CssValues.Length(lv, fs) ?? 0; break;
             case "border-radius" or "-webkit-border-radius" or "-moz-border-radius":
             {
-                string h = lv.Split('/')[0].Trim();   // эллиптические радиусы: берём горизонтальные
-                // порядок в CSS: TL TR BR BL
-                var tok = CssValues.Tokens(h);
-                s.Radius = tok.Count switch
+                // "гориз. 1–4 значения [/ верт. 1–4 значения]", порядок углов TL TR BR BL
+                static string[] Expand(List<string> t) => t.Count switch
                 {
-                    1 => [tok[0], tok[0], tok[0], tok[0]],
-                    2 => [tok[0], tok[1], tok[0], tok[1]],
-                    3 => [tok[0], tok[1], tok[2], tok[1]],
-                    _ => [tok[0], tok[1], tok[2], tok[3]],
+                    0 => ["0", "0", "0", "0"],
+                    1 => [t[0], t[0], t[0], t[0]],
+                    2 => [t[0], t[1], t[0], t[1]],
+                    3 => [t[0], t[1], t[2], t[1]],
+                    _ => [t[0], t[1], t[2], t[3]],
                 };
+                int slash = lv.IndexOf('/');
+                var hr = Expand(CssValues.Tokens(slash < 0 ? lv : lv[..slash]));
+                var vr = slash < 0 ? hr : Expand(CssValues.Tokens(lv[(slash + 1)..]));
+                s.Radius = [.. hr, .. vr];
                 break;
             }
-            case "border-top-left-radius": s.Radius[0] = lv.Split(' ')[0]; break;
-            case "border-top-right-radius": s.Radius[1] = lv.Split(' ')[0]; break;
-            case "border-bottom-right-radius": s.Radius[2] = lv.Split(' ')[0]; break;
-            case "border-bottom-left-radius": s.Radius[3] = lv.Split(' ')[0]; break;
+            case "border-top-left-radius" or "border-top-right-radius" or "border-bottom-right-radius" or "border-bottom-left-radius":
+            {
+                // одно значение — круглый угол, два — эллиптический (гориз. верт.)
+                int corner = d.Property switch
+                {
+                    "border-top-left-radius" => 0, "border-top-right-radius" => 1, "border-bottom-right-radius" => 2, _ => 3
+                };
+                var t = CssValues.Tokens(lv);
+                if (t.Count == 0) break;
+                s.Radius[corner] = t[0];
+                s.Radius[corner + 4] = t.Count > 1 ? t[1] : t[0];
+                break;
+            }
             case "initial-letter" or "-webkit-initial-letter": s.InitialLetter = lv is "normal" ? null : lv; break;
             case "letter-spacing": s.LetterSpacing = lv == "normal" ? 0 : CssValues.Length(lv, fs) ?? 0; break;
             case "font-variant" or "font-variant-caps":
@@ -1565,7 +1587,7 @@ public sealed partial class HtmlReader
         if (block) { Flush(f); f.PendingMargin = Math.Max(f.PendingMargin, s.MarginTop); }
         var p = EnsureParagraph(f, b);
         if (block && s.MarginLeftAuto && s.MarginRightAuto) p.Align = "center";
-        AddInline(f, b, new ImageInline(key, w.Value, h.Value, ToTextStyle(s)) { Transform = TransformOf(s), Radius = RadiusOf(s, Math.Min(w.Value, h.Value)), VAlign = s.VerticalAlign });
+        AddInline(f, b, new ImageInline(key, w.Value, h.Value, ToTextStyle(s)) { Transform = TransformOf(s), Radius = RadiusOf(s), VAlign = s.VerticalAlign });
         f.LastSpace = false;
         if (block) { Flush(f); f.PendingMargin = Math.Max(f.PendingMargin, s.MarginBottom); }
     }

@@ -481,8 +481,9 @@ public sealed class CssStyle
     public string? GridColumnStart, GridColumnEnd, GridRowStart, GridRowEnd;
 
     // Скругление углов (TL, TR, BR, BL — исходные значения, % — от ширины)
-    public string?[] Radius = new string?[4];
-    public bool HasRadius => Radius.Any(r => r != null && r != "0");
+    // rx TL, TR, BR, BL, затем ry TL, TR, BR, BL
+    public string?[] Radius = new string?[8];
+    public bool HasRadius => Radius.Any(r => r != null && r != "0" && r != "0px");
     // initial-letter: размер в строках и «погружение»
     public string? InitialLetter;
     public double? ExactLineHeight;

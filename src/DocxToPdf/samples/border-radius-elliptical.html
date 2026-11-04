@@ -1,0 +1,16 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><style>
+ @page { size: A4; margin: 15mm } body { font-family: Arial, sans-serif; font-size: 9pt }
+ .row { display: flex; gap: 14px; margin: 10px 0 }
+ .b { width: 120px; height: 70px; background: #dbe8f6; border: 2px solid #36c; padding: 4px }
+ .e1 { border-radius: 10px / 20px } .e2 { border-radius: 50% } .e3 { border-radius: 50% / 20% }
+ .e4 { border-radius: 10px 30px 50px 5px / 40px 10px 20px 30px } .e5 { border-top-left-radius: 60px 20px; border-bottom-right-radius: 20px 50px }
+ .e6 { border-radius: 200px / 100px } .e7 { border-radius: 0 50% } .e8 { border-radius: 40px / 10px; border: 4px double #c33; background: #fee }
+ .e9 { border-radius: 30px / 15px; border: 2px dashed #393; background: #efe }
+ .pill { border-radius: 12px / 6px; background: #456; color: #fff; padding: 2px 10px }
+ img.oval { width: 140px; height: 80px; border-radius: 50%; vertical-align: middle }
+</style></head><body>
+<div class="row"><div class="b e1">10px / 20px</div><div class="b e2">50% (эллипс)</div><div class="b e3">50% / 20%</div><div class="b e4">4 / 4 значения</div></div>
+<div class="row"><div class="b e5">углы: 60px 20px и 20px 50px</div><div class="b e6">200px / 100px (уменьшение)</div><div class="b e7">0 50% («лист»)</div><div class="b e8">double</div></div>
+<div class="row"><div class="b e9">dashed 30px / 15px</div></div>
+<p>Строчный элемент <span class="pill">12px / 6px</span> и картинка-эллипс <img class="oval" src="img.png"> в строке.</p>
+</body></html>

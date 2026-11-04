@@ -15,7 +15,7 @@ public sealed partial class HtmlReader
 
     static BoxStyle BoxOf(CssStyle s, double width = 0) => new()
     {
-        Radius = RadiusOf(s, width),
+        Radius = RadiusOf(s),
         MinHeight = s.Height == null || s.Height.EndsWith('%') ? 0
             : (CssValues.Length(s.Height, s.FontSize) ?? 0) + (s.BoxSizing == "border-box" ? 0
                 : s.PaddingTop + s.PaddingBottom + (s.BorderTop?.ToBorderDef()?.Width ?? 0) + (s.BorderBottom?.ToBorderDef()?.Width ?? 0)),
@@ -127,7 +127,7 @@ public sealed partial class HtmlReader
         var cell = new TableCell
         {
             Shading = s.Background,
-            Radius = RadiusOf(s, width),
+            Radius = RadiusOf(s),
             Borders = new CellBorders
             {
                 Top = s.BorderTop?.ToBorderDef() ?? new BorderDef { Val = "nil" },
@@ -326,7 +326,7 @@ public sealed partial class HtmlReader
         {
             GridSpan = span,
             Shading = (!isText ? itemStyle.Background : null) ?? container.Background,
-            Radius = isText ? null : RadiusOf(itemStyle, width),
+            Radius = isText ? null : RadiusOf(itemStyle),
             VAlign = VAlignFor(container, isText ? null : itemStyle),
             Borders = new CellBorders(),
             Margins = new Margins { Top = 0, Bottom = 0, Left = 0, Right = 0 },
