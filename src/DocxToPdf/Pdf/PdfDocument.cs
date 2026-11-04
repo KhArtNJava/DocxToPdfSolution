@@ -307,12 +307,14 @@ public sealed class PdfCanvas
 
     public void FillRect(double x, double y, double w, double h, Rgb color)
     {
+        if (SkipGraphics) return;
         if (w <= 0 || h <= 0) return;
         _sb.Append($"{Color(color)} rg {F(x)} {F(Y(y + h))} {F(w)} {F(h)} re f\n");
     }
 
     public void Line(double x1, double y1, double x2, double y2, double width, Rgb color, bool dashed = false, bool dotted = false)
     {
+        if (SkipGraphics) return;
         _sb.Append("q ");
         if (dashed) _sb.Append($"[{F(width * 3)} {F(width * 2)}] 0 d ");
         else if (dotted) _sb.Append($"[{F(width)} {F(width * 1.5)}] 0 d ");
@@ -321,13 +323,39 @@ public sealed class PdfCanvas
 
     public void Rect(double x, double y, double w, double h, double width, Rgb color)
     {
+        if (SkipGraphics) return;
         _sb.Append($"q {F(width)} w {Color(color)} RG {F(x)} {F(Y(y + h))} {F(w)} {F(h)} re S Q\n");
     }
 
     /// <summary>Выводит глифы по базовой линии baseline.</summary>
+    /// <summary>Больше нуля — текст выводится контурами (без текстового слоя).</summary>
+    public int TextAsPaths;
+    /// <summary>Больше нуля — выводится только невидимый текстовый слой (для поиска и копирования).</summary>
+    public int InvisibleTextOnly;
+
+    bool SkipGraphics => InvisibleTextOnly > 0;
+
     public void Glyphs(FontFace face, double size, double x, double baseline, IReadOnlyList<ushort> gids, IReadOnlyList<string> texts, Rgb color, IReadOnlyList<double>? extra = null)
     {
         if (gids.Count == 0) return;
+        if (TextAsPaths > 0 && InvisibleTextOnly == 0)
+        {
+            // Контуры глифов: каждый — в своей системе координат через cm
+            var font = face.Font;
+            double k = size / font.UnitsPerEm, skewK = face.SynthItalic ? 0.2126 : 0;
+            double gx = x;
+            _sb.Append($"q {Color(color)} rg ");
+            if (face.SynthBold) _sb.Append($"{Color(color)} RG {F(size * 0.03 / k)} w ");
+            for (int i = 0; i < gids.Count; i++)
+            {
+                string path = font.GlyphPath(gids[i]);
+                if (path.Length > 0)
+                    _sb.Append($"q {F(k)} 0 {F(k * skewK)} {F(k)} {F(gx)} {F(Y(baseline))} cm ").Append(path).Append(face.SynthBold ? "B Q " : "f Q ");
+                gx += font.Advance(gids[i]) * size + (extra != null && i < extra.Count ? extra[i] : 0);
+            }
+            _sb.Append("Q\n");
+            return;
+        }
         var pf = _doc.GetFont(face.Font);
         if (!Fonts.Contains(pf)) Fonts.Add(pf);
         for (int i = 0; i < gids.Count; i++) pf.Used.TryAdd(gids[i], texts[i]);
@@ -335,7 +363,8 @@ public sealed class PdfCanvas
 
         _sb.Append("BT ");
         _sb.Append($"{Color(color)} rg ");
-        if (face.SynthBold) _sb.Append($"2 Tr {F(size * 0.03)} w {Color(color)} RG ");
+        if (InvisibleTextOnly > 0) _sb.Append("3 Tr ");
+        else if (face.SynthBold) _sb.Append($"2 Tr {F(size * 0.03)} w {Color(color)} RG ");
         _sb.Append($"/{pf.Name} {F(size)} Tf ");
         double skew = face.SynthItalic ? 0.2126 : 0;
         _sb.Append($"1 0 {F(skew)} 1 {F(x)} {F(Y(baseline))} Tm ");
@@ -358,7 +387,7 @@ public sealed class PdfCanvas
             _sb.Append(">] TJ");
         }
         _sb.Append(" ET\n");
-        if (face.SynthBold) _sb.Append("0 Tr\n");
+        if (face.SynthBold || InvisibleTextOnly > 0) _sb.Append("0 Tr\n");
     }
 
     // ---------------------------------------------------------------
@@ -405,6 +434,7 @@ public sealed class PdfCanvas
 
     public void FillRoundedRect(double x, double y, double w, double h, double[] radii, Rgb color)
     {
+        if (SkipGraphics) return;
         if (w <= 0 || h <= 0) return;
         _sb.Append($"{Color(color)} rg ");
         RoundedPath(x, y, w, h, radii);
@@ -414,6 +444,7 @@ public sealed class PdfCanvas
     /// <summary>Обводка скруглённого прямоугольника; линия идёт по середине толщины (внутри рамки).</summary>
     public void StrokeRoundedRect(double x, double y, double w, double h, double[] radii, BorderDef b)
     {
+        if (SkipGraphics) return;
         if (b.IsNone || w <= 0 || h <= 0) return;
         if (b.Val == "double")
         {
@@ -456,8 +487,21 @@ public sealed class PdfCanvas
 
     public void EndTransform() => _sb.Append("Q\n");
 
+    /// <summary>Обрезка по многоугольнику (координаты страницы, y вниз) до EndClip().</summary>
+    public void BeginClipPolygon(IReadOnlyList<(double X, double Y)> pts)
+    {
+        _sb.Append("q ");
+        for (int i = 0; i < pts.Count; i++)
+            _sb.Append($"{F(pts[i].X)} {F(Y(pts[i].Y))} {(i == 0 ? "m" : "l")} ");
+        _sb.Append("h W n\n");
+    }
+
+    /// <summary>Пока больше нуля — ссылки не добавляются (повторная отрисовка того же содержимого).</summary>
+    public int SuppressLinks;
+
     public void Image(string key, byte[] bytes, double x, double y, double w, double h)
     {
+        if (SkipGraphics) return;
         var img = _doc.GetImage(key, bytes);
         if (img == null)
         {
@@ -474,6 +518,7 @@ public sealed class PdfCanvas
 
     public void Link(double x, double y, double w, double h, string uri)
     {
+        if (SuppressLinks > 0) return;
         var last = Links.LastOrDefault();
         // Склеиваем соседние прямоугольники одной ссылки на одной строке
         if (last != null && last.Uri == uri && Math.Abs(last.Y2 - Y(y)) < 0.5 && Math.Abs(last.X2 - x) < 1)

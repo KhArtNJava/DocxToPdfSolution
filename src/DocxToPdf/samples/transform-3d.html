@@ -1,0 +1,25 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><style>
+ @page { size: A4; margin: 15mm } body { font-family: Arial, sans-serif; font-size: 10pt }
+ h3 { margin: 8px 0 4px }
+ .row { display: flex; gap: 22px; margin: 14px 0 22px }
+ .b { width: 100px; height: 60px; background: #dbe8f6; border: 1px solid #36c; padding: 4px; font-size: 9pt }
+ .persp { perspective: 300px }
+ .rx { transform: rotateX(50deg) } .ry { transform: rotateY(50deg) } .r3 { transform: rotate3d(1, 1, 0, 45deg) }
+ .tz { transform: translateZ(60px) } .fn { transform: perspective(250px) rotateY(-45deg) }
+ .back { transform: rotateY(180deg); backface-visibility: hidden; background: #fcc }
+ .backv { transform: rotateY(180deg); background: #cfc }
+ .m3 { transform: matrix3d(1,0,0,0, 0,1,0,0.002, 0,0,1,0, 0,0,0,1) }
+ .po { perspective: 200px; perspective-origin: left top }
+ .card { width: 260px; padding: 10px; background: linear-gradient(#fff,#eee); background: #fff6e0; border: 2px solid #d90; transform: perspective(600px) rotateX(25deg); margin: 10px auto }
+ img.t { width: 140px; transform: perspective(400px) rotateY(35deg); }
+ .floor { perspective: 400px } .floor div { transform: rotateX(60deg); background: #eef; border: 1px solid #99c; padding: 6px; text-align: center; font-size: 14pt }
+</style></head><body>
+<h3>Без перспективы (ортогональная проекция)</h3>
+<div class="row"><div class="b rx">rotateX(50deg)</div><div class="b ry">rotateY(50deg)</div><div class="b r3">rotate3d(1,1,0,45deg)</div><div class="b backv">rotateY(180) видна</div><div class="b back">скрыта (backface)</div></div>
+<h3>perspective у родителя: 300px</h3>
+<div class="row persp"><div class="b rx">rotateX(50deg)</div><div class="b ry">rotateY(50deg)</div><div class="b r3">rotate3d</div><div class="b tz">translateZ(60px)</div></div>
+<h3>Функция perspective(), matrix3d, perspective-origin</h3>
+<div class="row"><div class="b fn">perspective(250px) rotateY(-45deg)</div><div class="b m3">matrix3d с перспективой</div><div class="po"><div class="b rx">origin: left top</div></div><img class="t" src="img.png"></div>
+<div class="card"><b>Карточка в перспективе.</b> Текст, рамка и фон наклонены: perspective(600px) rotateX(25deg). Съешь же ещё этих мягких французских булок.</div>
+<div class="floor"><div>«Пол» — rotateX(60deg) в перспективе 400px</div></div>
+</body></html>

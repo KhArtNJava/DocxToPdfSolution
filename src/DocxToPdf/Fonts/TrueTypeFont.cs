@@ -378,6 +378,141 @@ public sealed class TrueTypeFont
         return _data.AsSpan(o, l).ToArray();
     }
 
+    // ---------------------------------------------------------------
+    //  Контуры глифов (для вывода текста кривыми)
+    // ---------------------------------------------------------------
+
+    readonly Dictionary<ushort, string> _pathCache = new();
+
+    /// <summary>
+    /// Контур глифа как операторы пути PDF в единицах шрифта (ось y вверх), без заливки.
+    /// Квадратичные сплайны TrueType переводятся в кубические кривые Безье.
+    /// </summary>
+    public string GlyphPath(ushort gid)
+    {
+        if (_pathCache.TryGetValue(gid, out var cached)) return cached;
+        var contours = new List<List<(double X, double Y, bool On)>>();
+        CollectContours(gid, 1, 0, 0, 1, 0, 0, contours, 0);
+        var sb = new StringBuilder();
+        static string N(double v) => Math.Round(v, 1).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+        foreach (var c in contours)
+        {
+            if (c.Count < 2) continue;
+            // Начинаем с точки на контуре (или с середины двух внеконтурных)
+            int startIdx = c.FindIndex(p => p.On);
+            (double X, double Y) start;
+            var pts = new List<(double X, double Y, bool On)>();
+            if (startIdx < 0)
+            {
+                start = ((c[0].X + c[1].X) / 2, (c[0].Y + c[1].Y) / 2);
+                pts.AddRange(c.Skip(1)); pts.Add(c[0]);
+            }
+            else
+            {
+                start = (c[startIdx].X, c[startIdx].Y);
+                for (int i = 1; i <= c.Count; i++) pts.Add(c[(startIdx + i) % c.Count]);
+            }
+            sb.Append(N(start.X)).Append(' ').Append(N(start.Y)).Append(" m ");
+            var cur = start;
+            (double X, double Y)? ctrl = null;
+            void Quad((double X, double Y) q, (double X, double Y) end)
+            {
+                double c1x = cur.X + 2.0 / 3 * (q.X - cur.X), c1y = cur.Y + 2.0 / 3 * (q.Y - cur.Y);
+                double c2x = end.X + 2.0 / 3 * (q.X - end.X), c2y = end.Y + 2.0 / 3 * (q.Y - end.Y);
+                sb.Append($"{N(c1x)} {N(c1y)} {N(c2x)} {N(c2y)} {N(end.X)} {N(end.Y)} c ");
+                cur = end;
+            }
+            foreach (var p in pts)
+            {
+                if (p.On)
+                {
+                    if (ctrl is { } q) Quad(q, (p.X, p.Y));
+                    else { sb.Append(N(p.X)).Append(' ').Append(N(p.Y)).Append(" l "); cur = (p.X, p.Y); }
+                    ctrl = null;
+                }
+                else
+                {
+                    if (ctrl is { } q) Quad(q, ((q.X + p.X) / 2, (q.Y + p.Y) / 2));
+                    ctrl = (p.X, p.Y);
+                }
+            }
+            if (ctrl is { } last) Quad(last, start);
+            sb.Append("h ");
+        }
+        return _pathCache[gid] = sb.ToString();
+    }
+
+    void CollectContours(int g, double a, double b, double c, double d, double dx, double dy,
+        List<List<(double X, double Y, bool On)>> output, int depth)
+    {
+        if (g >= NumGlyphs || depth > 8) return;
+        int len = _loca[g + 1] - _loca[g];
+        if (len < 10) return;
+        int p = _tables["glyf"].Offset + _loca[g];
+        int n = S16(_data, p);
+        (double, double) T(double x, double y) => (a * x + c * y + dx, b * x + d * y + dy);
+        if (n >= 0)
+        {
+            int ends = p + 10;
+            var endPts = new int[n];
+            for (int i = 0; i < n; i++) endPts[i] = U16(_data, ends + 2 * i);
+            int count = n == 0 ? 0 : endPts[^1] + 1;
+            int q = ends + 2 * n;
+            q += 2 + U16(_data, q);   // инструкции
+            var flags = new byte[count];
+            for (int i = 0; i < count;)
+            {
+                byte f = _data[q++];
+                flags[i++] = f;
+                if ((f & 8) != 0) { int rep = _data[q++]; while (rep-- > 0 && i < count) flags[i++] = f; }
+            }
+            int baseIdx = output.Count;
+            for (int k = 0; k < n; k++) output.Add([]);
+            int contour = 0;
+            var xs = new int[count];
+            int v = 0;
+            for (int i = 0; i < count; i++)
+            {
+                byte f = flags[i];
+                if ((f & 2) != 0) { int dv = _data[q++]; v += (f & 16) != 0 ? dv : -dv; }
+                else if ((f & 16) == 0) { v += S16(_data, q); q += 2; }
+                xs[i] = v;
+            }
+            v = 0;
+            for (int i = 0; i < count; i++)
+            {
+                byte f = flags[i];
+                if ((f & 4) != 0) { int dv = _data[q++]; v += (f & 32) != 0 ? dv : -dv; }
+                else if ((f & 32) == 0) { v += S16(_data, q); q += 2; }
+                var (tx, ty) = T(xs[i], v);
+                while (contour < n - 1 && i > endPts[contour]) contour++;
+                output[baseIdx + contour].Add((tx, ty, (f & 1) != 0));
+            }
+            return;
+        }
+        // Составной глиф
+        p += 10;
+        while (true)
+        {
+            int flags = U16(_data, p), comp = U16(_data, p + 2);
+            p += 4;
+            double ox, oy;
+            if ((flags & 1) != 0) { ox = S16(_data, p); oy = S16(_data, p + 2); p += 4; }
+            else { ox = (sbyte)_data[p]; oy = (sbyte)_data[p + 1]; p += 2; }
+            double ca = 1, cb = 0, cc = 0, cd = 1;
+            static double F2(byte[] d, int o) => S16(d, o) / 16384.0;
+            if ((flags & 0x08) != 0) { ca = cd = F2(_data, p); p += 2; }
+            else if ((flags & 0x40) != 0) { ca = F2(_data, p); cd = F2(_data, p + 2); p += 4; }
+            else if ((flags & 0x80) != 0) { ca = F2(_data, p); cb = F2(_data, p + 2); cc = F2(_data, p + 4); cd = F2(_data, p + 6); p += 8; }
+            if ((flags & 2) == 0) { ox = 0; oy = 0; }   // точки-якоря не поддерживаем
+            // Композиция: сначала преобразование компонента, затем внешнее
+            double na = a * ca + c * cb, nb = b * ca + d * cb, nc = a * cc + c * cd, nd = b * cc + d * cd;
+            var (tdx, tdy) = T(ox, oy);
+            CollectContours(comp, na, nb, nc, nd, tdx, tdy, output, depth + 1);
+            if ((flags & 0x20) == 0) break;
+        }
+    }
+
     IEnumerable<int> CompositeComponents(int g)
     {
         if (g >= NumGlyphs) yield break;

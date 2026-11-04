@@ -489,6 +489,9 @@ public sealed class CssStyle
 
     // Преобразования
     public string? Transform, TransformOrigin, Translate, Rotate, Scale;
+    public string? Perspective, PerspectiveOrigin;              // задаются у родителя, действуют на детей
+    public string? ParentPerspective, ParentPerspectiveOrigin;  // перспектива, унаследованная от родителя
+    public bool BackfaceHidden;
 
     // Генерируемое содержимое и счётчики
     public string? Content;

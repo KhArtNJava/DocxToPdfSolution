@@ -306,11 +306,12 @@ public sealed partial class HtmlReader
         };
     }
 
-    TableCell ItemCell(Node item, CssStyle itemStyle, CssStyle container, double width, int span = 1)
+    TableCell ItemCell(Node item, CssStyle itemStyle, CssStyle container, double width, int span = 1,
+        double offsetX = 0, double containerWidth = 0)
     {
         bool isText = item.IsText;
         // Элемент с transform: рамка/фон элемента поворачиваются вместе с содержимым
-        if (!isText && item.Tag != "img" && TransformOf(itemStyle) is { } trBox)
+        if (!isText && item.Tag != "img" && TransformOf(itemStyle, offsetX, containerWidth) is { } trBox)
         {
             var boxTable = MakeBoxTable(item, itemStyle, width);
             return new TableCell
@@ -569,7 +570,7 @@ public sealed partial class HtmlReader
             {
                 Spacer(before[i] + line[i].MarginL + (i > 0 ? line[i - 1].MarginR : 0));
                 widths.Add(Math.Max(1, line[i].Size));
-                row.Cells.Add(ItemCell(line[i].Node, line[i].Style, s, Math.Max(1, line[i].Size)));
+                row.Cells.Add(ItemCell(line[i].Node, line[i].Style, s, Math.Max(1, line[i].Size), 1, widths.Sum() - Math.Max(1, line[i].Size), avail));
             }
             Spacer(before[k2] + line[^1].MarginR);
             foreach (var it in line)
@@ -846,7 +847,7 @@ public sealed partial class HtmlReader
                     TableCell cell;
                     if (mr == g.Row * gr)
                     {
-                        cell = ItemCell(g.Node, g.Style, s, w, span);
+                        cell = ItemCell(g.Node, g.Style, s, w, span, widths.Take(mc).Sum(), avail);
                         if (g.RowSpan > 1) cell.VMerge = VMerge.Restart;
                     }
                     else
@@ -897,27 +898,62 @@ public sealed partial class HtmlReader
         return Num(v);
     }
 
-    static Transform2D Mul(Transform2D m, Transform2D n) => new(
-        m.A * n.A + m.C * n.B, m.B * n.A + m.D * n.B,
-        m.A * n.C + m.C * n.D, m.B * n.C + m.D * n.D,
-        m.A * n.E + m.C * n.F + m.E, m.B * n.E + m.D * n.F + m.F, 0, 0);
+    // ---- Матрицы 4×4 (по строкам, точки — столбцы: p' = M·p) ----
 
-    /// <summary>Строит функцию вычисления матрицы преобразования элемента (null — преобразования нет).</summary>
-    static TransformResolver? TransformOf(CssStyle s)
+    static double[] Identity4() => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+    static double[] Mul4(double[] a, double[] b)
+    {
+        var r = new double[16];
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < 4; j++)
+            {
+                double sum = 0;
+                for (int k = 0; k < 4; k++) sum += a[i * 4 + k] * b[k * 4 + j];
+                r[i * 4 + j] = sum;
+            }
+        return r;
+    }
+
+    static double[] Translate4(double x, double y, double z) => [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1];
+    static double[] Scale4(double x, double y, double z) => [x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1];
+    static double[] Perspective4(double d) => d <= 0 ? Identity4() : [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -1 / d, 1];
+    static double[] Affine4(double a, double b, double c, double d, double e, double f) => [a, c, 0, e, b, d, 0, f, 0, 0, 1, 0, 0, 0, 0, 1];
+
+    /// <summary>rotate3d(x, y, z, угол) по формуле спецификации CSS Transforms 2.</summary>
+    static double[] Rotate4(double x, double y, double z, double a)
+    {
+        double len = Math.Sqrt(x * x + y * y + z * z);
+        if (len < 1e-12) return Identity4();
+        x /= len; y /= len; z /= len;
+        double s = Math.Sin(a / 2), sc = s * Math.Cos(a / 2), sq = s * s;
+        return
+        [
+            1 - 2 * (y * y + z * z) * sq, 2 * (x * y * sq - z * sc), 2 * (x * z * sq + y * sc), 0,
+            2 * (x * y * sq + z * sc), 1 - 2 * (x * x + z * z) * sq, 2 * (y * z * sq - x * sc), 0,
+            2 * (x * z * sq - y * sc), 2 * (y * z * sq + x * sc), 1 - 2 * (x * x + y * y) * sq, 0,
+            0, 0, 0, 1
+        ];
+    }
+
+    /// <summary>Строит функцию вычисления преобразования элемента (null — преобразования нет).</summary>
+    /// <param name="offsetX">смещение элемента внутри родителя (для perspective-origin родителя)</param>
+    /// <param name="parentWidth">ширина родителя; 0 — неизвестна (точка схода в центре элемента)</param>
+    static TransformResolver? TransformOf(CssStyle s, double offsetX = 0, double parentWidth = 0)
     {
         if (s.Transform == null && s.Translate == null && s.Rotate == null && s.Scale == null) return null;
         // Порядок CSS: translate → rotate → scale → transform
         var fns = new List<(string Name, List<string> Args)>();
-        void FromIndividual(string? v, string fn)
+        if (s.Translate != null) fns.Add(("translate3d", CssValues.Tokens(s.Translate)));
+        if (s.Rotate != null)
         {
-            if (v == null) return;
-            var t = CssValues.Tokens(v);
-            if (fn == "rotate" && t.Count > 1) t = [t[^1]];   // rotate: z 45deg → только угол
-            fns.Add((fn, t));
+            var t = CssValues.Tokens(s.Rotate);
+            // rotate: <угол> | x|y|z <угол> | <x y z> <угол>
+            if (t.Count == 1) fns.Add(("rotate", t));
+            else if (t.Count == 2) fns.Add((t[0] switch { "x" => "rotatex", "y" => "rotatey", _ => "rotate" }, [t[1]]));
+            else if (t.Count >= 4) fns.Add(("rotate3d", t));
         }
-        FromIndividual(s.Translate, "translate");
-        FromIndividual(s.Rotate, "rotate");
-        FromIndividual(s.Scale, "scale");
+        if (s.Scale != null) fns.Add(("scale3d", CssValues.Tokens(s.Scale)));
         if (s.Transform != null)
         {
             string v = s.Transform;
@@ -943,53 +979,80 @@ public sealed partial class HtmlReader
         if (fns.Count == 0) return null;
         double fs = s.FontSize;
         string? origin = s.TransformOrigin;
+        double? parentPerspective = CssValues.Length(s.ParentPerspective, fs);
+        string? perspectiveOrigin = s.ParentPerspectiveOrigin;
+        bool backHidden = s.BackfaceHidden;
 
         return (w, h) =>
         {
-            var m = new Transform2D(1, 0, 0, 1, 0, 0, 0, 0);
+            var m = Identity4();
             double L(string x, double basis) => CssValues.Length(x, fs, basis) ?? 0;
             double N(string x) => double.TryParse(x.TrimEnd('%'), NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? (x.EndsWith('%') ? d / 100 : d) : 1;
             foreach (var (name, args) in fns)
             {
-                string a0 = args.ElementAtOrDefault(0) ?? "0", a1 = args.ElementAtOrDefault(1) ?? "";
-                Transform2D t;
+                string a0 = args.ElementAtOrDefault(0) ?? "0", a1 = args.ElementAtOrDefault(1) ?? "", a2 = args.ElementAtOrDefault(2) ?? "";
+                double[] t;
                 try
                 {
                     t = name switch
                     {
-                        "translate" or "translate3d" => new(1, 0, 0, 1, L(a0, w), a1.Length > 0 ? L(a1, h) : 0, 0, 0),
-                        "translatex" => new(1, 0, 0, 1, L(a0, w), 0, 0, 0),
-                        "translatey" => new(1, 0, 0, 1, 0, L(a0, h), 0, 0),
-                        "scale" or "scale3d" => new(N(a0), 0, 0, a1.Length > 0 ? N(a1) : N(a0), 0, 0, 0, 0),
-                        "scalex" => new(N(a0), 0, 0, 1, 0, 0, 0, 0),
-                        "scaley" => new(1, 0, 0, N(a0), 0, 0, 0, 0),
-                        "rotate" or "rotatez" => Rot(Angle(a0)),
-                        "skew" => new(1, Math.Tan(a1.Length > 0 ? Angle(a1) : 0), Math.Tan(Angle(a0)), 1, 0, 0, 0, 0),
-                        "skewx" => new(1, 0, Math.Tan(Angle(a0)), 1, 0, 0, 0, 0),
-                        "skewy" => new(1, Math.Tan(Angle(a0)), 0, 1, 0, 0, 0, 0),
-                        "matrix" when args.Count == 6 => new(N(args[0]), N(args[1]), N(args[2]), N(args[3]), N(args[4]) * 0.75, N(args[5]) * 0.75, 0, 0),
-                        _ => new(1, 0, 0, 1, 0, 0, 0, 0)   // 3D-функции (rotateX, perspective …) игнорируются
+                        "translate" or "translate3d" => Translate4(L(a0, w), a1.Length > 0 ? L(a1, h) : 0, a2.Length > 0 ? L(a2, 0) : 0),
+                        "translatex" => Translate4(L(a0, w), 0, 0),
+                        "translatey" => Translate4(0, L(a0, h), 0),
+                        "translatez" => Translate4(0, 0, L(a0, 0)),
+                        "scale" => Scale4(N(a0), a1.Length > 0 ? N(a1) : N(a0), 1),
+                        "scale3d" => Scale4(N(a0), a1.Length > 0 ? N(a1) : N(a0), a2.Length > 0 ? N(a2) : 1),
+                        "scalex" => Scale4(N(a0), 1, 1),
+                        "scaley" => Scale4(1, N(a0), 1),
+                        "scalez" => Scale4(1, 1, N(a0)),
+                        "rotate" or "rotatez" => Rotate4(0, 0, 1, Angle(a0)),
+                        "rotatex" => Rotate4(1, 0, 0, Angle(a0)),
+                        "rotatey" => Rotate4(0, 1, 0, Angle(a0)),
+                        "rotate3d" when args.Count >= 4 => Rotate4(N(args[0]), N(args[1]), N(args[2]), Angle(args[3])),
+                        "skew" => Affine4(1, Math.Tan(a1.Length > 0 ? Angle(a1) : 0), Math.Tan(Angle(a0)), 1, 0, 0),
+                        "skewx" => Affine4(1, 0, Math.Tan(Angle(a0)), 1, 0, 0),
+                        "skewy" => Affine4(1, Math.Tan(Angle(a0)), 0, 1, 0, 0),
+                        "matrix" when args.Count == 6 => Affine4(N(args[0]), N(args[1]), N(args[2]), N(args[3]), N(args[4]) * 0.75, N(args[5]) * 0.75),
+                        // matrix3d — 16 значений по столбцам; сдвиги в px
+                        "matrix3d" when args.Count == 16 => Enumerable.Range(0, 16)
+                            .Select(k => N(args[(k % 4) * 4 + k / 4]) * (k is 3 or 7 or 11 ? 0.75 : k is 12 or 13 or 14 ? 1 / 0.75 : 1)).ToArray(),
+                        "perspective" => a0 == "none" ? Identity4() : Perspective4(L(a0, 0)),
+                        _ => Identity4()
                     };
                 }
                 catch { continue; }
-                m = Mul(m, t);
+                m = Mul4(m, t);
             }
-            var (ox, oy) = Origin(origin, w, h, fs);
-            return m with { Ox = ox, Oy = oy };
+            var (ox, oy, oz) = Origin(origin, w, h, fs);
+            var full = Mul4(Mul4(Translate4(ox, oy, oz), m), Translate4(-ox, -oy, -oz));
+            // Обратная сторона: нормаль (0,0,1) после поворота смотрит от зрителя
+            bool back = m[10] < -1e-9;
+            if (parentPerspective is > 0)
+            {
+                // Перспектива родителя; точка схода — perspective-origin (по умолчанию центр элемента)
+                var (px, py, _) = Origin(perspectiveOrigin, w, h, fs);
+                // perspective-origin задан относительно родителя: переводим в координаты элемента
+                if (parentWidth > 0) px = Origin(perspectiveOrigin, parentWidth, h, fs).X - offsetX;
+                full = Mul4(Mul4(Mul4(Translate4(px, py, 0), Perspective4(parentPerspective.Value)), Translate4(-px, -py, 0)), full);
+            }
+            // Точки плоскости z = 0: [X, Y, W] = строки 0, 1, 3; столбцы 0, 1, 3
+            double[] H = [full[0], full[1], full[3], full[4], full[5], full[7], full[12], full[13], full[15]];
+            return new BoxTransform { H = H, Hidden = backHidden && back };
         };
-
-        static Transform2D Rot(double a) => new(Math.Cos(a), Math.Sin(a), -Math.Sin(a), Math.Cos(a), 0, 0, 0, 0);
     }
 
-    /// <summary>transform-origin: ключевые слова, длины, проценты (по умолчанию центр).</summary>
-    static (double X, double Y) Origin(string? v, double w, double h, double fs)
+    /// <summary>transform-origin / perspective-origin: ключевые слова, длины, проценты (по умолчанию центр), z — длина.</summary>
+    static (double X, double Y, double Z) Origin(string? v, double w, double h, double fs)
     {
-        double x = w / 2, y = h / 2;
-        if (string.IsNullOrWhiteSpace(v)) return (x, y);
+        double x = w / 2, y = h / 2, z = 0;
+        if (string.IsNullOrWhiteSpace(v)) return (x, y, z);
         var t = CssValues.Tokens(v);
-        for (int i = 0; i < Math.Min(2, t.Count); i++)
+        // Ключевые слова top/bottom первыми ("top left") — меняем порядок
+        if (t.Count >= 2 && t[0] is "top" or "bottom" && t[1] is "left" or "right" or "center") (t[0], t[1]) = (t[1], t[0]);
+        for (int i = 0; i < t.Count; i++)
         {
             string tok = t[i];
+            if (i == 2) { z = CssValues.Length(tok, fs) ?? 0; break; }
             switch (tok)
             {
                 case "left": x = 0; break;
@@ -1003,6 +1066,6 @@ public sealed partial class HtmlReader
                     break;
             }
         }
-        return (x, y);
+        return (x, y, z);
     }
 }

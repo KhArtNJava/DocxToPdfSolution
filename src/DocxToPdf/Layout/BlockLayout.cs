@@ -157,7 +157,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 {
                     var inner = LayoutBlocks(tb.Blocks, width);
                     if (inner.Count == 0) break;
-                    var tf = new TransformFrag { BoxX = tb.BoxX, BoxWidth = tb.BoxWidth };
+                    var tf = new TransformFrag { BoxX = tb.BoxX, BoxWidth = tb.BoxWidth, T = null! };
                     double y = 0;
                     for (int i = 0; i < inner.Count; i++)
                     {

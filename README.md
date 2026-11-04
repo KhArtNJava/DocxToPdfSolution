@@ -87,6 +87,14 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
   `rotate` (deg, rad, grad, turn), `skew`/`skewX`/`skewY`, `matrix()`, цепочки функций; `transform-origin`
   (ключевые слова, длины, %); отдельные свойства `translate`, `rotate`, `scale`. Применяется к блокам, картинкам,
   float, absolute/fixed, элементам flex/grid; на раскладку не влияет (как в браузере), выводится матрицей PDF
+- **3D-преобразования**: `rotateX`, `rotateY`, `rotateZ`, `rotate3d`, `translateZ`, `translate3d`, `scaleZ`, `scale3d`,
+  `matrix3d`, функция `perspective()`, свойства `perspective` и `perspective-origin` у родителя (точка схода — центр
+  контейнера, для flex/grid с учётом положения элемента), `transform-origin` с координатой z, `backface-visibility: hidden`,
+  отдельное свойство `rotate: x|y|z угол`. Без перспективы 3D проецируется ортогонально (как в браузере) и выводится
+  одной матрицей PDF; с перспективой (проективное преобразование, которого в PDF нет) — кусочно-аффинно: элемент
+  делится на сетку плиток (4×4…16×16 в зависимости от силы перспективы), каждая со своей матрицей и обрезкой.
+  Текст в таких плитках выводится контурами глифов (извлекаются из таблицы `glyf`), а поверх кладётся один
+  невидимый текстовый слой — поиск и копирование работают без дублей, ссылки кликабельны
 - **`border-radius`** (сокращение 1–4 значения и `border-*-*-radius`, px/em/%): блоки, рамки-ячейки, элементы flex/grid,
   float, absolute/fixed, строчные элементы (при переносе скругляются только «внешние» углы), картинки (обрезка
   по контуру, `50%` — круг); рамки любого стиля (сплошная, пунктир, точки, двойная) идут по скруглённому контуру
@@ -111,7 +119,10 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - Нет колонок, сносок, примечаний, RTL и сложного шейпинга (арабский, индийские письменности), кернинга и автопереносов
 - Только TrueType-контуры (OTF с CFF пропускаются)
 - Условное форматирование стилей таблиц (firstRow, banded rows) не применяется
-- HTML: нет JavaScript, SVG, 3D-преобразований (`rotateX`, `perspective` игнорируются), эллиптических радиусов
+- 3D: `transform-style: preserve-3d` (общая 3D-сцена нескольких элементов) не поддерживается — каждый элемент
+  проецируется отдельно; для блоков вне flex/grid точка схода перспективы — центр самого элемента;
+  `backface-visibility: hidden` скрывает обратную сторону по стандарту (Chromium при печати её показывает)
+- HTML: нет JavaScript, SVG, эллиптических радиусов
   (`10px / 20px` — берётся горизонтальный); рамка с разными сторонами при скруглении рисуется прямыми отрезками; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
   преобразования); ссылки внутри преобразованного блока кликабельны по исходной (неповёрнутой) области;
   динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
@@ -125,4 +136,5 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 (переменные, calc, ::before/::after, счётчики, :nth-child), `inline-boxes.html` → `inline-boxes.pdf` (рамки внутри строки),
 `first-letter-line.html` → `first-letter-line.pdf` (буквицы, `::first-letter`, `::first-line`, капитель),
 `transform.html` → `transform.pdf` (повороты, масштаб, наклон, центрирование, штамп),
-`radius-spacing-initial.html` → `radius-spacing-initial.pdf` (`border-radius`, `word-spacing`, `initial-letter`).
+`radius-spacing-initial.html` → `radius-spacing-initial.pdf` (`border-radius`, `word-spacing`, `initial-letter`),
+`transform-3d.html` → `transform-3d.pdf` (3D-повороты, перспектива, backface).

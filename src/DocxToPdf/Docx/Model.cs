@@ -399,13 +399,27 @@ public sealed class PositionedBlock : Block
 }
 
 /// <summary>
-/// 2D-преобразование (CSS transform) в системе координат "y вниз":
-/// x' = A·x + C·y + E, y' = B·x + D·y + F относительно точки (Ox, Oy) от левого верхнего угла рамки.
+/// Преобразование рамки элемента (CSS transform, включая 3D и перспективу) как проективное
+/// отображение плоскости: [X, Y, W] = H · [x, y, 1], результат (X/W, Y/W).
+/// Координаты локальные — от левого верхнего угла рамки, ось y направлена вниз.
+/// Без перспективы H аффинна (H[6] = H[7] = 0) и выражается одной матрицей PDF.
 /// </summary>
-public readonly record struct Transform2D(double A, double B, double C, double D, double E, double F, double Ox, double Oy);
+public sealed class BoxTransform
+{
+    public required double[] H;          // 3×3 по строкам
+    public bool Hidden;                  // backface-visibility: hidden и элемент повёрнут обратной стороной
+
+    public bool IsAffine => Math.Abs(H[6]) < 1e-12 && Math.Abs(H[7]) < 1e-12;
+
+    public (double X, double Y, double W) Map(double x, double y)
+    {
+        double w = H[6] * x + H[7] * y + H[8];
+        return ((H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w, w);
+    }
+}
 
 /// <summary>Вычисляет преобразование по размеру рамки элемента (ширина, высота) — для % в translate и transform-origin.</summary>
-public delegate Transform2D TransformResolver(double width, double height);
+public delegate BoxTransform TransformResolver(double width, double height);
 
 /// <summary>Блоки, отрисовываемые с преобразованием (на раскладку не влияет).</summary>
 public sealed class TransformBlock : Block

@@ -271,6 +271,8 @@ public sealed partial class HtmlReader
         Blockify(s, parent);
         FixTextBackground(s);
         SetupInlineBox(s);
+        s.ParentPerspective = parent.Perspective;
+        s.ParentPerspectiveOrigin = parent.PerspectiveOrigin;
         n.Style = s;
         if (s.Display == "none") return;
 
@@ -525,6 +527,8 @@ public sealed partial class HtmlReader
         Blockify(ps, s);
         FixTextBackground(ps);
         SetupInlineBox(ps);
+        ps.ParentPerspective = s.Perspective;
+        ps.ParentPerspectiveOrigin = s.PerspectiveOrigin;
 
         ApplyCounters(ps, n);
         var node = new Node { Tag = "::" + which, Parent = n, Style = ps };
@@ -888,6 +892,9 @@ public sealed partial class HtmlReader
                 s.Transform = lv is "none" ? null : lv; break;
             case "transform-origin" or "-webkit-transform-origin" or "-ms-transform-origin": s.TransformOrigin = lv; break;
             case "translate": s.Translate = lv is "none" ? null : lv; break;
+            case "perspective" or "-webkit-perspective": s.Perspective = lv is "none" ? null : lv; break;
+            case "perspective-origin" or "-webkit-perspective-origin": s.PerspectiveOrigin = lv; break;
+            case "backface-visibility" or "-webkit-backface-visibility": s.BackfaceHidden = lv == "hidden"; break;
             case "rotate": s.Rotate = lv is "none" ? null : lv; break;
             case "scale": s.Scale = lv is "none" ? null : lv; break;
             case "word-spacing": s.WordSpacing = lv == "normal" ? 0 : CssValues.Length(lv, fs) ?? 0; break;

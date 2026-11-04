@@ -140,12 +140,17 @@ public sealed class LineFrag : Frag
             {
                 double ih = p.Ascent + p.Descent;
                 var tr = p.Image.Transform?.Invoke(p.Width, ih);
-                if (tr is { } t) c.BeginTransform(px + t.Ox, baseY - p.Ascent + t.Oy, t.A, t.B, t.C, t.D, t.E, t.F);
-                bool clip = PdfCanvas.HasRadius(p.Image.Radius);
-                if (clip) c.BeginRoundedClip(px, baseY - p.Ascent, p.Width, ih, p.Image.Radius!);
-                c.Image(p.Image.PartName, bytes, px, baseY - p.Ascent, p.Width, ih);
-                if (clip) c.EndClip();
-                if (tr != null) c.EndTransform();
+                var img = p.Image;
+                double iy = baseY - p.Ascent, iw = p.Width;
+                void DrawImg()
+                {
+                    bool clip = PdfCanvas.HasRadius(img.Radius);
+                    if (clip) c.BeginRoundedClip(px, iy, iw, ih, img.Radius!);
+                    c.Image(img.PartName, bytes, px, iy, iw, ih);
+                    if (clip) c.EndClip();
+                }
+                if (tr != null) TransformPainter.Paint(c, px, iy, iw, ih, tr, DrawImg);
+                else DrawImg();
             }
             if (p.Kind == PieceKind.Tab && p.Tab != null && p.Tab.Leader is not ("none" or "") && p.Width > 4)
                 DrawLeader(c, p, px, baseY);
@@ -500,12 +505,84 @@ public sealed class TransformFrag : Frag
 {
     public List<(Frag Frag, double Y)> Items = [];
     public double BoxX, BoxWidth;
-    public Transform2D T;
+    public required BoxTransform T;
 
-    public override void Draw(PdfCanvas c, double x, double y)
+    public override void Draw(PdfCanvas c, double x, double y) =>
+        TransformPainter.Paint(c, x + BoxX, y, BoxWidth, Height, T, () =>
+        {
+            foreach (var (f, fy) in Items) f.Draw(c, x, y + fy);
+        });
+}
+
+/// <summary>
+/// Рисует содержимое с преобразованием. Аффинное — одной матрицей PDF. Проективное (перспектива) —
+/// кусочно: рамка делится на сетку плиток, каждая рисуется со своей аффинной матрицей
+/// и обрезается по своему спроецированному четырёхугольнику.
+/// </summary>
+public static class TransformPainter
+{
+    public static void Paint(PdfCanvas c, double bx, double by, double w, double h, BoxTransform t, Action draw)
     {
-        c.BeginTransform(x + BoxX + T.Ox, y + T.Oy, T.A, T.B, T.C, T.D, T.E, T.F);
-        foreach (var (f, fy) in Items) f.Draw(c, x, y + fy);
-        c.EndTransform();
+        if (t.Hidden) return;
+        var H = t.H;
+        if (t.IsAffine)
+        {
+            double k = H[8];
+            c.BeginTransform(bx, by, H[0] / k, H[3] / k, H[1] / k, H[4] / k, H[2] / k, H[5] / k);
+            draw();
+            c.EndTransform();
+            return;
+        }
+        // Чем сильнее перспектива, тем мельче сетка
+        double strength = (Math.Abs(H[6]) * w + Math.Abs(H[7]) * h) / Math.Max(1e-9, Math.Abs(H[8]));
+        int n = Math.Clamp((int)Math.Ceiling(strength * 30), 4, 16);
+        double dx = w / n, dy = h / n;
+        // Плитки: текст контурами (иначе он повторился бы в каждой плитке), ссылки — только в текстовом слое
+        c.TextAsPaths++;
+        c.SuppressLinks++;
+        for (int i = 0; i < n; i++)
+        {
+            for (int j = 0; j < n; j++)
+            {
+                double x0 = i * dx, x1 = x0 + dx, y0 = j * dy, y1 = y0 + dy;
+                var p00 = t.Map(x0, y0); var p10 = t.Map(x1, y0); var p11 = t.Map(x1, y1); var p01 = t.Map(x0, y1);
+                if (p00.W <= 1e-6 || p10.W <= 1e-6 || p11.W <= 1e-6 || p01.W <= 1e-6) continue;   // за наблюдателем
+                // Аффинное приближение плитки по четырём углам
+                double ax = ((p10.X - p00.X) + (p11.X - p01.X)) / (2 * dx), ay = ((p10.Y - p00.Y) + (p11.Y - p01.Y)) / (2 * dx);
+                double cx = ((p01.X - p00.X) + (p11.X - p10.X)) / (2 * dy), cy = ((p01.Y - p00.Y) + (p11.Y - p10.Y)) / (2 * dy);
+                double mx = (p00.X + p10.X + p11.X + p01.X) / 4, my = (p00.Y + p10.Y + p11.Y + p01.Y) / 4;
+                double tx = (x0 + x1) / 2, ty = (y0 + y1) / 2;
+                double e = mx - (ax * tx + cx * ty), f = my - (ay * tx + cy * ty);
+                // Обрезка по четырёхугольнику, чуть расширенному, чтобы не было щелей между плитками
+                (double, double) Grow((double X, double Y, double W) p)
+                {
+                    double vx = p.X - mx, vy = p.Y - my, len = Math.Sqrt(vx * vx + vy * vy);
+                    double g = len > 1e-6 ? 0.35 / len : 0;
+                    return (bx + p.X + vx * g, by + p.Y + vy * g);
+                }
+                c.BeginClipPolygon([Grow(p00), Grow(p10), Grow(p11), Grow(p01)]);
+                c.BeginTransform(bx, by, ax, ay, cx, cy, e, f);
+                draw();
+                c.EndTransform();
+                c.EndClip();
+            }
+        }
+        c.SuppressLinks--;
+        c.TextAsPaths--;
+
+        // Один невидимый текстовый слой (поиск/копирование) с аффинным приближением всей рамки
+        var q00 = t.Map(0, 0); var q10 = t.Map(w, 0); var q11 = t.Map(w, h); var q01 = t.Map(0, h);
+        if (q00.W > 1e-6 && q10.W > 1e-6 && q11.W > 1e-6 && q01.W > 1e-6 && w > 0 && h > 0)
+        {
+            double ax = ((q10.X - q00.X) + (q11.X - q01.X)) / (2 * w), ay = ((q10.Y - q00.Y) + (q11.Y - q01.Y)) / (2 * w);
+            double cx = ((q01.X - q00.X) + (q11.X - q10.X)) / (2 * h), cy = ((q01.Y - q00.Y) + (q11.Y - q10.Y)) / (2 * h);
+            double mx = (q00.X + q10.X + q11.X + q01.X) / 4, my = (q00.Y + q10.Y + q11.Y + q01.Y) / 4;
+            double e = mx - (ax * w / 2 + cx * h / 2), f = my - (ay * w / 2 + cy * h / 2);
+            c.InvisibleTextOnly++;
+            c.BeginTransform(bx, by, ax, ay, cx, cy, e, f);
+            draw();
+            c.EndTransform();
+            c.InvisibleTextOnly--;
+        }
     }
 }
