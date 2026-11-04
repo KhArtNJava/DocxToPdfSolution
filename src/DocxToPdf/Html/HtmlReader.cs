@@ -828,6 +828,12 @@ public sealed partial class HtmlReader
                 };
                 break;
             case "box-sizing": s.BoxSizing = lv; break;
+            case "transform" or "-webkit-transform" or "-ms-transform" or "-moz-transform" or "-o-transform":
+                s.Transform = lv is "none" ? null : lv; break;
+            case "transform-origin" or "-webkit-transform-origin" or "-ms-transform-origin": s.TransformOrigin = lv; break;
+            case "translate": s.Translate = lv is "none" ? null : lv; break;
+            case "rotate": s.Rotate = lv is "none" ? null : lv; break;
+            case "scale": s.Scale = lv is "none" ? null : lv; break;
             case "letter-spacing": s.LetterSpacing = lv == "normal" ? 0 : CssValues.Length(lv, fs) ?? 0; break;
             case "font-variant" or "font-variant-caps":
                 if (lv.Contains("small-caps")) s.SmallCaps = true;
@@ -1204,6 +1210,23 @@ public sealed partial class HtmlReader
         if (!root && s.Position is "absolute" or "fixed") { AddPositioned(n, s, f, b); return; }
         if (!root && s.Float is "left" or "right") { AddFloat(n, s, f, b); return; }
 
+        // transform у блочного элемента: всё, что он создаст, рисуется с преобразованием
+        if (!root && s.Display != "inline" && n.Tag != "img" && TransformOf(s) is { } tr && _transforming.Add(n))
+        {
+            Flush(f);
+            int idx = f.Target.Count;
+            double avail = Math.Max(10, _contentWidth - b.IndL - b.IndR - s.MarginLeft - s.MarginRight);
+            double w = Math.Min(avail, BorderBoxWidth(s, avail) ?? avail);
+            double bx = b.IndL + s.MarginLeft + (s.MarginLeftAuto && s.MarginRightAuto ? (avail - w) / 2 : s.MarginLeftAuto ? avail - w : 0);
+            Walk(n, f, b);
+            Flush(f);
+            var made = f.Target.Skip(idx).ToList();
+            f.Target.RemoveRange(idx, made.Count);
+            if (made.Count > 0) f.Target.Add(new TransformBlock { Blocks = made, BoxX = bx, BoxWidth = w, Resolve = tr });
+            _transforming.Remove(n);
+            return;
+        }
+
         switch (n.Tag)
         {
             case "br":
@@ -1306,7 +1329,8 @@ public sealed partial class HtmlReader
         {
             var anchor = new AnchorBlock
             {
-                X = inner.IndL - s.PaddingLeft, Width = inner.Width + s.PaddingLeft + s.PaddingRight, TopOffset = f.PendingMargin - s.PaddingTop
+                X = inner.IndL - s.PaddingLeft, Width = inner.Width + s.PaddingLeft + s.PaddingRight, TopOffset = f.PendingMargin - s.PaddingTop,
+                Height = PaddingBoxHeight(s),
             };
             f.Target.Add(anchor);
             inner.Anchor = anchor;
@@ -1457,7 +1481,7 @@ public sealed partial class HtmlReader
         if (block) { Flush(f); f.PendingMargin = Math.Max(f.PendingMargin, s.MarginTop); }
         var p = EnsureParagraph(f, b);
         if (block && s.MarginLeftAuto && s.MarginRightAuto) p.Align = "center";
-        AddInline(f, b, new ImageInline(key, w.Value, h.Value, ToTextStyle(s)));
+        AddInline(f, b, new ImageInline(key, w.Value, h.Value, ToTextStyle(s)) { Transform = TransformOf(s) });
         f.LastSpace = false;
         if (block) { Flush(f); f.PendingMargin = Math.Max(f.PendingMargin, s.MarginBottom); }
     }

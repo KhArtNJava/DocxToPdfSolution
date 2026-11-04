@@ -46,12 +46,17 @@ public sealed partial class HtmlReader
         AnchorBlock? ab = null;
         if (anchor)
         {
-            ab = new AnchorBlock { X = -s.PaddingLeft, Width = contentWidth + s.PaddingLeft + s.PaddingRight, TopOffset = -s.PaddingTop };
+            ab = new AnchorBlock
+            {
+                X = -s.PaddingLeft, Width = contentWidth + s.PaddingLeft + s.PaddingRight, TopOffset = -s.PaddingTop,
+                Height = PaddingBoxHeight(s),
+            };
             blocks.Add(ab);
             ctx.Anchor = ab;
         }
         double saved = _contentWidth;
         _contentWidth = ctx.Width;
+        if (n.Tag is "pre" or "listing" or "xmp") flow.FirstNewlineInPre = true;
         if (n.IsText) AddText(n.Text, s, flow, ctx);
         else if (n.Tag == "img")
         {
@@ -107,24 +112,15 @@ public sealed partial class HtmlReader
     // =================================================================
 
     static bool NeedsBox(Node n, CssStyle s) =>
-        s.Display == "block" && n.Tag is not ("html" or "body" or "ul" or "ol" or "pre")
+        s.Display == "block" && n.Tag is not ("html" or "body" or "ul" or "ol")
         && (s.BorderLeft?.ToBorderDef() != null || s.BorderRight?.ToBorderDef() != null
-            || (s.Height != null && !s.Height.EndsWith('%') && CssValues.Length(s.Height, s.FontSize) is > 0));
+            || (s.Height != null && !s.Height.EndsWith('%') && CssValues.Length(s.Height, s.FontSize) is > 0)
+            // фон с внутренними отступами должен заливать и отступы
+            || (s.Background != null && (s.PaddingLeft > 0 || s.PaddingRight > 0 || s.PaddingTop > 0 || s.PaddingBottom > 0)));
 
-    void AddBoxTable(Node n, CssStyle s, Flow f, BlockCtx b)
+    /// <summary>Таблица из одной ячейки, изображающая рамку элемента (фон, рамки, padding, height).</summary>
+    Table MakeBoxTable(Node n, CssStyle s, double width)
     {
-        Flush(f);
-        f.PendingMargin = Math.Max(f.PendingMargin, s.MarginTop);
-        if (s.PageBreakBefore) f.PendingBreak = true;
-        if (s.Clear != null) f.PendingClear = s.Clear;
-
-        double avail = Math.Max(20, _contentWidth - b.IndL - b.IndR - s.MarginLeft - s.MarginRight);
-        double width = BorderBoxWidth(s, avail) ?? avail;
-        width = Math.Min(width, avail);
-        double indent = b.IndL + s.MarginLeft;
-        if (s.MarginLeftAuto && s.MarginRightAuto) indent += (avail - width) / 2;
-        else if (s.MarginLeftAuto) indent += avail - width;
-
         var cell = new TableCell
         {
             Shading = s.Background,
@@ -146,16 +142,47 @@ public sealed partial class HtmlReader
         };
         cell.Blocks = WalkInto(n, s, width - (cell.Margins.Left ?? 0) - (cell.Margins.Right ?? 0), anchor: s.Position == "relative");
         var row = new TableRow { CantSplit = s.AvoidBreakInside };
-        if (CssValues.Length(s.Height, s.FontSize) is double h)
-            row.Height = s.BoxSizing == "border-box" ? h : h + (cell.Margins.Top ?? 0) + (cell.Margins.Bottom ?? 0);
+        if (BoxHeight(s) is double h) row.Height = h;
         row.Cells.Add(cell);
         var t = new Table
         {
-            Grid = [width], Indent = indent, Borders = new CellBorders(),
+            Grid = [width], Borders = new CellBorders(),
             CellMargins = new Margins { Top = 0, Bottom = 0, Left = 0, Right = 0 },
-            SpaceBefore = f.PendingMargin, PageBreakBefore = f.PendingBreak, Clear = f.PendingClear,
         };
         t.Rows.Add(row);
+        return t;
+    }
+
+    static double? PaddingBoxHeight(CssStyle s) =>
+        s.Height == null || s.Height.EndsWith('%') || CssValues.Length(s.Height, s.FontSize) is not double h ? null
+            : s.BoxSizing == "border-box" ? h - (s.BorderTop?.ToBorderDef()?.Width ?? 0) - (s.BorderBottom?.ToBorderDef()?.Width ?? 0)
+            : h + s.PaddingTop + s.PaddingBottom;
+
+    /// <summary>Высота рамки из CSS height (с учётом box-sizing), null — авто.</summary>
+    static double? BoxHeight(CssStyle s)
+    {
+        if (s.Height == null || s.Height.EndsWith('%') || CssValues.Length(s.Height, s.FontSize) is not double h) return null;
+        return s.BoxSizing == "border-box" ? h
+            : h + s.PaddingTop + s.PaddingBottom + (s.BorderTop?.ToBorderDef()?.Width ?? 0) + (s.BorderBottom?.ToBorderDef()?.Width ?? 0);
+    }
+
+    void AddBoxTable(Node n, CssStyle s, Flow f, BlockCtx b)
+    {
+        Flush(f);
+        f.PendingMargin = Math.Max(f.PendingMargin, s.MarginTop);
+        if (s.PageBreakBefore) f.PendingBreak = true;
+        if (s.Clear != null) f.PendingClear = s.Clear;
+
+        double avail = Math.Max(20, _contentWidth - b.IndL - b.IndR - s.MarginLeft - s.MarginRight);
+        double width = BorderBoxWidth(s, avail) ?? avail;
+        width = Math.Min(width, avail);
+        double indent = b.IndL + s.MarginLeft;
+        if (s.MarginLeftAuto && s.MarginRightAuto) indent += (avail - width) / 2;
+        else if (s.MarginLeftAuto) indent += avail - width;
+
+        var t = MakeBoxTable(n, s, width);
+        t.Indent = indent;
+        t.SpaceBefore = f.PendingMargin; t.PageBreakBefore = f.PendingBreak; t.Clear = f.PendingClear;
         f.PendingMargin = 0; f.PendingBreak = false; f.PendingClear = null;
         if (s.Position == "relative")
         {
@@ -201,6 +228,8 @@ public sealed partial class HtmlReader
             s.Display = "inline";
             s.Width = (width - extra).ToString(CultureInfo.InvariantCulture) + "pt";
         }
+        fb.Transform = TransformOf(s);
+        if (n.Tag == "img") { s.Transform = s.Translate = s.Rotate = s.Scale = null; }
         fb.Blocks = WalkInto(n, s, width - extra, anchor: s.Position == "relative");
         f.Target.Add(fb);
         f.LastSpace = f.Cur == null || f.LastSpace;
@@ -217,7 +246,7 @@ public sealed partial class HtmlReader
         s.Position = "static";
         s.Float = null;
         double cbW = isFixed ? _opt.PageWidth : b.Anchor?.Width ?? _contentWidth;
-        double cbH = isFixed ? _opt.PageHeight : 700;
+        double cbH = isFixed ? _opt.PageHeight : b.Anchor?.Height ?? 700;
         double fs = s.FontSize;
         double? left = CssValues.Length(s.Left, fs, cbW), right = CssValues.Length(s.Right, fs, cbW);
         double? top = CssValues.Length(s.Top, fs, cbH), bottom = CssValues.Length(s.Bottom, fs, cbH);
@@ -231,18 +260,20 @@ public sealed partial class HtmlReader
             var (mn, pf) = MeasureItem(n, s, cbW);
             width = Math.Min(Math.Max(pf, mn), cbW);
         }
+        var transform = TransformOf(s);
         if (n.Tag == "img")
         {
             s.Display = "inline";
             s.MarginTop = s.MarginBottom = s.MarginLeft = s.MarginRight = 0;
             s.Width = (width - extra).ToString(CultureInfo.InvariantCulture) + "pt";
+            s.Transform = s.Translate = s.Rotate = s.Scale = null;
         }
         var pb = new PositionedBlock
         {
             Mode = mode,
             Left = left + (left != null ? s.MarginLeft : 0), Right = right + (right != null ? s.MarginRight : 0),
             Top = top + (top != null ? s.MarginTop : 0), Bottom = bottom + (bottom != null ? s.MarginBottom : 0),
-            Width = width, ZIndex = s.ZIndex, Box = BoxOf(s),
+            Width = width, ZIndex = s.ZIndex, Box = BoxOf(s), Transform = transform,
         };
         pb.Blocks = WalkInto(n, s, width - extra, anchor: true);
 
@@ -274,6 +305,17 @@ public sealed partial class HtmlReader
     TableCell ItemCell(Node item, CssStyle itemStyle, CssStyle container, double width, int span = 1)
     {
         bool isText = item.IsText;
+        // Элемент с transform: рамка/фон элемента поворачиваются вместе с содержимым
+        if (!isText && item.Tag != "img" && TransformOf(itemStyle) is { } trBox)
+        {
+            var boxTable = MakeBoxTable(item, itemStyle, width);
+            return new TableCell
+            {
+                GridSpan = span, Shading = container.Background, VAlign = VAlignFor(container, itemStyle),
+                Borders = new CellBorders(), Margins = new Margins { Top = 0, Bottom = 0, Left = 0, Right = 0 },
+                Blocks = [new TransformBlock { Blocks = [boxTable], BoxX = 0, BoxWidth = width, Resolve = trBox }],
+            };
+        }
         var s = isText ? container : itemStyle;
         var cell = new TableCell
         {
@@ -525,6 +567,8 @@ public sealed partial class HtmlReader
                 row.Cells.Add(ItemCell(line[i].Node, line[i].Style, s, Math.Max(1, line[i].Size)));
             }
             Spacer(before[k2] + line[^1].MarginR);
+            foreach (var it in line)
+                if (!it.Node.IsText && BoxHeight(it.Style) is double ih) row.Height = Math.Max(row.Height, ih);
             if (CssValues.Length(s.Height, fs) is double h && lines.Count == 1) row.Height = h - s.PaddingTop - s.PaddingBottom;
 
             var t = NewLayoutTable(inner, widths);
@@ -829,5 +873,131 @@ public sealed partial class HtmlReader
         ApplyContainerBorders([table], s);
         f.Target.Add(table);
         EndBox(n, s, f, startIdx);
+    }
+
+    // =================================================================
+    //  transform
+    // =================================================================
+
+    readonly HashSet<Node> _transforming = [];
+
+    static double Angle(string v)
+    {
+        v = v.Trim();
+        double Num(string x) => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture);
+        if (v.EndsWith("deg")) return Num(v[..^3]) * Math.PI / 180;
+        if (v.EndsWith("grad")) return Num(v[..^4]) * Math.PI / 200;
+        if (v.EndsWith("rad")) return Num(v[..^3]);
+        if (v.EndsWith("turn")) return Num(v[..^4]) * 2 * Math.PI;
+        return Num(v);
+    }
+
+    static Transform2D Mul(Transform2D m, Transform2D n) => new(
+        m.A * n.A + m.C * n.B, m.B * n.A + m.D * n.B,
+        m.A * n.C + m.C * n.D, m.B * n.C + m.D * n.D,
+        m.A * n.E + m.C * n.F + m.E, m.B * n.E + m.D * n.F + m.F, 0, 0);
+
+    /// <summary>Строит функцию вычисления матрицы преобразования элемента (null — преобразования нет).</summary>
+    static TransformResolver? TransformOf(CssStyle s)
+    {
+        if (s.Transform == null && s.Translate == null && s.Rotate == null && s.Scale == null) return null;
+        // Порядок CSS: translate → rotate → scale → transform
+        var fns = new List<(string Name, List<string> Args)>();
+        void FromIndividual(string? v, string fn)
+        {
+            if (v == null) return;
+            var t = CssValues.Tokens(v);
+            if (fn == "rotate" && t.Count > 1) t = [t[^1]];   // rotate: z 45deg → только угол
+            fns.Add((fn, t));
+        }
+        FromIndividual(s.Translate, "translate");
+        FromIndividual(s.Rotate, "rotate");
+        FromIndividual(s.Scale, "scale");
+        if (s.Transform != null)
+        {
+            string v = s.Transform;
+            int i = 0;
+            while (i < v.Length)
+            {
+                while (i < v.Length && char.IsWhiteSpace(v[i])) i++;
+                int st = i;
+                while (i < v.Length && v[i] != '(') i++;
+                if (i >= v.Length) break;
+                string name = v[st..i].Trim();
+                int depth = 0, a = i + 1;
+                for (; i < v.Length; i++)
+                {
+                    if (v[i] == '(') depth++;
+                    else if (v[i] == ')' && --depth == 0) break;
+                }
+                string args = v[a..Math.Min(i, v.Length)];
+                i++;
+                fns.Add((name, args.Split(',').SelectMany(x => CssValues.Tokens(x)).ToList()));
+            }
+        }
+        if (fns.Count == 0) return null;
+        double fs = s.FontSize;
+        string? origin = s.TransformOrigin;
+
+        return (w, h) =>
+        {
+            var m = new Transform2D(1, 0, 0, 1, 0, 0, 0, 0);
+            double L(string x, double basis) => CssValues.Length(x, fs, basis) ?? 0;
+            double N(string x) => double.TryParse(x.TrimEnd('%'), NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? (x.EndsWith('%') ? d / 100 : d) : 1;
+            foreach (var (name, args) in fns)
+            {
+                string a0 = args.ElementAtOrDefault(0) ?? "0", a1 = args.ElementAtOrDefault(1) ?? "";
+                Transform2D t;
+                try
+                {
+                    t = name switch
+                    {
+                        "translate" or "translate3d" => new(1, 0, 0, 1, L(a0, w), a1.Length > 0 ? L(a1, h) : 0, 0, 0),
+                        "translatex" => new(1, 0, 0, 1, L(a0, w), 0, 0, 0),
+                        "translatey" => new(1, 0, 0, 1, 0, L(a0, h), 0, 0),
+                        "scale" or "scale3d" => new(N(a0), 0, 0, a1.Length > 0 ? N(a1) : N(a0), 0, 0, 0, 0),
+                        "scalex" => new(N(a0), 0, 0, 1, 0, 0, 0, 0),
+                        "scaley" => new(1, 0, 0, N(a0), 0, 0, 0, 0),
+                        "rotate" or "rotatez" => Rot(Angle(a0)),
+                        "skew" => new(1, Math.Tan(a1.Length > 0 ? Angle(a1) : 0), Math.Tan(Angle(a0)), 1, 0, 0, 0, 0),
+                        "skewx" => new(1, 0, Math.Tan(Angle(a0)), 1, 0, 0, 0, 0),
+                        "skewy" => new(1, Math.Tan(Angle(a0)), 0, 1, 0, 0, 0, 0),
+                        "matrix" when args.Count == 6 => new(N(args[0]), N(args[1]), N(args[2]), N(args[3]), N(args[4]) * 0.75, N(args[5]) * 0.75, 0, 0),
+                        _ => new(1, 0, 0, 1, 0, 0, 0, 0)   // 3D-функции (rotateX, perspective …) игнорируются
+                    };
+                }
+                catch { continue; }
+                m = Mul(m, t);
+            }
+            var (ox, oy) = Origin(origin, w, h, fs);
+            return m with { Ox = ox, Oy = oy };
+        };
+
+        static Transform2D Rot(double a) => new(Math.Cos(a), Math.Sin(a), -Math.Sin(a), Math.Cos(a), 0, 0, 0, 0);
+    }
+
+    /// <summary>transform-origin: ключевые слова, длины, проценты (по умолчанию центр).</summary>
+    static (double X, double Y) Origin(string? v, double w, double h, double fs)
+    {
+        double x = w / 2, y = h / 2;
+        if (string.IsNullOrWhiteSpace(v)) return (x, y);
+        var t = CssValues.Tokens(v);
+        for (int i = 0; i < Math.Min(2, t.Count); i++)
+        {
+            string tok = t[i];
+            switch (tok)
+            {
+                case "left": x = 0; break;
+                case "right": x = w; break;
+                case "top": y = 0; break;
+                case "bottom": y = h; break;
+                case "center": if (i == 0) x = w / 2; else y = h / 2; break;
+                default:
+                    if (i == 0) x = CssValues.Length(tok, fs, w) ?? x;
+                    else y = CssValues.Length(tok, fs, h) ?? y;
+                    break;
+            }
+        }
+        return (x, y);
     }
 }

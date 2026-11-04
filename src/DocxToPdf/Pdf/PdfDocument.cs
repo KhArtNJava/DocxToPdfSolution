@@ -361,6 +361,18 @@ public sealed class PdfCanvas
         if (face.SynthBold) _sb.Append("0 Tr\n");
     }
 
+    /// <summary>
+    /// Начинает преобразованную область: матрица задана в координатах "y вниз" относительно точки (ox, oy) страницы.
+    /// </summary>
+    public void BeginTransform(double ox, double oy, double a, double b, double c, double d, double e, double f)
+    {
+        double yo = Y(oy);
+        // В системе PDF (y вверх) матрица CSS превращается в [a, -b, -c, d, e, -f]
+        _sb.Append($"q 1 0 0 1 {F(ox)} {F(yo)} cm {F(a)} {F(-b)} {F(-c)} {F(d)} {F(e)} {F(-f)} cm 1 0 0 1 {F(-ox)} {F(-yo)} cm\n");
+    }
+
+    public void EndTransform() => _sb.Append("Q\n");
+
     public void Image(string key, byte[] bytes, double x, double y, double w, double h)
     {
         var img = _doc.GetImage(key, bytes);

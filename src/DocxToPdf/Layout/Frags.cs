@@ -137,7 +137,12 @@ public sealed class LineFrag : Frag
             var p = Pieces[i];
             double px = lx + p.X;
             if (p.Kind == PieceKind.Image && p.Image != null && Doc.Media.TryGetValue(p.Image.PartName, out var bytes))
+            {
+                var tr = p.Image.Transform?.Invoke(p.Width, p.Ascent);
+                if (tr is { } t) c.BeginTransform(px + t.Ox, baseY - p.Ascent + t.Oy, t.A, t.B, t.C, t.D, t.E, t.F);
                 c.Image(p.Image.PartName, bytes, px, baseY - p.Ascent, p.Width, p.Ascent);
+                if (tr != null) c.EndTransform();
+            }
             if (p.Kind == PieceKind.Tab && p.Tab != null && p.Tab.Leader is not ("none" or "") && p.Width > 4)
                 DrawLeader(c, p, px, baseY);
 
@@ -399,7 +404,18 @@ public sealed class BoxFrag : Frag
         foreach (var (f, fy) in Items) f.Draw(c, cx, cy + fy);
         void B(BorderDef? b, double x1, double y1, double x2, double y2)
         {
-            if (b is { IsNone: false }) c.Line(x1, y1, x2, y2, b.Width, b.Color, b.Val.Contains("dash"), b.Val.Contains("dot"));
+            if (b is not { IsNone: false }) return;
+            if (b.Val == "double")
+            {
+                // две линии по трети толщины у внешнего и внутреннего края
+                double d = b.Width / 3;
+                bool horiz = Math.Abs(y1 - y2) < 0.01;
+                double sx = horiz ? 0 : d, sy = horiz ? d : 0;
+                c.Line(x1 - sx, y1 - sy, x2 - sx, y2 - sy, d, b.Color);
+                c.Line(x1 + sx, y1 + sy, x2 + sx, y2 + sy, d, b.Color);
+                return;
+            }
+            c.Line(x1, y1, x2, y2, b.Width, b.Color, b.Val.Contains("dash"), b.Val.Contains("dot"));
         }
         double h2 = (Box.BorderTop?.Width ?? 0) / 2, w2 = (Box.BorderLeft?.Width ?? 0) / 2;
         B(Box.BorderTop, x, y + h2, x + Width, y + h2);
@@ -436,5 +452,20 @@ public sealed class AbsFrag : Frag
         double px = x + AnchorX + (Left ?? (Right != null ? AnchorWidth - Right.Value - Content.Width : 0));
         double py = y + TopOffset + (Top ?? 0);
         Content.Draw(c, px, py);
+    }
+}
+
+/// <summary>Фрагменты, нарисованные с CSS-преобразованием (неделимы при разбивке на страницы).</summary>
+public sealed class TransformFrag : Frag
+{
+    public List<(Frag Frag, double Y)> Items = [];
+    public double BoxX, BoxWidth;
+    public Transform2D T;
+
+    public override void Draw(PdfCanvas c, double x, double y)
+    {
+        c.BeginTransform(x + BoxX + T.Ox, y + T.Oy, T.A, T.B, T.C, T.D, T.E, T.F);
+        foreach (var (f, fy) in Items) f.Draw(c, x, y + fy);
+        c.EndTransform();
     }
 }

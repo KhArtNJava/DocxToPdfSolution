@@ -46,7 +46,7 @@ public sealed class Paginator(LayoutContext ctx)
             foreach (var fb in sp.FixedBlocks)
                 _fixed.Add(new AbsFrag
                 {
-                    Content = layout.BuildBox(fb.Blocks, fb.Width, fb.Box), Left = fb.Left, Top = fb.Top, Right = fb.Right,
+                    Content = layout.BuildBoxTransformed(fb), Left = fb.Left, Top = fb.Top, Right = fb.Right,
                     Bottom = fb.Bottom, Fixed = true, ZIndex = fb.ZIndex
                 });
 

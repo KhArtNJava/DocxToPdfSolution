@@ -1,0 +1,25 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><style>
+ @page { size: A4; margin: 15mm } body { font-family: Arial, sans-serif; font-size: 10pt }
+ .row { display: flex; gap: 24px; margin: 18px 0 30px }
+ .b { width: 90px; height: 50px; background: #dbe8f6; border: 1px solid #36c; padding: 4px; font-size: 9pt }
+ .r { transform: rotate(15deg) } .s { transform: scale(1.3) } .k { transform: skewX(-20deg) }
+ .m { transform: matrix(0.9, 0.2, -0.2, 0.9, 10, 0) } .o { transform: rotate(-20deg); transform-origin: left top }
+ .combo { transform: translate(20px, 4px) rotate(8deg) scale(0.9) }
+ .ind { rotate: 30deg; scale: 0.8 }
+ .card { position: relative; height: 90px; border: 1px solid #999; margin: 10px 0 }
+ .center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: #fe8; padding: 4px 10px }
+ .stamp { position: absolute; right: 30px; top: 10px; transform: rotate(-18deg); border: 3px double #c22; color: #c22; font-weight: bold; padding: 4px 10px; font-size: 14pt }
+ h3 { margin: 6px 0 } img.t { transform: rotate(10deg); }
+ .vert { transform: rotate(-90deg); transform-origin: left top; position: absolute; left: 0; top: 80px; color: #888 }
+ .flt { float: right; width: 120px; transform: rotate(4deg); background: #efe; border: 1px solid #6a6; padding: 6px; margin-left: 10px }
+ .flip { transform: scaleX(-1); display: inline-block }
+</style></head><body>
+<h3>Повороты, масштаб, наклон, matrix, origin</h3>
+<div class="row"><div class="b r">rotate(15deg)</div><div class="b s">scale(1.3)</div><div class="b k">skewX(-20deg)</div><div class="b m">matrix(…)</div><div class="b o">origin: left top</div></div>
+<div class="row"><div class="b combo">translate rotate scale</div><div class="b ind">rotate/scale свойства</div></div>
+<h3>Центрирование translate(-50%, -50%) и штамп</h3>
+<div class="card"><div class="center">Точно по центру</div><div class="stamp">ОПЛАЧЕНО</div></div>
+<div class="flt">Повёрнутая плавающая врезка; текст обтекает исходную рамку.</div>
+<p>Картинка с поворотом <img class="t" src="img.png" width="50"> внутри строки. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю.</p>
+<p style="transform: rotate(-2deg); background:#f6f0ff; padding: 6px">Целый абзац с transform: rotate(-2deg) и фоном.</p>
+</body></html>

@@ -251,6 +251,7 @@ public sealed class BreakInline(BreakKind kind, TextStyle style) : Inline
 
 public sealed class ImageInline(string partName, double width, double height, TextStyle style) : Inline
 {
+    public TransformResolver? Transform;
     public string PartName = partName;
     public double Width = width;   // pt
     public double Height = height; // pt
@@ -366,6 +367,7 @@ public sealed class BoxStyle
 /// <summary>Плавающий блок (CSS float) — текст обтекает его.</summary>
 public sealed class FloatBlock : Block
 {
+    public TransformResolver? Transform;
     public string Side = "left";
     public double Width;                 // ширина рамки блока (без внешних отступов)
     public double MarginTop, MarginBottom, MarginLeft, MarginRight;
@@ -376,6 +378,7 @@ public sealed class FloatBlock : Block
 /// <summary>Абсолютно/фиксированно позиционированный блок (вне потока).</summary>
 public sealed class PositionedBlock : Block
 {
+    public TransformResolver? Transform;
     public string Mode = "absolute";     // absolute | fixed
     public double? Left, Top, Right, Bottom;
     public double Width;
@@ -384,12 +387,30 @@ public sealed class PositionedBlock : Block
     public List<Block> Blocks = [];
 }
 
+/// <summary>
+/// 2D-преобразование (CSS transform) в системе координат "y вниз":
+/// x' = A·x + C·y + E, y' = B·x + D·y + F относительно точки (Ox, Oy) от левого верхнего угла рамки.
+/// </summary>
+public readonly record struct Transform2D(double A, double B, double C, double D, double E, double F, double Ox, double Oy);
+
+/// <summary>Вычисляет преобразование по размеру рамки элемента (ширина, высота) — для % в translate и transform-origin.</summary>
+public delegate Transform2D TransformResolver(double width, double height);
+
+/// <summary>Блоки, отрисовываемые с преобразованием (на раскладку не влияет).</summary>
+public sealed class TransformBlock : Block
+{
+    public List<Block> Blocks = [];
+    public double BoxX, BoxWidth;        // рамка элемента относительно колонки
+    public required TransformResolver Resolve;
+}
+
 /// <summary>Точка привязки для absolute-потомков позиционированного предка.</summary>
 public sealed class AnchorBlock : Block
 {
     public double X;                     // левый край предка относительно колонки
     public double Width;                 // ширина предка
     public double TopOffset;             // смещение верха предка относительно точки привязки
+    public double? Height;               // высота предка (для top/bottom в %), если известна
     public List<PositionedBlock> Children = [];
 }
 

@@ -83,6 +83,11 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
   (шрифт, размер, начертание, цвет, капитель, регистр, интервал, фон), остаток абзаца переносится заново обычным стилем
 - **Капитель** (`font-variant: small-caps`, `w:smallCaps` в DOCX): строчные — уменьшенными прописными, заглавные — полного размера
 - **Межбуквенный интервал**: `letter-spacing` в HTML, разреженный/уплотнённый интервал `w:spacing` в DOCX
+- **`transform`**: `translate`/`translateX`/`translateY` (в т.ч. в % от размера элемента), `scale`/`scaleX`/`scaleY`,
+  `rotate` (deg, rad, grad, turn), `skew`/`skewX`/`skewY`, `matrix()`, цепочки функций; `transform-origin`
+  (ключевые слова, длины, %); отдельные свойства `translate`, `rotate`, `scale`. Применяется к блокам, картинкам,
+  float, absolute/fixed, элементам flex/grid; на раскладку не влияет (как в браузере), выводится матрицей PDF
+- Блоки с фоном и внутренними отступами заливаются целиком (фон под padding), рамка `double` у блоков
 - **Счётчики**: `counter-reset`, `counter-increment`, `counter-set` с областями видимости (многоуровневая нумерация)
 - **CSS-переменные**: `--имя` (наследуются, задаются в `:root`, классах, `style=""`), `var(--x, запасное)` с вложенностью
 - **`calc()`**, `min()`, `max()`, `clamp()` с любыми единицами (px, pt, em, rem, %, …) в любых длинах
@@ -98,7 +103,9 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - Нет колонок, сносок, примечаний, RTL и сложного шейпинга (арабский, индийские письменности), кернинга и автопереносов
 - Только TrueType-контуры (OTF с CFF пропускаются)
 - Условное форматирование стилей таблиц (firstRow, banded rows) не применяется
-- HTML: нет JavaScript, SVG, `transform`, `border-radius` (углы прямые), `word-spacing`, `initial-letter`;
+- HTML: нет JavaScript, SVG, 3D-преобразований (`rotateX`, `perspective` игнорируются), `border-radius` (углы прямые),
+  `word-spacing`, `initial-letter`; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
+  преобразования); ссылки внутри преобразованного блока кликабельны по исходной (неповёрнутой) области;
   динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
 - float: таблица рядом с плавающим блоком размещается ниже него; float выше страницы выводится в потоке;
   группа «float + обтекающий текст» не разрывается между страницами
@@ -108,4 +115,5 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 Примеры: `src/DocxToPdf/samples/sample.docx` → `sample.pdf`, `sample.html` → `sample-html.pdf`,
 `layout.html` → `layout.pdf` (float, flex, grid, position), `css-features.html` → `css-features.pdf`
 (переменные, calc, ::before/::after, счётчики, :nth-child), `inline-boxes.html` → `inline-boxes.pdf` (рамки внутри строки),
-`first-letter-line.html` → `first-letter-line.pdf` (буквицы, `::first-letter`, `::first-line`, капитель).
+`first-letter-line.html` → `first-letter-line.pdf` (буквицы, `::first-letter`, `::first-line`, капитель),
+`transform.html` → `transform.pdf` (повороты, масштаб, наклон, центрирование, штамп).

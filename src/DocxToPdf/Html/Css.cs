@@ -480,6 +480,9 @@ public sealed class CssStyle
     public string? GridTemplateColumns, GridTemplateRows;
     public string? GridColumnStart, GridColumnEnd, GridRowStart, GridRowEnd;
 
+    // Преобразования
+    public string? Transform, TransformOrigin, Translate, Rotate, Scale;
+
     // Генерируемое содержимое и счётчики
     public string? Content;
     public string? CounterReset, CounterIncrement, CounterSet;

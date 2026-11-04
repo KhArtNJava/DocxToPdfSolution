@@ -124,7 +124,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 case FloatBlock fb:
                 {
                     double w = fb.Width + fb.MarginLeft + fb.MarginRight;
-                    var box = BuildBox(fb.Blocks, fb.Width, fb.Box);
+                    var box = Transformed(BuildBox(fb.Blocks, fb.Width, fb.Box), fb.Transform);
                     double h = box.Height + fb.MarginTop + fb.MarginBottom;
                     if (w > width + 0.5 || h > _ctx.MaxImageHeight * 0.9)
                     {
@@ -153,6 +153,33 @@ public sealed class BlockLayout(LayoutContext ctx)
                 case PositionedBlock pb:
                     Emit(MakeAbs(pb, 0, width, relative: false));
                     break;
+                case TransformBlock tb:
+                {
+                    var inner = LayoutBlocks(tb.Blocks, width);
+                    if (inner.Count == 0) break;
+                    var tf = new TransformFrag { BoxX = tb.BoxX, BoxWidth = tb.BoxWidth };
+                    double y = 0;
+                    for (int i = 0; i < inner.Count; i++)
+                    {
+                        if (i > 0) y += inner[i].SpaceBefore;
+                        tf.Items.Add((inner[i], y));
+                        y += inner[i].Height + (i < inner.Count - 1 ? inner[i].SpaceAfter : 0);
+                    }
+                    tf.Height = y;
+                    if (y > _ctx.MaxImageHeight)
+                    {
+                        // Выше страницы — выводим без преобразования, чтобы не потерять содержимое
+                        foreach (var f in inner) Emit(f);
+                        break;
+                    }
+                    tf.SpaceBefore = inner[0].SpaceBefore;
+                    tf.SpaceAfter = inner[^1].SpaceAfter;
+                    tf.PageBreakBefore = inner[0].PageBreakBefore;
+                    tf.KeepWithNext = inner[^1].KeepWithNext;
+                    tf.T = tb.Resolve(tb.BoxWidth, y);
+                    Emit(tf);
+                    break;
+                }
                 case AnchorBlock ab:
                     foreach (var child in ab.Children)
                     {
@@ -185,9 +212,22 @@ public sealed class BlockLayout(LayoutContext ctx)
         return bf;
     }
 
+    public BoxFrag BuildBoxTransformed(PositionedBlock pb) => Transformed(BuildBox(pb.Blocks, pb.Width, pb.Box), pb.Transform);
+
+    /// <summary>Оборачивает блок в преобразование (рамка блока сохраняет размеры для раскладки).</summary>
+    static BoxFrag Transformed(BoxFrag box, TransformResolver? tr)
+    {
+        if (tr == null) return box;
+        var tf = new TransformFrag { BoxX = 0, BoxWidth = box.Width, Height = box.Height, T = tr(box.Width, box.Height) };
+        tf.Items.Add((box, 0));
+        var wrapper = new BoxFrag { Box = new BoxStyle(), Width = box.Width, Height = box.Height };
+        wrapper.Items.Add((tf, 0));
+        return wrapper;
+    }
+
     AbsFrag MakeAbs(PositionedBlock pb, double anchorX, double anchorWidth, bool relative) => new()
     {
-        Content = BuildBox(pb.Blocks, pb.Width, pb.Box),
+        Content = Transformed(BuildBox(pb.Blocks, pb.Width, pb.Box), pb.Transform),
         Left = pb.Left, Top = pb.Top, Right = pb.Right, Bottom = pb.Bottom,
         Fixed = pb.Mode == "fixed", RelativeToFlow = relative, AnchorX = anchorX, AnchorWidth = anchorWidth,
         ZIndex = pb.ZIndex, Height = 0,
