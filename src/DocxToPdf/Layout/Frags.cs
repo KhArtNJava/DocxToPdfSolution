@@ -207,7 +207,13 @@ public sealed class LineFrag : Frag
         {
             var p = Pieces[i];
             double px = lx + p.X;
-            if (p.Kind == PieceKind.Image && p.Image != null && Doc.Media.TryGetValue(p.Image.PartName, out var bytes))
+            if (p.Kind == PieceKind.Image && p.Image?.Shape is { } shape)
+            {
+                // Фигура без текста: рамка неповёрнутая, поворот вокруг центра
+                double sh = p.Ascent + p.Descent, sk = p.Image.Width > 0 ? p.Width / p.Image.Width : 1;
+                c.Shape(shape, px + p.Width / 2, baseY - p.Ascent + sh / 2, p.Image.FrameW * sk, p.Image.FrameH * sk, p.Image.Rotation, p.Image.FlipH, p.Image.FlipV);
+            }
+            else if (p.Kind == PieceKind.Image && p.Image != null && Doc.Media.TryGetValue(p.Image.PartName, out var bytes))
             {
                 double ih = p.Ascent + p.Descent;
                 var tr = p.Image.Transform?.Invoke(p.Width, ih);

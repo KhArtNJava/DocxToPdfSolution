@@ -143,6 +143,26 @@ public sealed partial class DocxReader
         }
     }
 
+    /// <summary>Геометрия, заливка и контур фигуры DrawingML (spPr, при отсутствии — ссылки стиля wps:style).</summary>
+    static ShapeSpec ParseShapeSpec(XElement spPr, XElement? shapeStyle)
+    {
+        var sh = new ShapeSpec { Geom = (string?)spPr.Element(A + "prstGeom")?.Attribute("prst") ?? "rect" };
+        if (spPr.Element(A + "noFill") != null) sh.Fill = null;
+        else sh.Fill = DrawingColor(spPr.Element(A + "solidFill")) ?? DrawingColor(shapeStyle?.Element(A + "fillRef"));
+        var ln = spPr.Element(A + "ln");
+        if (ln?.Element(A + "noFill") != null) sh.Stroke = null;
+        else sh.Stroke = DrawingColor(ln?.Element(A + "solidFill")) ?? DrawingColor(shapeStyle?.Element(A + "lnRef"))
+                         ?? (ln != null || shapeStyle == null ? Rgb.Black : null);
+        if (ln?.Attribute("w") != null) sh.StrokeWidth = Math.Max(0.25, Emu((string?)ln.Attribute("w")));
+        string dash = (string?)ln?.Element(A + "prstDash")?.Attribute("val") ?? "solid";
+        sh.Dotted = dash is "dot" or "sysDot";
+        sh.Dashed = !sh.Dotted && dash != "solid";
+        sh.HeadArrow = (string?)ln?.Element(A + "headEnd")?.Attribute("type") is { } he && he != "none";
+        sh.TailArrow = (string?)ln?.Element(A + "tailEnd")?.Attribute("type") is { } te && te != "none";
+        if (sh.Geom.Contains("Connector") || sh.Geom == "line") sh.Fill = null;
+        return sh;
+    }
+
     void ParseDrawing(XElement drawing, RunState st, TextStyle style, List<Inline> output)
     {
         foreach (var container in drawing.Elements())
@@ -192,6 +212,19 @@ public sealed partial class DocxReader
                 p.Inlines.AddRange(tmp);
                 content = [p];
             }
+            else if (container.Descendants(WPS + "wsp").FirstOrDefault() is { } wsp && wsp.Element(WPS + "spPr") is { } shapePr)
+            {
+                // Фигура без текста: прямоугольник, эллипс, линия, стрелка …
+                var shape = ParseShapeSpec(shapePr, wsp.Element(WPS + "style"));
+                if (shape.Geom is "line" or "straightConnector1") { if (h < 0.01) h = 0; if (w < 0.01) w = 0; }
+                var img = new ImageInline("", Math.Max(w, shape.StrokeWidth), Math.Max(h, shape.StrokeWidth), style) { Shape = shape };
+                img.FrameW = w; img.FrameH = h;
+                ApplyPictureGeometry(container, img, !anchor);
+                if (!anchor) { output.Add(img); continue; }
+                var p = new Paragraph { MarkStyle = style with { Size = 1 }, LineRule = "auto", SnapToGrid = false };
+                p.Inlines.Add(img);
+                content = [p];
+            }
             else continue;
 
             if (!anchor)
@@ -226,7 +259,10 @@ public sealed partial class DocxReader
         double hOff = Emu(posH?.Element(WP + "posOffset")?.Value), vOff = Emu(posV?.Element(WP + "posOffset")?.Value);
 
         string wrap = a.Elements().FirstOrDefault(e => e.Name.LocalName.StartsWith("wrap"))?.Name.LocalName ?? "wrapNone";
-        if (wrap is "wrapSquare" or "wrapTight" or "wrapThrough" && !behind)
+        // Обтекание с вертикальной позицией от страницы/полей: объект ставится на своё место на странице
+        // (обтекание в потоке возможно только для привязки к абзацу)
+        bool absoluteV = vRel is "page" or "margin" or "topMargin" or "bottomMargin" or "insideMargin" or "outsideMargin";
+        if (wrap is "wrapSquare" or "wrapTight" or "wrapThrough" && !behind && !absoluteV)
         {
             // Обтекание: плавающий блок у левого или правого края
             string side = hAlign switch
@@ -307,10 +343,22 @@ public sealed partial class DocxReader
 
     void ParseVml(XElement pict, RunState st, TextStyle style, List<Inline> output)
     {
-        foreach (var shape in pict.Elements().Where(e => e.Name.Namespace == V && e.Name.LocalName is "shape" or "rect" or "roundrect" or "oval"))
+        foreach (var shape in pict.Elements().Where(e => e.Name.Namespace == V && e.Name.LocalName is "shape" or "rect" or "roundrect" or "oval" or "line"))
         {
             var css = CssMap((string?)shape.Attribute("style") ?? "");
             double w = CssLength((string?)shape.Attribute("style") ?? "", "width"), h = CssLength((string?)shape.Attribute("style") ?? "", "height");
+            if (shape.Name.LocalName == "line")
+            {
+                // v:line from="x,y" to="x,y"
+                static (double, double) Pt(string? v)
+                {
+                    var parts = (v ?? "0,0").Split(',');
+                    double X(int i) => i < parts.Length ? CssLength("v:" + parts[i].Trim(), "v") : 0;
+                    return (X(0), X(1));
+                }
+                var (x1, y1) = Pt((string?)shape.Attribute("from")); var (x2, y2) = Pt((string?)shape.Attribute("to"));
+                w = Math.Abs(x2 - x1); h = Math.Abs(y2 - y1);
+            }
             bool absolute = css.TryGetValue("position", out var pos) && pos == "absolute";
 
             List<Block>? content = null;
@@ -357,6 +405,38 @@ public sealed partial class DocxReader
                 if (!absolute) { output.AddRange(tmp); continue; }
                 var p = new Paragraph { MarkStyle = style with { Size = 1 }, SnapToGrid = false };
                 p.Inlines.AddRange(tmp);
+                content = [p];
+            }
+            else if (shape.Name.LocalName is "rect" or "roundrect" or "oval" or "line"
+                     || (shape.Name.LocalName == "shape" && ((string?)shape.Attribute("type") ?? "").Replace("#", "") is "_x0000_t32" or "_x0000_t202" or "_x0000_t1" or "" && shape.Element(V + "path") == null))
+            {
+                // Фигура VML без текста
+                var sh = new ShapeSpec
+                {
+                    Geom = shape.Name.LocalName switch
+                    {
+                        "oval" => "ellipse", "roundrect" => "roundRect", "line" => "line",
+                        _ => ((string?)shape.Attribute("type") ?? "").EndsWith("t32") ? "line" : "rect"
+                    },
+                };
+                bool filled = (string?)shape.Attribute("filled") is not ("f" or "false") && sh.Geom != "line";
+                if (filled) sh.Fill = VmlColor((string?)shape.Attribute("fillcolor")) ?? Rgb.White;
+                if ((string?)shape.Attribute("stroked") is not ("f" or "false"))
+                {
+                    sh.Stroke = VmlColor((string?)shape.Attribute("strokecolor")) ?? Rgb.Black;
+                    double swv = CssLength("w:" + ((string?)shape.Attribute("strokeweight") ?? "0.75pt"), "w");
+                    sh.StrokeWidth = swv > 0 ? swv : 0.75;
+                    var stroke = shape.Element(V + "stroke");
+                    string ds = (string?)stroke?.Attribute("dashstyle") ?? "solid";
+                    sh.Dotted = ds.Contains("dot", StringComparison.OrdinalIgnoreCase) && !ds.Contains("dash", StringComparison.OrdinalIgnoreCase);
+                    sh.Dashed = !sh.Dotted && ds != "solid";
+                    sh.TailArrow = (string?)stroke?.Attribute("endarrow") is { } ea && ea != "none";
+                    sh.HeadArrow = (string?)stroke?.Attribute("startarrow") is { } sa && sa != "none";
+                }
+                var shapeImg = new ImageInline("", Math.Max(w, sh.StrokeWidth), Math.Max(h, sh.StrokeWidth), style) { Shape = sh, FrameW = w, FrameH = h };
+                if (!absolute) { output.Add(shapeImg); continue; }
+                var p = new Paragraph { MarkStyle = style with { Size = 1 }, SnapToGrid = false };
+                p.Inlines.Add(shapeImg);
                 content = [p];
             }
             if (content == null) continue;

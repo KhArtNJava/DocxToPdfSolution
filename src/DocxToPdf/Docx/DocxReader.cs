@@ -125,7 +125,42 @@ public sealed partial class DocxReader
         var e = Entry(name);
         if (e == null) return null;
         using var s = e.Open();
-        return XDocument.Load(s, LoadOptions.PreserveWhitespace);
+        var doc = XDocument.Load(s, LoadOptions.PreserveWhitespace);
+        NormalizeStrict(doc);
+        return doc;
+    }
+
+    /// <summary>Пространства имён Strict OOXML (ISO/IEC 29500 Strict) → переходные (Transitional).</summary>
+    static readonly Dictionary<string, string> StrictNs = new()
+    {
+        ["http://purl.oclc.org/ooxml/wordprocessingml/main"] = "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+        ["http://purl.oclc.org/ooxml/officeDocument/relationships"] = "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        ["http://purl.oclc.org/ooxml/drawingml/main"] = "http://schemas.openxmlformats.org/drawingml/2006/main",
+        ["http://purl.oclc.org/ooxml/drawingml/wordprocessingDrawing"] = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+        ["http://purl.oclc.org/ooxml/drawingml/picture"] = "http://schemas.openxmlformats.org/drawingml/2006/picture",
+        ["http://purl.oclc.org/ooxml/officeDocument/math"] = "http://schemas.openxmlformats.org/officeDocument/2006/math",
+        ["http://purl.oclc.org/ooxml/officeDocument/sharedTypes"] = "http://schemas.openxmlformats.org/officeDocument/2006/sharedTypes",
+    };
+
+    static void NormalizeStrict(XDocument doc)
+    {
+        if (doc.Root == null) return;
+        bool any = false;
+        foreach (var a in doc.Root.Attributes()) if (a.IsNamespaceDeclaration && StrictNs.ContainsKey(a.Value)) { any = true; break; }
+        if (!any && !doc.Descendants().Any(e => StrictNs.ContainsKey(e.Name.NamespaceName))) return;
+        foreach (var el in doc.Descendants().ToList())
+        {
+            if (StrictNs.TryGetValue(el.Name.NamespaceName, out var ns)) el.Name = XName.Get(el.Name.LocalName, ns);
+            var attrs = el.Attributes().ToList();
+            bool changed = false;
+            for (int i = 0; i < attrs.Count; i++)
+            {
+                var at = attrs[i];
+                if (at.IsNamespaceDeclaration) { if (StrictNs.TryGetValue(at.Value, out var d)) { attrs[i] = new XAttribute(at.Name, d); changed = true; } continue; }
+                if (StrictNs.TryGetValue(at.Name.NamespaceName, out var ans)) { attrs[i] = new XAttribute(XName.Get(at.Name.LocalName, ans), at.Value); changed = true; }
+            }
+            if (changed) el.ReplaceAttributes(attrs);
+        }
     }
 
     byte[]? LoadBytes(string name)
@@ -1507,6 +1542,7 @@ public sealed partial class DocxReader
             var ind = tblPr.Element(W + "tblInd");
             if (ind != null && (string?)ind.Attribute(W + "type") != "pct") t.Indent = Twips((string?)ind.Attribute(W + "w")) ?? 0;
             t.Align = Val(tblPr.Element(W + "jc")) switch { "center" => "center", "right" or "end" => "right", _ => "left" };
+            t.Rtl = OnOff(tblPr.Element(W + "bidiVisual")) == true;
             if (tblPr.Element(W + "tblCellSpacing") is { } tcs && (string?)tcs.Attribute(W + "type") is "dxa" or null)
                 t.CellSpacing = Twips((string?)tcs.Attribute(W + "w")) ?? 0;
             var tw = tblPr.Element(W + "tblW");

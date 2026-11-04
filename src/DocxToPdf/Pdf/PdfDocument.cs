@@ -626,6 +626,94 @@ public sealed class PdfCanvas
         _sb.Append("Q\n");
     }
 
+    /// <summary>
+    /// Фигура (ShapeSpec) в рамке w×h с центром (cx, cy), повёрнутая по часовой стрелке и отражённая.
+    /// </summary>
+    public void Shape(DocxToPdf.Docx.ShapeSpec sh, double cx, double cy, double w, double h, double rotation, bool flipH, bool flipV)
+    {
+        if (Collecting > 0 || SkipGraphics) return;
+        double a = -rotation * Math.PI / 180, cos = Math.Cos(a), sin = Math.Sin(a);
+        double sx = flipH ? -1 : 1, sy = flipV ? -1 : 1;
+        _sb.Append($"q {F(cos * sx)} {F(sin * sx)} {F(-sin * sy)} {F(cos * sy)} {F(cx)} {F(Y(cy))} cm ");
+        // Точка рамки (ось y вниз, от левого верхнего угла) → локальная система (центр, ось y вверх)
+        string P(double px, double py) => $"{F(px - w / 2)} {F(h / 2 - py)}";
+        var path = new StringBuilder();
+        void Poly(params (double X, double Y)[] pts)
+        {
+            path.Append(P(pts[0].X, pts[0].Y)).Append(" m ");
+            for (int i = 1; i < pts.Length; i++) path.Append(P(pts[i].X, pts[i].Y)).Append(" l ");
+            path.Append("h ");
+        }
+        bool open = false;
+        switch (sh.Geom)
+        {
+            case "line" or "straightConnector1" or "connector":
+                path.Append(P(0, 0)).Append(" m ").Append(P(w, h)).Append(" l ");
+                open = true;
+                break;
+            case "ellipse" or "oval":
+            {
+                const double K = 0.5523;
+                double rx = w / 2, ry = h / 2;
+                path.Append($"{F(rx)} 0 m {F(rx)} {F(ry * K)} {F(rx * K)} {F(ry)} 0 {F(ry)} c {F(-rx * K)} {F(ry)} {F(-rx)} {F(ry * K)} {F(-rx)} 0 c ");
+                path.Append($"{F(-rx)} {F(-ry * K)} {F(-rx * K)} {F(-ry)} 0 {F(-ry)} c {F(rx * K)} {F(-ry)} {F(rx)} {F(-ry * K)} {F(rx)} 0 c h ");
+                break;
+            }
+            case "roundRect" or "roundrect":
+            {
+                double r = Math.Min(w, h) * 0.1667, K = 0.5523 * r;
+                double l = -w / 2, rr = w / 2, b = -h / 2, t = h / 2;
+                path.Append($"{F(l + r)} {F(t)} m {F(rr - r)} {F(t)} l {F(rr - r + K)} {F(t)} {F(rr)} {F(t - r + K)} {F(rr)} {F(t - r)} c ");
+                path.Append($"{F(rr)} {F(b + r)} l {F(rr)} {F(b + r - K)} {F(rr - r + K)} {F(b)} {F(rr - r)} {F(b)} c ");
+                path.Append($"{F(l + r)} {F(b)} l {F(l + r - K)} {F(b)} {F(l)} {F(b + r - K)} {F(l)} {F(b + r)} c ");
+                path.Append($"{F(l)} {F(t - r)} l {F(l)} {F(t - r + K)} {F(l + r - K)} {F(t)} {F(l + r)} {F(t)} c h ");
+                break;
+            }
+            case "triangle": Poly((w / 2, 0), (w, h), (0, h)); break;
+            case "rtTriangle": Poly((0, 0), (w, h), (0, h)); break;
+            case "diamond": Poly((w / 2, 0), (w, h / 2), (w / 2, h), (0, h / 2)); break;
+            case "parallelogram": Poly((w * 0.25, 0), (w, 0), (w * 0.75, h), (0, h)); break;
+            case "hexagon": Poly((w * 0.25, 0), (w * 0.75, 0), (w, h / 2), (w * 0.75, h), (w * 0.25, h), (0, h / 2)); break;
+            case "octagon":
+            {
+                double d = Math.Min(w, h) * 0.29;
+                Poly((d, 0), (w - d, 0), (w, d), (w, h - d), (w - d, h), (d, h), (0, h - d), (0, d));
+                break;
+            }
+            case "rightArrow": { double hw = Math.Min(w, h); Poly((0, h * 0.25), (w - hw / 2, h * 0.25), (w - hw / 2, 0), (w, h / 2), (w - hw / 2, h), (w - hw / 2, h * 0.75), (0, h * 0.75)); break; }
+            case "leftArrow": { double hw = Math.Min(w, h); Poly((w, h * 0.25), (hw / 2, h * 0.25), (hw / 2, 0), (0, h / 2), (hw / 2, h), (hw / 2, h * 0.75), (w, h * 0.75)); break; }
+            case "upArrow": { double hh = Math.Min(w, h); Poly((w * 0.25, h), (w * 0.25, hh / 2), (0, hh / 2), (w / 2, 0), (w, hh / 2), (w * 0.75, hh / 2), (w * 0.75, h)); break; }
+            case "downArrow": { double hh = Math.Min(w, h); Poly((w * 0.25, 0), (w * 0.75, 0), (w * 0.75, h - hh / 2), (w, h - hh / 2), (w / 2, h), (0, h - hh / 2), (w * 0.25, h - hh / 2)); break; }
+            default: Poly((0, 0), (w, 0), (w, h), (0, h)); break;
+        }
+        bool fill = sh.Fill != null && !open, stroke = sh.Stroke != null && sh.StrokeWidth > 0;
+        if (fill) _sb.Append($"{Color(sh.Fill!.Value)} rg ");
+        if (stroke)
+        {
+            _sb.Append($"{F(sh.StrokeWidth)} w {Color(sh.Stroke!.Value)} RG ");
+            if (sh.Dashed) _sb.Append($"[{F(sh.StrokeWidth * 4)} {F(sh.StrokeWidth * 3)}] 0 d ");
+            else if (sh.Dotted) _sb.Append($"[{F(sh.StrokeWidth)} {F(sh.StrokeWidth * 2)}] 0 d ");
+        }
+        if (fill || stroke) _sb.Append(path).Append(fill && stroke ? "B " : fill ? "f " : "S ");
+        // Стрелки на концах линии: закрашенный треугольник
+        if (open && stroke && (sh.HeadArrow || sh.TailArrow))
+        {
+            _sb.Append($"[] 0 d {Color(sh.Stroke!.Value)} rg ");
+            void Arrow(double tx, double ty, double fx, double fy)
+            {
+                double dx = tx - fx, dy = ty - fy, len = Math.Sqrt(dx * dx + dy * dy);
+                if (len < 0.01) return;
+                dx /= len; dy /= len;
+                double s = Math.Max(4, sh.StrokeWidth * 3), bx = tx - dx * s, by = ty - dy * s;
+                _sb.Append(P(tx, ty)).Append(" m ").Append(P(bx - dy * s / 2, by + dx * s / 2)).Append(" l ")
+                   .Append(P(bx + dy * s / 2, by - dx * s / 2)).Append(" l h f ");
+            }
+            if (sh.TailArrow) Arrow(w, h, 0, 0);
+            if (sh.HeadArrow) Arrow(0, 0, w, h);
+        }
+        _sb.Append("Q\n");
+    }
+
     public void Image(string key, byte[] bytes, double x, double y, double w, double h)
     {
         if (Collecting > 0) return;

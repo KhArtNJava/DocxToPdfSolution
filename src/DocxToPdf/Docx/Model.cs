@@ -322,7 +322,22 @@ public sealed class ImageInline(string partName, double width, double height, Te
     public bool FlipH, FlipV;
     /// <summary>Размер неповёрнутой рамки; Width/Height — описанный прямоугольник после поворота.</summary>
     public double FrameW = width, FrameH = height;
+    /// <summary>Фигура без текста (DrawingML prstGeom / VML): рисуется контурами вместо картинки.</summary>
+    public ShapeSpec? Shape;
     public bool HasGeometry => CropL != 0 || CropT != 0 || CropR != 0 || CropB != 0 || Rotation != 0 || FlipH || FlipV;
+}
+
+/// <summary>Простая фигура: прямоугольник, скруглённый прямоугольник, эллипс, линия, треугольник и т. п.</summary>
+public sealed class ShapeSpec
+{
+    /// <summary>rect, roundRect, ellipse, line, triangle, rtTriangle, diamond, parallelogram, hexagon, octagon, rightArrow, leftArrow, upArrow, downArrow</summary>
+    public string Geom = "rect";
+    public Rgb? Fill;
+    public Rgb? Stroke;
+    public double StrokeWidth = 0.75;
+    public bool Dashed, Dotted;
+    /// <summary>Стрелки на концах линии (a:headEnd / a:tailEnd).</summary>
+    public bool HeadArrow, TailArrow;
 }
 
 public enum FieldKind { Page, NumPages, PageRef }
@@ -445,6 +460,8 @@ public sealed class Table : Block
     public double Indent;
     public string Align = "left";
     public double? Width;
+    /// <summary>Таблица справа налево (w:bidiVisual): первая колонка — справа.</summary>
+    public bool Rtl;
     /// <summary>Интервал между ячейками (w:tblCellSpacing), pt: отступ ячейки от соседей и края таблицы.</summary>
     public double CellSpacing;
     /// <summary>Ширина в долях ширины текста (tblW type="pct"), 1 = 100 %</summary>

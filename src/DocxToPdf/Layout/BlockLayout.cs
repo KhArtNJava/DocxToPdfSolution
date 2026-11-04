@@ -517,7 +517,8 @@ public sealed class BlockLayout(LayoutContext ctx)
                 case ImageInline img:
                 {
                     double w = img.Width, h = img.Height;
-                    if (w <= 0 || h <= 0) { w = 100; h = 75; }
+                    if ((w <= 0 || h <= 0) && img.Shape == null) { w = 100; h = 75; }
+                    w = Math.Max(w, 0.5); h = Math.Max(h, 0.5);
                     double maxW = _contentWidthHint - para.IndLeft - para.IndRight;
                     if (maxW > 10 && w > maxW) { h *= maxW / w; w = maxW; }
                     if (h > _ctx.MaxImageHeight) { w *= _ctx.MaxImageHeight / h; h = _ctx.MaxImageHeight; }
@@ -1099,6 +1100,15 @@ public sealed class BlockLayout(LayoutContext ctx)
             // Интервал сверху и снизу ячеек: между строками — двойной, у края таблицы — одинарный
             if (t.CellSpacing > 0) rowH += 2 * t.CellSpacing;
             if (rowH <= 0) rowH = 1;
+            if (t.Rtl)
+            {
+                // Таблица справа налево: колонки зеркально, левая и правая границы ячеек меняются местами
+                foreach (var bx in boxes)
+                {
+                    bx.X = 2 * x0 + total - bx.X - bx.Width;
+                    (bx.Left, bx.Right) = (bx.Right, bx.Left);
+                }
+            }
             rowsCells.Add(boxes);
             rowHeights.Add(rowH);
         }
