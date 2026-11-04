@@ -462,7 +462,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 inl = inl switch
                 {
                     TextInline ti => new TextInline(ti.Text, overlay(ti.Style)),
-                    FieldInline fi => new FieldInline(fi.Kind, overlay(fi.Style)),
+                    FieldInline fi => new FieldInline(fi.Kind, overlay(fi.Style)) { Arg = fi.Arg, Cached = fi.Cached },
                     TabInline tb => new TabInline(overlay(tb.Style)),
                     BreakInline bi => new BreakInline(bi.Kind, overlay(bi.Style)),
                     _ => inl
@@ -480,8 +480,9 @@ public sealed class BlockLayout(LayoutContext ctx)
                 {
                     // В основном тексте номер страницы известен только при отрисовке — ширина по оценке
                     int before = pieces.Count;
-                    AddText(_ctx.FieldText?.Invoke(f.Kind) ?? "99", f.Style);
-                    for (int k = before; k < pieces.Count; k++) pieces[k].Field = f.Kind;
+                    string est = f.Kind == FieldKind.PageRef ? (string.IsNullOrEmpty(f.Cached) ? "99" : f.Cached) : _ctx.FieldText?.Invoke(f.Kind) ?? "99";
+                    AddText(est, f.Style);
+                    for (int k = before; k < pieces.Count; k++) { pieces[k].Field = f.Kind; pieces[k].FieldArg = f.Arg; }
                 }
                     break;
                 case FootnoteInline fn:
@@ -934,12 +935,23 @@ public sealed class BlockLayout(LayoutContext ctx)
             if (spaces > 0 && extra > 0) extraPerSpace = extra / spaces;
         }
 
+        // Распределённое выравнивание: все строки (и последняя) растягиваются за счёт промежутков между символами
+        double perGlyph = 0;
+        if (align == "distribute" && lastVisible >= 0)
+        {
+            int glyphs = 0;
+            for (int i = lastTab + 1; i <= lastVisible; i++) if (pieces[i].Kind is PieceKind.Text or PieceKind.Space) glyphs += pieces[i].Gids.Count;
+            double extra = avail - contentW;
+            if (glyphs > 1 && extra > 0) perGlyph = extra / (glyphs - 1);
+        }
+
         double xx = offset + raw.StartX;
         for (int i = 0; i < pieces.Count; i++)
         {
             var q = pieces[i];
             q.X = xx;
-            xx += q.Width;
+            q.GlyphExtra = perGlyph > 0 && i > lastTab && i <= lastVisible && q.Kind is PieceKind.Text or PieceKind.Space ? perGlyph : 0;
+            xx += q.Width + q.GlyphExtra * q.Gids.Count;
             if (extraPerSpace > 0 && q.Kind == PieceKind.Space && i > lastTab && i < lastVisible) xx += extraPerSpace;
         }
 

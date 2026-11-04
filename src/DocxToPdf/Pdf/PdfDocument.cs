@@ -403,6 +403,8 @@ public sealed class PdfCanvas
     /// <summary>Номер текущей страницы и их общее число (для полей PAGE/NUMPAGES в тексте).</summary>
     public int PageNumber, PageCount;
     public string? PageNumberText;
+    /// <summary>Номер страницы закладки для полей PAGEREF (известен после разбивки на страницы).</summary>
+    public Func<string, string?>? PageRefText;
 
     public void Glyphs(FontFace face, double size, double x, double baseline, IReadOnlyList<ushort> gids, IReadOnlyList<string> texts, Rgb color,
         IReadOnlyList<double>? extra = null, double hscale = 1, bool outline = false)

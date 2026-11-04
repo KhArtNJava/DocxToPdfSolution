@@ -17,7 +17,7 @@ public static class Converter
         var paginator = new Paginator(ctx);
         var pages = paginator.Run();
         var pdf = new PdfDocument { Title = doc.Title, Author = doc.Author, Subject = doc.Subject };
-        Paginator.Render(pages, pdf);
+        Paginator.Render(pages, pdf, paginator.Destinations);
         foreach (var (name, (page, x, y)) in paginator.Destinations) pdf.Destinations[name] = (page, x, y);
         pdf.Save(output);
         return pages.Count;

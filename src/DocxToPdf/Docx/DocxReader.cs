@@ -757,7 +757,7 @@ public sealed partial class DocxReader
             Size = r.Size ?? 10,
             Color = (r.Emboss == true || r.Imprint == true)
                 ? new Rgb(0.93, 0.93, 0.93)
-                : Rgb.Parse(r.Color) ?? (link != null && r.Color == null ? new Rgb(0.02, 0.39, 0.76) : Rgb.Black),
+                : Rgb.Parse(r.Color) ?? Rgb.Black,   // цвет ссылки задаёт только стиль (как в Word)
             Background = bg,
             VertAlign = r.VertAlign switch { "superscript" => 1, "subscript" => -1, _ => 0 },
             Position = r.Position ?? 0,
@@ -905,7 +905,8 @@ public sealed partial class DocxReader
             {
                 "center" => "center",
                 "right" or "end" => "right",
-                "both" or "distribute" or "lowKashida" or "mediumKashida" or "highKashida" or "thaiDistribute" => "both",
+                "both" or "lowKashida" or "mediumKashida" or "highKashida" => "both",
+                "distribute" or "thaiDistribute" => "distribute",
                 _ => "left"
             },
             IndLeft = pp.IndLeft ?? 0,
@@ -1116,6 +1117,10 @@ public sealed partial class DocxReader
         public bool SkipResult;
         public bool Emitted;
         public TextStyle? Style;
+        /// <summary>Поле HYPERLINK: ссылка действует на результат поля; прежняя ссылка восстанавливается в конце.</summary>
+        public bool SetsLink;
+        public string? PrevLink;
+        public FieldInline? Pending;
     }
 
     sealed class RunState
@@ -1148,11 +1153,19 @@ public sealed partial class DocxReader
             else if (n == W + "fldSimple")
             {
                 string instr = ((string?)el.Attribute(W + "instr") ?? "").Trim();
-                var kind = FieldKindOf(instr);
-                if (kind != null)
+                var r = el.Descendants(W + "rPr").FirstOrDefault();
+                var fi = MakeField(instr, ToTextStyle(ResolveRunProps(st.BaseR, ParseRPr(r)), st.Link));
+                if (fi != null)
                 {
-                    var r = el.Descendants(W + "rPr").FirstOrDefault();
-                    output.Add(new FieldInline(kind.Value, ToTextStyle(ResolveRunProps(st.BaseR, ParseRPr(r)))));
+                    fi.Cached = string.Concat(el.Descendants(W + "t").Select(t => t.Value));
+                    output.Add(fi);
+                }
+                else if (HyperlinkTarget(instr) is { } target)
+                {
+                    string? prev = st.Link;
+                    st.Link = target;
+                    ParseInlineContainer(el, st, output);
+                    st.Link = prev;
                 }
                 else ParseInlineContainer(el, st, output);
             }
@@ -1188,7 +1201,67 @@ public sealed partial class DocxReader
     static FieldKind? FieldKindOf(string instr)
     {
         var word = instr.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.ToUpperInvariant();
-        return word switch { "PAGE" => FieldKind.Page, "NUMPAGES" or "SECTIONPAGES" => FieldKind.NumPages, _ => null };
+        return word switch { "PAGE" => FieldKind.Page, "NUMPAGES" or "SECTIONPAGES" => FieldKind.NumPages, "PAGEREF" => FieldKind.PageRef, _ => null };
+    }
+
+    /// <summary>Аргументы кода поля: слова и строки в кавычках, ключи (\l, \h …) отдельно.</summary>
+    static List<string> FieldTokens(string instr)
+    {
+        var list = new List<string>();
+        int i = 0;
+        while (i < instr.Length)
+        {
+            if (char.IsWhiteSpace(instr[i])) { i++; continue; }
+            if (instr[i] == '"')
+            {
+                int j = instr.IndexOf('"', i + 1);
+                if (j < 0) j = instr.Length;
+                list.Add(instr[(i + 1)..j]);
+                i = j + 1;
+                continue;
+            }
+            int k = i;
+            while (k < instr.Length && !char.IsWhiteSpace(instr[k])) k++;
+            list.Add(instr[i..k]);
+            i = k;
+        }
+        return list;
+    }
+
+    /// <summary>Цель поля HYPERLINK: "url" [\l "закладка"] → url, url#закладка или #закладка.</summary>
+    static string? HyperlinkTarget(string instr)
+    {
+        var t = FieldTokens(instr);
+        // REF/NOTEREF закладка \h — перекрёстная ссылка с переходом к закладке
+        if (t.Count >= 2 && t[0].ToUpperInvariant() is "REF" or "NOTEREF" && t.Any(a => a.Equals("\\h", StringComparison.OrdinalIgnoreCase)))
+            return "#" + t[1];
+        if (t.Count == 0 || !t[0].Equals("HYPERLINK", StringComparison.OrdinalIgnoreCase)) return null;
+        string? url = null, anchor = null;
+        for (int i = 1; i < t.Count; i++)
+        {
+            if (t[i].Equals("\\l", StringComparison.OrdinalIgnoreCase) && i + 1 < t.Count) anchor = t[++i];
+            else if (t[i].StartsWith('\\')) { if (t[i] is "\\o" or "\\O" or "\\t" or "\\T") i++; }
+            else url ??= t[i];
+        }
+        if (url != null) return anchor != null ? url + "#" + anchor : url;
+        return anchor != null ? "#" + anchor : null;
+    }
+
+    /// <summary>Поле номера страницы/закладки; null — поле выводится сохранённым результатом.</summary>
+    FieldInline? MakeField(string instr, TextStyle style)
+    {
+        var kind = FieldKindOf(instr);
+        if (kind == null) return null;
+        var fi = new FieldInline(kind.Value, style);
+        if (kind == FieldKind.PageRef)
+        {
+            var t = FieldTokens(instr);
+            fi.Arg = t.Skip(1).FirstOrDefault(a => !a.StartsWith('\\'));
+            if (fi.Arg == null) return null;
+            // \h — номер страницы является ссылкой на закладку
+            if (t.Any(a => a.Equals("\\h", StringComparison.OrdinalIgnoreCase))) fi.Style = style with { Link = "#" + fi.Arg };
+        }
+        return fi;
     }
 
     void ParseRun(XElement r, RunState st, List<Inline> output)
@@ -1208,21 +1281,30 @@ public sealed partial class DocxReader
                 {
                     var f = st.Fields.Peek();
                     f.InResult = true;
-                    var kind = FieldKindOf(f.Instr.ToString().Trim());
-                    if (kind != null && !OuterSuppressed(st))
+                    string instr = f.Instr.ToString().Trim();
+                    var fi = MakeField(instr, f.Style ?? style);
+                    if (fi != null && !OuterSuppressed(st))
                     {
-                        output.Add(new FieldInline(kind.Value, f.Style ?? style));
+                        // Сохранённый результат пропускается, но запоминается для оценки ширины
+                        output.Add(fi);
+                        f.Pending = fi;
                         f.SkipResult = true;
                         f.Emitted = true;
+                    }
+                    else if (HyperlinkTarget(instr) is { } target)
+                    {
+                        f.SetsLink = true; f.PrevLink = st.Link; st.Link = target;
+                        style = ToTextStyle(rp, st.Link);
                     }
                 }
                 else if (type == "end" && st.Fields.Count > 0)
                 {
                     var f = st.Fields.Pop();
+                    if (f.SetsLink) { st.Link = f.PrevLink; style = ToTextStyle(rp, st.Link); }
                     if (!f.InResult && !f.Emitted && !st.Suppressed)
                     {
-                        var kind = FieldKindOf(f.Instr.ToString().Trim());
-                        if (kind != null) output.Add(new FieldInline(kind.Value, f.Style ?? style));
+                        var fi = MakeField(f.Instr.ToString().Trim(), f.Style ?? style);
+                        if (fi != null) output.Add(fi);
                     }
                 }
                 continue;
@@ -1232,6 +1314,8 @@ public sealed partial class DocxReader
                 if (st.Fields.Count > 0 && !st.Fields.Peek().InResult) st.Fields.Peek().Instr.Append(el.Value);
                 continue;
             }
+            // Сохранённый результат поля номера (PAGEREF) — для оценки ширины
+            if (n == W + "t" && st.Fields.Count > 0 && st.Fields.Peek().Pending is { } pend) pend.Cached = (pend.Cached ?? "") + el.Value;
             if (st.Suppressed || hidden) continue;
             if (ParseNoteElement(el, style, output)) continue;
 

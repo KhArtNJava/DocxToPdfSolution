@@ -312,7 +312,7 @@ public sealed class ImageInline(string partName, double width, double height, Te
     public bool HasGeometry => CropL != 0 || CropT != 0 || CropR != 0 || CropB != 0 || Rotation != 0 || FlipH || FlipV;
 }
 
-public enum FieldKind { Page, NumPages }
+public enum FieldKind { Page, NumPages, PageRef }
 
 /// <summary>Ссылка на сноску: номер в тексте и текст сноски внизу страницы.</summary>
 public sealed class FootnoteInline(string mark, TextStyle style, List<Block> blocks) : Inline
@@ -326,6 +326,10 @@ public sealed class FieldInline(FieldKind kind, TextStyle style) : Inline
 {
     public FieldKind Kind = kind;
     public TextStyle Style = style;
+    /// <summary>Для PAGEREF — имя закладки.</summary>
+    public string? Arg;
+    /// <summary>Сохранённый в документе результат (для оценки ширины).</summary>
+    public string? Cached;
 }
 
 public abstract class Block { }

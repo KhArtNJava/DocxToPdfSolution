@@ -47,6 +47,8 @@ public sealed class Piece
     public List<ushort> Gids = [];
     public List<string> Texts = [];
     public List<double> Adv = [];
+    /// <summary>Добавка после каждого глифа (распределённое выравнивание jc="distribute").</summary>
+    public double GlyphExtra;
     public double Width;
     public double Ascent, Descent;
     public bool BreakBefore;
@@ -61,6 +63,8 @@ public sealed class Piece
     public int Src = -1;
     /// <summary>Поле PAGE/NUMPAGES: текст подставляется при отрисовке.</summary>
     public FieldKind? Field;
+    /// <summary>Для PAGEREF — имя закладки.</summary>
+    public string? FieldArg;
     /// <summary>Направление: 0 — нейтральный, 1 — слева направо, 2 — справа налево.</summary>
     public int Dir;
     /// <summary>Разрыв колонки (а не страницы).</summary>
@@ -144,14 +148,27 @@ public sealed class LineFrag : Frag
             if (p.Field != null && c.PageNumber > 0)
             {
                 // Номер страницы известен только сейчас
-                string num = p.Field == FieldKind.Page
-                    ? c.PageNumberText ?? c.PageNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    : c.PageCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                var fg = new List<ushort>(); var ft = new List<string>();
                 int m2 = k;
-                while (m2 < Pieces.Count && Pieces[m2].Field == p.Field && Pieces[m2].Face == p.Face) m2++;
-                foreach (char ch in num) { p.Face.Font.TryGetGlyph(ch, out var g); fg.Add(g); ft.Add(ch.ToString()); }
-                c.Glyphs(p.Face, p.Size, lx + p.X, baseY - p.Rise, fg, ft, p.Style.Color, null, p.Style.HScale, p.Style.Outline);
+                while (m2 < Pieces.Count && Pieces[m2].Field == p.Field && Pieces[m2].FieldArg == p.FieldArg && Pieces[m2].Face == p.Face) m2++;
+                string? num = p.Field switch
+                {
+                    FieldKind.Page => c.PageNumberText ?? c.PageNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    FieldKind.NumPages => c.PageCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    _ => p.FieldArg != null ? c.PageRefText?.Invoke(p.FieldArg) : null,
+                };
+                // Неизвестная закладка — сохранённый результат как есть
+                num ??= string.Concat(Pieces.Skip(k).Take(m2 - k).SelectMany(q => q.Texts));
+                var fg = new List<ushort>(); var ft = new List<string>();
+                double nw = 0;
+                foreach (char ch in num)
+                {
+                    p.Face.Font.TryGetGlyph(ch, out var g); fg.Add(g); ft.Add(ch.ToString());
+                    nw += p.Face.Font.Advance(g) * p.Size * p.Style.HScale;
+                }
+                // PAGEREF (оглавление): номер выравнивается по правому краю оценённой ширины
+                double placeholderW = (m2 < Pieces.Count ? Pieces[m2].X : Pieces[m2 - 1].X + Pieces[m2 - 1].Width) - p.X;
+                double dx = p.Field == FieldKind.PageRef ? Math.Max(0, placeholderW - nw) : 0;
+                c.Glyphs(p.Face, p.Size, lx + p.X + dx, baseY - p.Rise, fg, ft, p.Style.Color, null, p.Style.HScale, p.Style.Outline);
                 k = m2;
                 continue;
             }
@@ -166,10 +183,10 @@ public sealed class LineFrag : Frag
                     break;
                 gids.AddRange(q.Gids); texts.AddRange(q.Texts);
                 double ls = q.Kind == PieceKind.Text ? q.Style.LetterSpacing : q.Style.WordSpacing;
-                for (int g = 0; g < q.Gids.Count; g++) extra.Add(ls);
-                if (ls != 0) anyExtra = true;
+                for (int g = 0; g < q.Gids.Count; g++) extra.Add(ls + q.GlyphExtra);
+                if (ls != 0 || q.GlyphExtra != 0) anyExtra = true;
                 // Зазор до следующего куска (выравнивание по ширине)
-                double gap = m + 1 < Pieces.Count ? Pieces[m + 1].X - (q.X + q.Width) : 0;
+                double gap = m + 1 < Pieces.Count ? Pieces[m + 1].X - (q.X + q.Width + q.GlyphExtra * q.Gids.Count) : 0;
                 if (Math.Abs(gap) > 0.001) { extra[^1] += gap; anyExtra = true; }
                 m++;
             }

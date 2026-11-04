@@ -593,11 +593,14 @@ public sealed class Paginator(LayoutContext ctx)
     }
 
     /// <summary>Рисует все страницы в PDF.</summary>
-    public static void Render(List<Page> pages, PdfDocument pdf)
+    public static void Render(List<Page> pages, PdfDocument pdf, IReadOnlyDictionary<string, (int Page, double X, double Y)>? destinations = null)
     {
+        Func<string, string?>? pageRef = destinations == null ? null
+            : name => destinations.TryGetValue(name, out var d) && d.Page >= 0 && d.Page < pages.Count ? pages[d.Page].NumberText : null;
         foreach (var page in pages)
         {
             var canvas = pdf.AddPage(page.Width, page.Height);
+            canvas.PageRefText = pageRef;
             canvas.PageNumber = page.Number;
             canvas.PageNumberText = page.NumberText;
             canvas.PageCount = pages.Count;
