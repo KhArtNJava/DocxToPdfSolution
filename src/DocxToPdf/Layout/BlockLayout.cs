@@ -722,6 +722,19 @@ public sealed class BlockLayout(LayoutContext ctx)
                 h = Math.Max(p.LineValue, natural);
                 baseline = h - desc;
                 break;
+            case "css":
+            {
+                // CSS line-height: «половинный интерлиньяж» — лишнее (или недостающее) место делится
+                // поровну над и под текстом; высокие картинки увеличивают строку
+                double tAsc = pieces.Where(q => q.Kind != PieceKind.Image).Select(q => q.Ascent).DefaultIfEmpty(0).Max();
+                double tDesc = pieces.Where(q => q.Kind != PieceKind.Image).Select(q => q.Descent).DefaultIfEmpty(0).Max();
+                if (tAsc == 0 && tDesc == 0) { tAsc = asc; tDesc = desc; }
+                h = p.LineValue;
+                baseline = tAsc + (p.LineValue - (tAsc + tDesc)) / 2;
+                if (asc > baseline) { h += asc - baseline; baseline = asc; }
+                if (desc > h - baseline) h = baseline + desc;
+                break;
+            }
             default:
                 double factor = p.LineValue / 240.0;
                 bool hasImage = pieces.Any(q => q.Kind == PieceKind.Image);

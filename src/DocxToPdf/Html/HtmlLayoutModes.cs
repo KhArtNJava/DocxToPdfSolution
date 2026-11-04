@@ -64,6 +64,33 @@ public sealed partial class HtmlReader
             var imgStyle = n.Style!;
             AddImage(n, imgStyle, flow, ctx);
         }
+        else if (n.IsElement && s.Display is "flex" or "grid" or "table")
+        {
+            // Рамка/фон/отступы уже нарисованы снаружи (блок float/absolute/рамка-ячейка) —
+            // раскладываем содержимое по правилам flex/grid/table без повторного оформления
+            var cs = s.Clone();
+            double? innerH = BoxHeight(s) is double bh
+                ? bh - s.PaddingTop - s.PaddingBottom - (s.BorderTop?.ToBorderDef()?.Width ?? 0) - (s.BorderBottom?.ToBorderDef()?.Width ?? 0)
+                : null;
+            cs.MarginTop = cs.MarginBottom = cs.MarginLeft = cs.MarginRight = 0;
+            cs.MarginLeftAuto = cs.MarginRightAuto = false;
+            cs.PaddingTop = cs.PaddingBottom = cs.PaddingLeft = cs.PaddingRight = 0;
+            cs.BorderTop = cs.BorderBottom = cs.BorderLeft = cs.BorderRight = null;
+            cs.Background = null;
+            cs.Width = null;
+            cs.Height = innerH is > 0 ? innerH.Value.ToString(CultureInfo.InvariantCulture) + "pt" : null;
+            cs.BoxSizing = "content-box";
+            cs.Position = "static"; cs.Float = null;
+            cs.Transform = cs.Translate = cs.Rotate = cs.Scale = null; cs.Preserve3D = false;
+            cs.Radius = new string?[8];
+            cs.PageBreakBefore = cs.PageBreakAfter = false;
+            var saved2 = n.Style;
+            n.Style = cs;
+            if (cs.Display == "flex") AddFlex(n, cs, flow, ctx);
+            else if (cs.Display == "grid") AddGrid(n, cs, flow, ctx);
+            else AddTable(n, cs, flow, ctx);
+            n.Style = saved2;
+        }
         else WalkChildren(n, flow, ctx);
         Flush(flow);
         if (!n.IsText) ApplyFirstLine(n, s, blocks);
@@ -941,7 +968,9 @@ public sealed partial class HtmlReader
     /// <param name="parentWidth">ширина родителя; 0 — неизвестна (точка схода в центре элемента)</param>
     static TransformResolver? TransformOf(CssStyle s, double offsetX = 0, double parentWidth = 0)
     {
-        if (s.Transform == null && s.Translate == null && s.Rotate == null && s.Scale == null) return null;
+        // Элемент внутри 3D-сцены со скрываемой обратной стороной — тоже плоскость сцены (с единичной матрицей)
+        bool scenePlane = s.ParentPreserve3D && s.BackfaceHidden;
+        if (s.Transform == null && s.Translate == null && s.Rotate == null && s.Scale == null && !s.Preserve3D && !scenePlane) return null;
         // Порядок CSS: translate → rotate → scale → transform
         var fns = new List<(string Name, List<string> Args)>();
         if (s.Translate != null) fns.Add(("translate3d", CssValues.Tokens(s.Translate)));
@@ -976,8 +1005,9 @@ public sealed partial class HtmlReader
                 fns.Add((name, args.Split(',').SelectMany(x => CssValues.Tokens(x)).ToList()));
             }
         }
-        if (fns.Count == 0) return null;
+        if (fns.Count == 0 && !s.Preserve3D && !scenePlane) return null;
         double fs = s.FontSize;
+        bool preserve = s.Preserve3D;
         string? origin = s.TransformOrigin;
         double? parentPerspective = CssValues.Length(s.ParentPerspective, fs);
         string? perspectiveOrigin = s.ParentPerspectiveOrigin;
@@ -1037,7 +1067,7 @@ public sealed partial class HtmlReader
             }
             // Точки плоскости z = 0: [X, Y, W] = строки 0, 1, 3; столбцы 0, 1, 3
             double[] H = [full[0], full[1], full[3], full[4], full[5], full[7], full[12], full[13], full[15]];
-            return new BoxTransform { H = H, Hidden = backHidden && back };
+            return new BoxTransform { H = H, Hidden = backHidden && back, M = full, Preserve3D = preserve, BackfaceHidden = backHidden };
         };
     }
 

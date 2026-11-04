@@ -524,9 +524,151 @@ public sealed class TransformFrag : Frag
 /// </summary>
 public static class TransformPainter
 {
+    // ---------------- 3D-сцена (transform-style: preserve-3d) ----------------
+
+    sealed class Plane
+    {
+        public double Bx, By, W, H;
+        public required double[] A;          // накопленная матрица 4×4 в координатах страницы
+        public required Action Draw;
+        public bool Extract;                 // preserve-3d: преобразованные потомки — отдельные плоскости
+        public bool BackfaceHidden;
+        public int Order;
+    }
+
+    sealed class Scene3D
+    {
+        public readonly List<Plane> Planes = [];
+        public readonly Stack<double[]> Accum = new();
+    }
+
+    static double[] Mul4(double[] a, double[] b)
+    {
+        var r = new double[16];
+        for (int i = 0; i < 4; i++)
+            for (int j = 0; j < 4; j++)
+                r[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j] + a[i * 4 + 3] * b[12 + j];
+        return r;
+    }
+
+    static double[] T4(double x, double y) => [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, 0, 0, 0, 0, 1];
+
+    /// <summary>Матрица элемента в координатах страницы (рамка в точке bx, by).</summary>
+    static double[] PageMatrix(BoxTransform t, double bx, double by)
+    {
+        var h = t.H;
+        var m = t.M ?? [h[0], h[1], 0, h[2], h[3], h[4], 0, h[5], 0, 0, 1, 0, h[6], h[7], 0, h[8]];
+        return Mul4(Mul4(T4(bx, by), m), T4(-bx, -by));
+    }
+
+    static (double X, double Y, double Z, double W) Apply(double[] a, double x, double y) =>
+        (a[0] * x + a[1] * y + a[3], a[4] * x + a[5] * y + a[7], a[8] * x + a[9] * y + a[11], a[12] * x + a[13] * y + a[15]);
+
+    /// <summary>Проекция плоскости сцены в локальные координаты её рамки (3×3).</summary>
+    static double[] LocalHomography(double[] a, double bx, double by)
+    {
+        // H = T(-bx,-by) · A[строки 0,1,3; столбцы 0,1,3] · T(bx,by)
+        double[] m = [a[0], a[1], a[3], a[4], a[5], a[7], a[12], a[13], a[15]];
+        double[] post = [1, 0, bx, 0, 1, by, 0, 0, 1];
+        double[] pre = [1, 0, -bx, 0, 1, -by, 0, 0, 1];
+        static double[] M3(double[] p, double[] q)
+        {
+            var r = new double[9];
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                    r[i * 3 + j] = p[i * 3] * q[j] + p[i * 3 + 1] * q[3 + j] + p[i * 3 + 2] * q[6 + j];
+            return r;
+        }
+        return M3(M3(pre, m), post);
+    }
+
+    /// <summary>Повёрнута ли плоскость обратной стороной: ориентация спроецированного контура сменилась.</summary>
+    static bool IsBackFacing(BoxTransform t, double w, double h)
+    {
+        var p = new[] { t.Map(0, 0), t.Map(w, 0), t.Map(w, h), t.Map(0, h) };
+        if (p.Any(q => q.W <= 1e-9)) return false;
+        double area = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            var (x1, y1, _) = p[i]; var (x2, y2, _) = p[(i + 1) % 4];
+            area += x1 * y2 - x2 * y1;
+        }
+        return area < 0;
+    }
+
+    static void RenderScene(PdfCanvas c, double bx, double by, double w, double h, BoxTransform t, Action draw)
+    {
+        var scene = new Scene3D();
+        var rootA = PageMatrix(t, bx, by);
+        scene.Planes.Add(new Plane { Bx = bx, By = by, W = w, H = h, A = rootA, Draw = draw, Extract = true, BackfaceHidden = t.BackfaceHidden });
+        scene.Accum.Push(rootA);
+
+        // Холостой проход: собираем плоскости потомков
+        var prev = c.Scene;
+        c.Scene = scene;
+        c.Collecting++;
+        draw();
+        c.Collecting--;
+        c.Scene = prev;
+
+        // Алгоритм художника: от дальних плоскостей к ближним (z к зрителю — положительный)
+        double Depth(Plane p)
+        {
+            var (_, _, z, wv) = Apply(p.A, p.Bx + p.W / 2, p.By + p.H / 2);
+            return Math.Abs(wv) > 1e-12 ? z / wv : z;
+        }
+        foreach (var p in scene.Planes.OrderBy(Depth).ThenBy(p => p.Order))
+        {
+            var bt = new BoxTransform { H = LocalHomography(p.A, p.Bx, p.By) };
+            if (p.BackfaceHidden && IsBackFacing(bt, p.W, p.H)) continue;
+            var plane = p;
+            Action body = plane.Extract
+                ? () => { c.SkipTransformed++; plane.Draw(); c.SkipTransformed--; }
+                : plane.Draw;
+            PaintProjected(c, plane.Bx, plane.By, plane.W, plane.H, bt, body);
+        }
+    }
+
     public static void Paint(PdfCanvas c, double bx, double by, double w, double h, BoxTransform t, Action draw)
     {
+        if (c.Collecting > 0 && c.Scene is Scene3D scene)
+        {
+            // Сбор плоскости: накапливаем матрицу; потомки preserve-3d разворачиваются рекурсивно
+            var acc = Mul4(scene.Accum.Peek(), PageMatrix(t, bx, by));
+            scene.Planes.Add(new Plane
+            {
+                Bx = bx, By = by, W = w, H = h, A = acc, Draw = draw, Extract = t.Preserve3D,
+                BackfaceHidden = t.BackfaceHidden, Order = scene.Planes.Count
+            });
+            if (t.Preserve3D)
+            {
+                scene.Accum.Push(acc);
+                draw();
+                scene.Accum.Pop();
+            }
+            return;
+        }
+        if (c.SkipTransformed > 0) return;   // рисуется отдельной плоскостью сцены
+        if (t.Preserve3D) { RenderScene(c, bx, by, w, h, t, draw); return; }
+        PaintProjected(c, bx, by, w, h, t, draw);
+    }
+
+    /// <summary>Площадь спроецированной рамки (со знаком); ~0 — плоскость видна «с ребра».</summary>
+    static double ProjectedArea(BoxTransform t, double w, double h)
+    {
+        var p = new[] { t.Map(0, 0), t.Map(w, 0), t.Map(w, h), t.Map(0, h) };
+        if (p.Any(q => q.W <= 1e-9)) return double.NaN;
+        double area = 0;
+        for (int i = 0; i < 4; i++) area += p[i].X * p[(i + 1) % 4].Y - p[(i + 1) % 4].X * p[i].Y;
+        return area / 2;
+    }
+
+    static void PaintProjected(PdfCanvas c, double bx, double by, double w, double h, BoxTransform t, Action draw)
+    {
         if (t.Hidden) return;
+        // Плоскость, повёрнутая ребром к зрителю, не рисуется (как в браузерах)
+        double pa = ProjectedArea(t, w, h);
+        if (!double.IsNaN(pa) && w * h > 1 && Math.Abs(pa) < 1e-3 * w * h) return;
         var H = t.H;
         if (t.IsAffine)
         {
@@ -540,9 +682,15 @@ public static class TransformPainter
         double strength = (Math.Abs(H[6]) * w + Math.Abs(H[7]) * h) / Math.Max(1e-9, Math.Abs(H[8]));
         int n = Math.Clamp((int)Math.Ceiling(strength * 30), 4, 16);
         double dx = w / n, dy = h / n;
-        // Плитки: текст контурами (иначе он повторился бы в каждой плитке), ссылки — только в текстовом слое
-        c.TextAsPaths++;
-        c.SuppressLinks++;
+        if (c.InvisibleTextOnly > 0)
+        {
+            // Текстовый слой внешней сцены: достаточно аффинного приближения
+            DrawInvisibleText(c, bx, by, w, h, t, draw);
+            return;
+        }
+        // Содержимое рисуется один раз в форму (прозрачностная группа: при сглаживании краёв плиток
+        // слои внутри не просвечивают); текст — контурами, иначе он повторялся бы в каждой плитке
+        string form = c.CaptureForm(() => { c.TextAsPaths++; draw(); c.TextAsPaths--; });
         for (int i = 0; i < n; i++)
         {
             for (int j = 0; j < n; j++)
@@ -556,24 +704,26 @@ public static class TransformPainter
                 double mx = (p00.X + p10.X + p11.X + p01.X) / 4, my = (p00.Y + p10.Y + p11.Y + p01.Y) / 4;
                 double tx = (x0 + x1) / 2, ty = (y0 + y1) / 2;
                 double e = mx - (ax * tx + cx * ty), f = my - (ay * tx + cy * ty);
-                // Обрезка по четырёхугольнику, чуть расширенному, чтобы не было щелей между плитками
-                (double, double) Grow((double X, double Y, double W) p)
-                {
-                    double vx = p.X - mx, vy = p.Y - my, len = Math.Sqrt(vx * vx + vy * vy);
-                    double g = len > 1e-6 ? 0.35 / len : 0;
-                    return (bx + p.X + vx * g, by + p.Y + vy * g);
-                }
-                c.BeginClipPolygon([Grow(p00), Grow(p10), Grow(p11), Grow(p01)]);
+                // Обрезка по спроецированной плитке, расширенной на ~0,6 pt по каждой оси
+                // (иначе при сглаживании между плитками просвечивают швы)
+                double sx = Math.Sqrt(ax * ax + ay * ay), sy = Math.Sqrt(cx * cx + cy * cy);
+                double ex = sx > 1e-9 ? 0.6 / sx : 0, ey = sy > 1e-9 ? 0.6 / sy : 0;
+                var c00 = t.Map(x0 - ex, y0 - ey); var c10 = t.Map(x1 + ex, y0 - ey);
+                var c11 = t.Map(x1 + ex, y1 + ey); var c01 = t.Map(x0 - ex, y1 + ey);
+                if (c00.W <= 1e-6 || c10.W <= 1e-6 || c11.W <= 1e-6 || c01.W <= 1e-6) { c00 = p00; c10 = p10; c11 = p11; c01 = p01; }
+                c.BeginClipPolygon([(bx + c00.X, by + c00.Y), (bx + c10.X, by + c10.Y), (bx + c11.X, by + c11.Y), (bx + c01.X, by + c01.Y)]);
                 c.BeginTransform(bx, by, ax, ay, cx, cy, e, f);
-                draw();
+                c.DoForm(form);
                 c.EndTransform();
                 c.EndClip();
             }
         }
-        c.SuppressLinks--;
-        c.TextAsPaths--;
+        DrawInvisibleText(c, bx, by, w, h, t, draw);
+    }
 
-        // Один невидимый текстовый слой (поиск/копирование) с аффинным приближением всей рамки
+    /// <summary>Один невидимый текстовый слой (поиск/копирование, ссылки) с аффинным приближением всей рамки.</summary>
+    static void DrawInvisibleText(PdfCanvas c, double bx, double by, double w, double h, BoxTransform t, Action draw)
+    {
         var q00 = t.Map(0, 0); var q10 = t.Map(w, 0); var q11 = t.Map(w, h); var q01 = t.Map(0, h);
         if (q00.W > 1e-6 && q10.W > 1e-6 && q11.W > 1e-6 && q01.W > 1e-6 && w > 0 && h > 0)
         {

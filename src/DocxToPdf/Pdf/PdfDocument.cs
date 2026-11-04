@@ -155,13 +155,21 @@ public sealed class PdfDocument
                 foreach (var f in c.Fonts) res.Append($" /{f.Name} {fontIds[f]} 0 R");
                 res.Append(" >>");
             }
-            if (c.Images.Count > 0)
+            var formIds = c.Forms.Select(_ => w.Reserve()).ToList();
+            if (c.Images.Count > 0 || c.Forms.Count > 0)
             {
                 res.Append(" /XObject <<");
                 foreach (var i in c.Images) res.Append($" /{i.Name} {imageIds[i]} 0 R");
+                for (int fi = 0; fi < c.Forms.Count; fi++) res.Append($" /{c.Forms[fi].Name} {formIds[fi]} 0 R");
                 res.Append(" >>");
             }
             res.Append(" >>");
+            int resId = w.Reserve();
+            w.Obj(resId, res.ToString());
+            for (int fi = 0; fi < c.Forms.Count; fi++)
+                w.Stream(formIds[fi],
+                    $"/Type /XObject /Subtype /Form /BBox [0 0 {F(page.Width)} {F(page.Height)}] /Group << /S /Transparency /I true >> /Resources {resId} 0 R",
+                    Encoding.ASCII.GetBytes(c.Forms[fi].Content));
 
             var annots = new List<int>();
             foreach (var link in c.Links)
@@ -171,7 +179,7 @@ public sealed class PdfDocument
                 w.Obj(id, $"<< /Type /Annot /Subtype /Link /Rect [{F(link.X1)} {F(link.Y1)} {F(link.X2)} {F(link.Y2)}] /Border [0 0 0] /A << /S /URI /URI {PdfString(link.Uri)} >> >>");
             }
             string annotStr = annots.Count > 0 ? " /Annots [" + string.Join(" ", annots.Select(a => a + " 0 R")) + "]" : "";
-            w.Obj(pageId, $"<< /Type /Page /Parent {pagesId} 0 R /MediaBox [0 0 {F(page.Width)} {F(page.Height)}] /Resources {res} /Contents {contentId} 0 R{annotStr} >>");
+            w.Obj(pageId, $"<< /Type /Page /Parent {pagesId} 0 R /MediaBox [0 0 {F(page.Width)} {F(page.Height)}] /Resources {resId} 0 R /Contents {contentId} 0 R{annotStr} >>");
             w.Stream(contentId, "", c.GetContent());
         }
 
@@ -287,7 +295,33 @@ public sealed class PdfCanvas
 {
     readonly PdfDocument _doc;
     readonly double _pageHeight;
-    readonly StringBuilder _sb = new();
+    StringBuilder _sb = new();
+    /// <summary>Формы (Form XObject) страницы: содержимое, нарисованное один раз и используемое многократно.</summary>
+    internal readonly List<(string Name, string Content)> Forms = [];
+
+    /// <summary>
+    /// Записывает рисование в отдельную форму (прозрачностная группа) и возвращает её имя для DoForm.
+    /// Ссылки внутри формы не создаются.
+    /// </summary>
+    public string CaptureForm(Action draw)
+    {
+        var saved = _sb;
+        _sb = new StringBuilder();
+        SuppressLinks++;
+        draw();
+        SuppressLinks--;
+        string content = _sb.ToString();
+        _sb = saved;
+        string name = "Fm" + (Forms.Count + 1);
+        Forms.Add((name, content));
+        return name;
+    }
+
+    public void DoForm(string name)
+    {
+        if (Collecting > 0) return;
+        _sb.Append('/').Append(name).Append(" Do\n");
+    }
     internal readonly List<PdfFont> Fonts = [];
     internal readonly List<PdfImage> Images = [];
     internal readonly List<PdfLink> Links = [];
@@ -307,6 +341,7 @@ public sealed class PdfCanvas
 
     public void FillRect(double x, double y, double w, double h, Rgb color)
     {
+        if (Collecting > 0) return;
         if (SkipGraphics) return;
         if (w <= 0 || h <= 0) return;
         _sb.Append($"{Color(color)} rg {F(x)} {F(Y(y + h))} {F(w)} {F(h)} re f\n");
@@ -314,6 +349,7 @@ public sealed class PdfCanvas
 
     public void Line(double x1, double y1, double x2, double y2, double width, Rgb color, bool dashed = false, bool dotted = false)
     {
+        if (Collecting > 0) return;
         if (SkipGraphics) return;
         _sb.Append("q ");
         if (dashed) _sb.Append($"[{F(width * 3)} {F(width * 2)}] 0 d ");
@@ -323,6 +359,7 @@ public sealed class PdfCanvas
 
     public void Rect(double x, double y, double w, double h, double width, Rgb color)
     {
+        if (Collecting > 0) return;
         if (SkipGraphics) return;
         _sb.Append($"q {F(width)} w {Color(color)} RG {F(x)} {F(Y(y + h))} {F(w)} {F(h)} re S Q\n");
     }
@@ -337,6 +374,7 @@ public sealed class PdfCanvas
 
     public void Glyphs(FontFace face, double size, double x, double baseline, IReadOnlyList<ushort> gids, IReadOnlyList<string> texts, Rgb color, IReadOnlyList<double>? extra = null)
     {
+        if (Collecting > 0) return;
         if (gids.Count == 0) return;
         if (TextAsPaths > 0 && InvisibleTextOnly == 0)
         {
@@ -442,6 +480,7 @@ public sealed class PdfCanvas
 
     public void FillRoundedRect(double x, double y, double w, double h, double[] radii, Rgb color)
     {
+        if (Collecting > 0) return;
         if (SkipGraphics) return;
         if (w <= 0 || h <= 0) return;
         _sb.Append($"{Color(color)} rg ");
@@ -452,6 +491,7 @@ public sealed class PdfCanvas
     /// <summary>Обводка скруглённого прямоугольника; линия идёт по середине толщины (внутри рамки).</summary>
     public void StrokeRoundedRect(double x, double y, double w, double h, double[] radii, BorderDef b)
     {
+        if (Collecting > 0) return;
         if (SkipGraphics) return;
         if (b.IsNone || w <= 0 || h <= 0) return;
         if (b.Val == "double")
@@ -477,28 +517,38 @@ public sealed class PdfCanvas
     /// <summary>Ограничивает рисование скруглённой областью до EndClip().</summary>
     public void BeginRoundedClip(double x, double y, double w, double h, double[] radii)
     {
+        if (Collecting > 0) return;
         _sb.Append("q ");
         RoundedPath(x, y, w, h, radii);
         _sb.Append("W n\n");
     }
 
-    public void EndClip() => _sb.Append("Q\n");
+    public void EndClip() { if (Collecting == 0) _sb.Append("Q\n"); }
 
     /// <summary>
     /// Начинает преобразованную область: матрица задана в координатах "y вниз" относительно точки (ox, oy) страницы.
     /// </summary>
     public void BeginTransform(double ox, double oy, double a, double b, double c, double d, double e, double f)
     {
+        if (Collecting > 0) return;
         double yo = Y(oy);
         // В системе PDF (y вверх) матрица CSS превращается в [a, -b, -c, d, e, -f]
         _sb.Append($"q 1 0 0 1 {F(ox)} {F(yo)} cm {F(a)} {F(-b)} {F(-c)} {F(d)} {F(e)} {F(-f)} cm 1 0 0 1 {F(-ox)} {F(-yo)} cm\n");
     }
 
-    public void EndTransform() => _sb.Append("Q\n");
+    public void EndTransform() { if (Collecting == 0) _sb.Append("Q\n"); }
+
+    /// <summary>Больше нуля — холостой проход (сбор плоскостей 3D-сцены): ничего не выводится.</summary>
+    public int Collecting;
+    /// <summary>Текущая собираемая 3D-сцена (transform-style: preserve-3d).</summary>
+    public object? Scene;
+    /// <summary>Больше нуля — преобразованные потомки пропускаются (они рисуются отдельными плоскостями сцены).</summary>
+    public int SkipTransformed;
 
     /// <summary>Обрезка по многоугольнику (координаты страницы, y вниз) до EndClip().</summary>
     public void BeginClipPolygon(IReadOnlyList<(double X, double Y)> pts)
     {
+        if (Collecting > 0) return;
         _sb.Append("q ");
         for (int i = 0; i < pts.Count; i++)
             _sb.Append($"{F(pts[i].X)} {F(Y(pts[i].Y))} {(i == 0 ? "m" : "l")} ");
@@ -510,6 +560,7 @@ public sealed class PdfCanvas
 
     public void Image(string key, byte[] bytes, double x, double y, double w, double h)
     {
+        if (Collecting > 0) return;
         if (SkipGraphics) return;
         var img = _doc.GetImage(key, bytes);
         if (img == null)
@@ -527,6 +578,7 @@ public sealed class PdfCanvas
 
     public void Link(double x, double y, double w, double h, string uri)
     {
+        if (Collecting > 0) return;
         if (SuppressLinks > 0) return;
         var last = Links.LastOrDefault();
         // Склеиваем соседние прямоугольники одной ссылки на одной строке

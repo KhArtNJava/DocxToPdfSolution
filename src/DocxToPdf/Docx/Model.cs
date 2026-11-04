@@ -428,6 +428,12 @@ public sealed class BoxTransform
 {
     public required double[] H;          // 3×3 по строкам
     public bool Hidden;                  // backface-visibility: hidden и элемент повёрнут обратной стороной
+    /// <summary>Полная матрица 4×4 (по строкам) в локальных координатах рамки — для 3D-сцены.</summary>
+    public double[]? M;
+    /// <summary>transform-style: preserve-3d — потомки находятся в общей 3D-сцене с элементом.</summary>
+    public bool Preserve3D;
+    /// <summary>backface-visibility: hidden (обратная сторона определяется уже в сцене).</summary>
+    public bool BackfaceHidden;
 
     public bool IsAffine => Math.Abs(H[6]) < 1e-12 && Math.Abs(H[7]) < 1e-12;
 

@@ -493,10 +493,14 @@ public sealed class CssStyle
     public string? Perspective, PerspectiveOrigin;              // задаются у родителя, действуют на детей
     public string? ParentPerspective, ParentPerspectiveOrigin;  // перспектива, унаследованная от родителя
     public bool BackfaceHidden;
+    public bool Preserve3D;                                     // transform-style: preserve-3d
+    public bool ParentPreserve3D;                               // родитель — 3D-сцена
 
     // Генерируемое содержимое и счётчики
     public string? Content;
     public string? CounterReset, CounterIncrement, CounterSet;
+
+    public CssStyle Clone() => (CssStyle)MemberwiseClone();
 
     public CssStyle InheritFrom()
     {

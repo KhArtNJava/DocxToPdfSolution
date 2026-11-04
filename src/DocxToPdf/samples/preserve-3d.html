@@ -1,0 +1,36 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><style>
+ @page { size: A4; margin: 15mm } body { font-family: Arial, sans-serif; font-size: 11pt }
+ h3 { margin: 6px 0 } .stage { display: flex; gap: 40px; height: 230px; align-items: center; justify-content: center }
+ /* Куб */
+ .scene { width: 120px; height: 120px; perspective: 500px }
+ .cube { width: 120px; height: 120px; position: relative; transform-style: preserve-3d; transform: translateZ(-60px) rotateX(-25deg) rotateY(-35deg) }
+ .face { position: absolute; width: 120px; height: 120px; border: 2px solid #234; line-height: 120px; text-align: center; font-weight: bold; font-size: 16pt; color: #fff; box-sizing: border-box }
+ .front { background: rgba(200,60,60,1); transform: rotateY(0deg) translateZ(60px) }
+ .right { background: #3a7; transform: rotateY(90deg) translateZ(60px) }
+ .back { background: #37a; transform: rotateY(180deg) translateZ(60px) }
+ .left { background: #a73; transform: rotateY(-90deg) translateZ(60px) }
+ .top { background: #a3a; transform: rotateX(90deg) translateZ(60px) }
+ .bottom { background: #555; transform: rotateX(-90deg) translateZ(60px) }
+ /* Сравнение: без preserve-3d (плоско) */
+ .cube.flat { transform-style: flat }
+ /* Карточка с переворотом и backface */
+ .card-scene { width: 160px; height: 100px; perspective: 600px }
+ .card { width: 160px; height: 100px; position: relative; transform-style: preserve-3d; transform: rotateY(160deg) }
+ .side { position: absolute; width: 160px; height: 100px; backface-visibility: hidden; display: flex; align-items: center; justify-content: center; border-radius: 10px; font-weight: bold }
+ .side.f { background: #fd8; } .side.b { background: #8cf; transform: rotateY(180deg) }
+ /* Вложенная сцена: панель с «парящей» плашкой */
+ .panel-scene { perspective: 700px; width: 220px }
+ .panel { transform-style: preserve-3d; transform: rotateX(35deg) rotateZ(-15deg); background: #eef; border: 1px solid #99c; height: 120px; position: relative }
+ .chip { position: absolute; left: 40px; top: 30px; width: 120px; padding: 6px; background: #c33; color: #fff; transform: translateZ(50px); text-align: center }
+</style></head><body>
+<h3>Куб: transform-style: preserve-3d (слева) и flat (справа)</h3>
+<div class="stage">
+ <div class="scene"><div class="cube"><div class="face front">1</div><div class="face back">6</div><div class="face right">3</div><div class="face left">4</div><div class="face top">5</div><div class="face bottom">2</div></div></div>
+ <div class="scene"><div class="cube flat"><div class="face front">1</div><div class="face back">6</div><div class="face right">3</div><div class="face left">4</div><div class="face top">5</div><div class="face bottom">2</div></div></div>
+</div>
+<h3>Переворот карточки (backface-visibility) и вложенная сцена</h3>
+<div class="stage">
+ <div class="card-scene"><div class="card"><div class="side f">ЛИЦО</div><div class="side b">ОБОРОТ</div></div></div>
+ <div class="panel-scene"><div class="panel"><div class="chip">translateZ(50px)</div></div></div>
+</div>
+</body></html>

@@ -273,6 +273,7 @@ public sealed partial class HtmlReader
         SetupInlineBox(s);
         s.ParentPerspective = parent.Perspective;
         s.ParentPerspectiveOrigin = parent.PerspectiveOrigin;
+        s.ParentPreserve3D = parent.Preserve3D;
         n.Style = s;
         if (s.Display == "none") return;
 
@@ -365,8 +366,8 @@ public sealed partial class HtmlReader
         double em = bodyFace.UnitsPerEm, bs = block.FontSize;
         double asc = bodyFace.Ascent / em * bs, desc = bodyFace.Descent / em * bs, natural = asc + desc;
         double factor = block.LineHeightFactor is double lf ? lf / 1.15 : 1;
-        double lh = block.LineHeightPt is double lp ? Math.Max(lp, natural) : natural * factor;
-        double baseline1 = block.LineHeightPt != null ? lh - desc : factor >= 1 ? asc : asc * factor;
+        double lh = block.LineHeightPt is double lp ? lp : natural * factor;
+        double baseline1 = block.LineHeightPt != null ? asc + (lh - natural) / 2 : factor >= 1 ? asc : asc * factor;
         double capBody = bodyFace.CapHeight / em * bs;
 
         // Размер буквицы: от высоты прописных первой строки до базовой линии строки N
@@ -539,6 +540,7 @@ public sealed partial class HtmlReader
         SetupInlineBox(ps);
         ps.ParentPerspective = s.Perspective;
         ps.ParentPerspectiveOrigin = s.PerspectiveOrigin;
+        ps.ParentPreserve3D = s.Preserve3D;
 
         ApplyCounters(ps, n);
         var node = new Node { Tag = "::" + which, Parent = n, Style = ps };
@@ -905,6 +907,7 @@ public sealed partial class HtmlReader
             case "perspective" or "-webkit-perspective": s.Perspective = lv is "none" ? null : lv; break;
             case "perspective-origin" or "-webkit-perspective-origin": s.PerspectiveOrigin = lv; break;
             case "backface-visibility" or "-webkit-backface-visibility": s.BackfaceHidden = lv == "hidden"; break;
+            case "transform-style" or "-webkit-transform-style": s.Preserve3D = lv == "preserve-3d"; break;
             case "rotate": s.Rotate = lv is "none" ? null : lv; break;
             case "scale": s.Scale = lv is "none" ? null : lv; break;
             case "word-spacing": s.WordSpacing = lv == "normal" ? 0 : CssValues.Length(lv, fs) ?? 0; break;
@@ -1180,7 +1183,7 @@ public sealed partial class HtmlReader
         };
         if (o.ExactLineHeight is double ex) { p.LineRule = "exact"; p.LineValue = ex; }
         else if (o.LineHeightFactor is double lf) { p.LineRule = "auto"; p.LineValue = 240 * lf / 1.15; }
-        else if (o.LineHeightPt is double lp) { p.LineRule = "atLeast"; p.LineValue = lp; }
+        else if (o.LineHeightPt is double lp) { p.LineRule = "css"; p.LineValue = lp; }
         f.PendingMargin = 0;
         f.PendingBreak = false;
         f.PendingClear = null;
