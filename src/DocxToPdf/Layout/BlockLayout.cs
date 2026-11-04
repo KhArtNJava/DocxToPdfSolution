@@ -246,38 +246,49 @@ public sealed class BlockLayout(LayoutContext ctx)
     }
 
     /// <summary>Превращает инлайны в последовательность кусков для переноса строк.</summary>
-    List<Piece> Itemize(Paragraph para)
+    List<Piece> Itemize(Paragraph para, Func<TextStyle, TextStyle>? overlay = null)
     {
         var pieces = new List<Piece>();
         bool breakNext = false;
+        int src = -1;
 
         void AddText(string text, TextStyle st)
         {
             if (st.Caps) text = text.ToUpperInvariant();
             var (size, rise) = EffectiveSize(st);
             Piece? cur = null;
+            int pos = 0;
             foreach (var rune in text.EnumerateRunes())
             {
                 int cp = rune.Value;
+                int at = pos;
+                pos += rune.Utf16SequenceLength;
                 if (cp == 0xAD) continue;          // мягкий перенос не отображаем
-                if (cp == '\t') { pieces.Add(MakeTab(st)); cur = null; breakNext = true; continue; }
-                if (cp is '\n' or '\r') { pieces.Add(new Piece { Kind = PieceKind.LineBreak, Style = st }); cur = null; continue; }
+                if (cp == '\t') { var tp = MakeTab(st); tp.Pos.Add(at); pieces.Add(tp); cur = null; breakNext = true; continue; }
+                if (cp is '\n' or '\r') { pieces.Add(new Piece { Kind = PieceKind.LineBreak, Style = st, Src = src, Pos = [at] }); cur = null; continue; }
                 if (cp == 0x200B) { cur = null; breakNext = true; continue; } // нулевой пробел — точка переноса
 
                 bool space = IsSpace(cp);
+                double gsize = size;
+                if (st.SmallCaps && !st.Caps && Rune.IsLower(rune))
+                {
+                    cp = Rune.ToUpperInvariant(rune).Value;
+                    gsize = size * 0.75;
+                }
                 var (face, gid, outCp) = ResolveGlyph(cp, st);
                 bool cjk = IsCjk(cp);
                 var kind = space ? PieceKind.Space : PieceKind.Text;
-                if (cur == null || cur.Kind != kind || cur.Face != face || cjk)
+                if (cur == null || cur.Kind != kind || cur.Face != face || cur.Size != gsize || cjk)
                 {
-                    cur = new Piece { Kind = kind, Style = st, Face = face, Size = size, Rise = rise };
+                    cur = new Piece { Kind = kind, Style = st, Face = face, Size = gsize, Rise = rise, Src = src };
                     cur.BreakBefore = kind == PieceKind.Text && (breakNext || cjk);
                     SetMetrics(cur, st, PrimaryFace(cp, st));
                     pieces.Add(cur);
                     breakNext = false;
                 }
-                double adv = face.Font.Advance(gid) * size;
+                double adv = face.Font.Advance(gid) * gsize + (space ? 0 : st.LetterSpacing);
                 cur.Gids.Add(gid);
+                cur.Pos.Add(at);
                 cur.Texts.Add(char.ConvertFromUtf32(outCp == 0xA0 ? ' ' : outCp));
                 cur.Adv.Add(adv);
                 cur.Width += adv;
@@ -294,7 +305,7 @@ public sealed class BlockLayout(LayoutContext ctx)
         Piece MakeTab(TextStyle st)
         {
             var face = _ctx.Fonts.Get(st.FontHAnsi, st.Bold, st.Italic);
-            var p = new Piece { Kind = PieceKind.Tab, Style = st, Face = face, Size = st.Size };
+            var p = new Piece { Kind = PieceKind.Tab, Style = st, Face = face, Size = st.Size, Src = src };
             SetMetrics(p, st, face);
             return p;
         }
@@ -320,8 +331,18 @@ public sealed class BlockLayout(LayoutContext ctx)
             pieces.Add(p);
         }
 
-        foreach (var inl in para.Inlines)
+        for (src = 0; src < para.Inlines.Count; src++)
         {
+            var inl = para.Inlines[src];
+            if (overlay != null)
+                inl = inl switch
+                {
+                    TextInline ti => new TextInline(ti.Text, overlay(ti.Style)),
+                    FieldInline fi => new FieldInline(fi.Kind, overlay(fi.Style)),
+                    TabInline tb => new TabInline(overlay(tb.Style)),
+                    BreakInline bi => new BreakInline(bi.Kind, overlay(bi.Style)),
+                    _ => inl
+                };
             var inlStyle = inl switch
             {
                 TextInline ti => ti.Style, FieldInline fi => fi.Style, TabInline tb => tb.Style,
@@ -339,7 +360,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                     breakNext = true;
                     break;
                 case BreakInline br:
-                    pieces.Add(new Piece { Kind = br.Kind == BreakKind.Line ? PieceKind.LineBreak : PieceKind.PageBreak, Style = br.Style });
+                    pieces.Add(new Piece { Kind = br.Kind == BreakKind.Line ? PieceKind.LineBreak : PieceKind.PageBreak, Style = br.Style, Src = src });
                     breakNext = true;
                     break;
                 case ImageInline img:
@@ -351,7 +372,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                     if (h > _ctx.MaxImageHeight) { w *= _ctx.MaxImageHeight / h; h = _ctx.MaxImageHeight; }
                     pieces.Add(new Piece
                     {
-                        Kind = PieceKind.Image, Style = img.Style, Image = img, Width = w, Ascent = h, Descent = 0,
+                        Kind = PieceKind.Image, Style = img.Style, Image = img, Width = w, Ascent = h, Descent = 0, Src = src,
                         BreakBefore = true, Size = img.Style.Size
                     });
                     breakNext = true;
@@ -359,6 +380,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 }
             }
         }
+        src = -1;
         if (openBoxes.Count > 0) SyncBoxes(para.MarkStyle with { Box = null });
         return pieces;
     }
@@ -394,11 +416,15 @@ public sealed class BlockLayout(LayoutContext ctx)
     public List<LineFrag> LayoutParagraph(Paragraph p, double width, IExclusion? excl = null)
     {
         _contentWidthHint = width;
-        var pieces = Itemize(p);
-        var raw = BreakLines(p, pieces, width, excl);
-        var result = new List<LineFrag>();
-        for (int i = 0; i < raw.Count; i++)
-            result.Add(BuildLine(p, raw[i], width, i == raw.Count - 1));
+        var result = p.FirstLine != null ? LayoutWithFirstLine(p, width, excl) : null;
+        if (result == null)
+        {
+            var pieces = Itemize(p);
+            var raw = BreakLines(p, pieces, width, excl);
+            result = new List<LineFrag>();
+            for (int i = 0; i < raw.Count; i++)
+                result.Add(BuildLine(p, raw[i], width, i == raw.Count - 1));
+        }
 
         if (result.Count > 0)
         {
@@ -417,15 +443,61 @@ public sealed class BlockLayout(LayoutContext ctx)
         return result;
     }
 
-    List<RawLine> BreakLines(Paragraph p, List<Piece> pieces, double width, IExclusion? excl)
+    /// <summary>
+    /// ::first-line: первая строка набирается в своём стиле, затем остаток абзаца
+    /// (с точки разрыва) переносится заново обычным стилем.
+    /// </summary>
+    List<LineFrag>? LayoutWithFirstLine(Paragraph p, double width, IExclusion? excl)
+    {
+        var piecesA = Itemize(p, p.FirstLine);
+        var rawA = BreakLines(p, piecesA, width, excl);
+        if (rawA.Count == 0) return null;
+        var first = rawA[0];
+        if (rawA.Count == 1) return [BuildLine(p, first, width, true)];
+
+        // Точка разрыва: после последнего символа первой строки
+        var last = first.Pieces.LastOrDefault(q => q.Src >= 0);
+        if (last == null) return null;
+        int cutInline, cutOffset;
+        if (p.Inlines[last.Src] is TextInline lt && last.Pos.Count > 0)
+        {
+            int at = last.Pos[^1];
+            cutInline = last.Src;
+            cutOffset = at + (at < lt.Text.Length && char.IsHighSurrogate(lt.Text[at]) ? 2 : 1);
+        }
+        else { cutInline = last.Src + 1; cutOffset = 0; }
+
+        var rest = new List<Inline>();
+        for (int i = cutInline; i < p.Inlines.Count; i++)
+        {
+            if (i == cutInline && cutOffset > 0 && p.Inlines[i] is TextInline t)
+            {
+                if (cutOffset < t.Text.Length) rest.Add(new TextInline(t.Text[cutOffset..], t.Style));
+                continue;
+            }
+            rest.Add(p.Inlines[i]);
+        }
+        var firstFrag = BuildLine(p, first, width, rest.Count == 0);
+        if (rest.Count == 0) return [firstFrag];
+
+        var pr = p.ShallowCopy();
+        pr.Inlines = rest;
+        pr.FirstLine = null;
+        var raw = BreakLines(p, Itemize(pr), width, excl, startFirst: false, startY: firstFrag.Height);
+        var result = new List<LineFrag> { firstFrag };
+        for (int i = 0; i < raw.Count; i++) result.Add(BuildLine(p, raw[i], width, i == raw.Count - 1));
+        return result;
+    }
+
+    List<RawLine> BreakLines(Paragraph p, List<Piece> pieces, double width, IExclusion? excl, bool startFirst = true, double? startY = null)
     {
         var lines = new List<RawLine>();
-        var cur = new RawLine { First = true };
+        var cur = new RawLine { First = startFirst };
         double x = 0;
         double extraRoom = 0;   // правая/центральная табуляция за правым полем позволяет вылезти за край
 
         // Вертикальная позиция текущей строки (для обтекания плавающих блоков)
-        double curY = p.BorderTop != null ? p.BorderTop.Width + p.BorderTop.Space : 0;
+        double curY = startY ?? (p.BorderTop != null ? p.BorderTop.Width + p.BorderTop.Space : 0);
         double estH = excl != null ? LineMetrics(p, [], cur).H : 0;
         void UpdateExcl()
         {
@@ -549,12 +621,12 @@ public sealed class BlockLayout(LayoutContext ctx)
                 if (k > 0)
                 {
                     var head = q.CloneEmpty();
-                    head.Gids.AddRange(q.Gids.Take(k)); head.Texts.AddRange(q.Texts.Take(k)); head.Adv.AddRange(q.Adv.Take(k));
+                    head.Gids.AddRange(q.Gids.Take(k)); head.Texts.AddRange(q.Texts.Take(k)); head.Adv.AddRange(q.Adv.Take(k)); head.Pos.AddRange(q.Pos.Take(k));
                     head.Width = acc;
                     head.BreakBefore = q.BreakBefore;
                     cur.Pieces.Add(head);
                     var tail = q.CloneEmpty();
-                    tail.Gids.AddRange(q.Gids.Skip(k)); tail.Texts.AddRange(q.Texts.Skip(k)); tail.Adv.AddRange(q.Adv.Skip(k));
+                    tail.Gids.AddRange(q.Gids.Skip(k)); tail.Texts.AddRange(q.Texts.Skip(k)); tail.Adv.AddRange(q.Adv.Skip(k)); tail.Pos.AddRange(q.Pos.Skip(k));
                     tail.Width = q.Width - acc;
                     tail.BreakBefore = true;
                     pieces[j2] = tail;

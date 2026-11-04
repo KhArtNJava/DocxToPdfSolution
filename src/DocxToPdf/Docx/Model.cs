@@ -57,6 +57,7 @@ public sealed class RunProps
     public string? VertAlign;
     public string? StyleId;       // rStyle
     public double? Position;      // pt (поднятие/опускание)
+    public double? Spacing;       // pt (межбуквенный интервал)
 
     public RunProps Clone() => (RunProps)MemberwiseClone();
 
@@ -84,6 +85,7 @@ public sealed class RunProps
         Shading = o.Shading ?? Shading;
         VertAlign = o.VertAlign ?? VertAlign;
         Position = o.Position ?? Position;
+        Spacing = o.Spacing ?? Spacing;
         if (o.StyleId != null) StyleId = o.StyleId;
     }
 }
@@ -212,6 +214,10 @@ public sealed record TextStyle
     public bool DoubleUnderline { get; init; }
     public bool Strike { get; init; }
     public bool Caps { get; init; }
+    /// <summary>Капитель: строчные буквы — уменьшенными прописными.</summary>
+    public bool SmallCaps { get; init; }
+    /// <summary>Дополнительный интервал после каждого символа, pt (letter-spacing / w:spacing).</summary>
+    public double LetterSpacing { get; init; }
     public double Size { get; init; } = 10;
     public Rgb Color { get; init; } = Rgb.Black;
     public Rgb? Background { get; init; }
@@ -281,6 +287,10 @@ public sealed class Paragraph : Block
     public string? Clear;
     /// <summary>Сдвиг при position: relative.</summary>
     public double OffsetX, OffsetY;
+    /// <summary>CSS ::first-line — преобразование стиля текста первой строки.</summary>
+    public Func<TextStyle, TextStyle>? FirstLine;
+
+    public Paragraph ShallowCopy() => (Paragraph)MemberwiseClone();
 }
 
 public sealed class CellBorders

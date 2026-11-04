@@ -273,7 +273,7 @@ public sealed class StyleSheet
                     }
                     if (element || name is "before" or "after" or "first-line" or "first-letter")
                     {
-                        if (name is "before" or "after" or "marker") c.PseudoElement = name;
+                        if (name is "before" or "after" or "marker" or "first-letter" or "first-line") c.PseudoElement = name;
                         else c.Unsupported = true;   // ::first-letter, ::marker, ::selection …
                     }
                     else AddPseudoClass(c, name, arg);
@@ -430,7 +430,7 @@ public sealed class CssStyle
     // Наследуемые
     public string FontFamily = "Times New Roman";
     public double FontSize = 12;
-    public bool Bold, Italic, Underline, Strike, Upper, Lower;
+    public bool Bold, Italic, Underline, Strike, Upper, Lower, SmallCaps;
     public Rgb Color = Rgb.Black;
     public string TextAlign = "left";
     public double? LineHeightFactor;
@@ -442,6 +442,7 @@ public sealed class CssStyle
     public int VertAlign;
     public Rgb? TextBackground;
     public bool Hidden;     // visibility: hidden
+    public double LetterSpacing;
     public Dictionary<string, string>? Vars;   // пользовательские свойства (--x), наследуются
     public InlineBox? InlineBox;               // ближайший строчный блок с рамкой/отступами
     public string? Quotes;
@@ -488,7 +489,7 @@ public sealed class CssStyle
         return new CssStyle
         {
             FontFamily = FontFamily, FontSize = FontSize, Bold = Bold, Italic = Italic, Underline = Underline, Strike = Strike,
-            Upper = Upper, Lower = Lower, Color = Color, TextAlign = TextAlign, LineHeightFactor = LineHeightFactor, LineHeightPt = LineHeightPt,
+            Upper = Upper, Lower = Lower, SmallCaps = SmallCaps, LetterSpacing = LetterSpacing, Color = Color, TextAlign = TextAlign, LineHeightFactor = LineHeightFactor, LineHeightPt = LineHeightPt,
             WhiteSpace = WhiteSpace, TextIndent = TextIndent, ListStyleType = ListStyleType, Link = Link, VertAlign = VertAlign,
             TextBackground = TextBackground, Hidden = Hidden, Vars = Vars, Quotes = Quotes, InlineBox = InlineBox,
         };

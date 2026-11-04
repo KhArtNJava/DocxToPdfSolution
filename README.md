@@ -77,6 +77,12 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - **`::before` / `::after`** (и `:before`/`:after`): `content` со строками (включая `\201C`, `\A`), `attr()`,
   `counter()`, `counters()`, `open-/close-quote` (кавычки по `lang`: «» для ru), `url()`; псевдоэлементы могут быть
   блочными, flex-элементами, позиционированными. **`::marker`** — цвет, шрифт и содержимое маркера списка
+- **`::first-letter`**: первая буква блока вместе с окружающей пунктуацией («, —, …), в том числе внутри вложенных
+  элементов и после `::before`; буквица через `float: left` с обтеканием текста; наследует стиль `::first-line`
+- **`::first-line`**: граница первой строки определяется вёрсткой — первая строка набирается в своём стиле
+  (шрифт, размер, начертание, цвет, капитель, регистр, интервал, фон), остаток абзаца переносится заново обычным стилем
+- **Капитель** (`font-variant: small-caps`, `w:smallCaps` в DOCX): строчные — уменьшенными прописными, заглавные — полного размера
+- **Межбуквенный интервал**: `letter-spacing` в HTML, разреженный/уплотнённый интервал `w:spacing` в DOCX
 - **Счётчики**: `counter-reset`, `counter-increment`, `counter-set` с областями видимости (многоуровневая нумерация)
 - **CSS-переменные**: `--имя` (наследуются, задаются в `:root`, классах, `style=""`), `var(--x, запасное)` с вложенностью
 - **`calc()`**, `min()`, `max()`, `clamp()` с любыми единицами (px, pt, em, rem, %, …) в любых длинах
@@ -92,7 +98,7 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - Нет колонок, сносок, примечаний, RTL и сложного шейпинга (арабский, индийские письменности), кернинга и автопереносов
 - Только TrueType-контуры (OTF с CFF пропускаются)
 - Условное форматирование стилей таблиц (firstRow, banded rows) не применяется
-- HTML: нет JavaScript, SVG, `transform`, `::first-letter`/`::first-line`, `border-radius` (углы прямые);
+- HTML: нет JavaScript, SVG, `transform`, `border-radius` (углы прямые), `word-spacing`, `initial-letter`;
   динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
 - float: таблица рядом с плавающим блоком размещается ниже него; float выше страницы выводится в потоке;
   группа «float + обтекающий текст» не разрывается между страницами
@@ -101,4 +107,5 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 
 Примеры: `src/DocxToPdf/samples/sample.docx` → `sample.pdf`, `sample.html` → `sample-html.pdf`,
 `layout.html` → `layout.pdf` (float, flex, grid, position), `css-features.html` → `css-features.pdf`
-(переменные, calc, ::before/::after, счётчики, :nth-child), `inline-boxes.html` → `inline-boxes.pdf` (рамки внутри строки).
+(переменные, calc, ::before/::after, счётчики, :nth-child), `inline-boxes.html` → `inline-boxes.pdf` (рамки внутри строки),
+`first-letter-line.html` → `first-letter-line.pdf` (буквицы, `::first-letter`, `::first-line`, капитель).

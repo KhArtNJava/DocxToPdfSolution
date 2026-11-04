@@ -1,0 +1,26 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><style>
+ @page { size: A4; margin: 15mm } body { font-family: "Times New Roman", serif; font-size: 12pt; line-height: 1.4 }
+ p { margin: 0 0 10pt; text-align: justify }
+ .drop::first-letter { float: left; font-size: 3.4em; line-height: 1; color: #8b1a1a; margin: 2px 6px 0 0; font-weight: bold }
+ .quote::first-letter { color: #1a5a8b; font-size: 1.6em; font-weight: bold }
+ .fl::first-line { font-variant: small-caps; font-weight: bold; color: #444 }
+ .up::first-line { text-transform: uppercase; letter-spacing: 1px; color: #8b1a1a }
+ .mag::first-letter { float: left; font-size: 3em; line-height: 1; padding: 2px 5px; margin-right: 6px; background: #223; color: #fff }
+ .mag::first-line { font-weight: bold }
+ li::first-letter { color: red; font-weight: bold }
+ td::first-line { color: #2a6; font-weight: bold }
+ td { border: 1px solid #aaa; padding: 4px; width: 50% }
+ h3 { font-family: Arial, sans-serif; margin: 10pt 0 4pt }
+</style></head><body>
+<h3>Буквица (float)</h3>
+<p class="drop">Жили-были старик со старухой у самого синего моря; они жили в ветхой землянке ровно тридцать лет и три года. Старик ловил неводом рыбу, старуха пряла свою пряжу. Раз он в море закинул невод, — пришёл невод с одною тиной. Он в другой раз закинул невод, — пришёл невод с травой морскою.</p>
+<h3>Первая буква с кавычкой</h3>
+<p class="quote">«Ёлка в лесу родилась, в лесу она росла» — первая буква вместе с открывающей кавычкой выделена цветом и размером.</p>
+<h3>::first-line</h3>
+<p class="fl">Первая строка этого абзаца набрана капителью и полужирным, а остальные строки — обычным шрифтом. Граница определяется вёрсткой, поэтому стиль заканчивается ровно там, где заканчивается первая строка, и продолжение идёт обычным начертанием.</p>
+<p class="up">Первая строка прописными буквами и другим цветом; со второй строки текст набран как обычно, что позволяет проверить, что разрыв строки вычисляется уже с учётом изменённой ширины символов.</p>
+<h3>Вместе</h3>
+<p class="mag">Буквица на тёмном фоне и полужирная первая строка одновременно. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок, да выпей чаю.</p>
+<ul><li>яблоки</li><li>груши</li><li>сливы</li></ul>
+<table style="border-collapse:collapse;width:100%"><tr><td>Первая строка ячейки выделена ::first-line зелёным, а дальше текст идёт обычным образом без выделения.</td><td>Вторая ячейка тоже.</td></tr></table>
+</body></html>

@@ -282,6 +282,103 @@ public sealed partial class HtmlReader
             if (!c.IsPseudo) ComputeStyles(c, s);
         if (pseudo && MakePseudo(n, s, "after") is { } after) n.Children.Add(after);
         PopCounters(n);
+        if (s.Display is not ("inline" or "none")) ApplyFirstLetter(n, s);
+    }
+
+    // =================================================================
+    //  ::first-letter / ::first-line
+    // =================================================================
+
+    static bool IsPunct(char c) => char.GetUnicodeCategory(c) is UnicodeCategory.OpenPunctuation or UnicodeCategory.ClosePunctuation
+        or UnicodeCategory.InitialQuotePunctuation or UnicodeCategory.FinalQuotePunctuation or UnicodeCategory.OtherPunctuation
+        or UnicodeCategory.DashPunctuation;
+
+    /// <summary>Первый текстовый узел первой строки блока (через строчные элементы и первый вложенный блок).</summary>
+    static Node? FirstTextNode(Node n)
+    {
+        foreach (var c in n.Children)
+        {
+            if (c.IsText)
+            {
+                if (c.Text.Trim().Length > 0) return c;
+                continue;
+            }
+            if (!c.IsElement || c.Style == null || c.Style.Display == "none") continue;
+            if (c.Style.Float != null || c.Style.Position is "absolute" or "fixed") continue;
+            if (c.Tag is "img" or "br" or "hr" or "table" or "input" or "textarea" or "select" || c.Style.Display is "table" or "flex" or "grid") return null;
+            var r = FirstTextNode(c);
+            if (r != null) return r;
+        }
+        return null;
+    }
+
+    /// <summary>Выделяет первую букву (с окружающей пунктуацией) в узел ::first-letter.</summary>
+    void ApplyFirstLetter(Node n, CssStyle s)
+    {
+        var decls = CollectDecls(n, "first-letter");
+        if (decls.Count == 0) return;
+        // ::first-letter наследует от ::first-line
+        decls = CollectDecls(n, "first-line").Concat(decls).ToList();
+        var t = FirstTextNode(n);
+        if (t?.Parent?.Style == null || t.Parent.Tag == "::first-letter") return;
+        string text = t.Text;
+        int i = 0;
+        while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+        int start = i;
+        while (i < text.Length && IsPunct(text[i])) i++;
+        if (i < text.Length && !char.IsWhiteSpace(text[i])) i += char.IsSurrogatePair(text, i) ? 2 : 1;
+        while (i < text.Length && IsPunct(text[i])) i++;
+        if (i == start) return;
+
+        var owner = t.Parent;
+        var ps = owner.Style.InheritFrom();
+        ps.Display = "inline";
+        ApplyAll(ps, owner.Style, decls);
+        Blockify(ps, owner.Style);
+        FixTextBackground(ps);
+        SetupInlineBox(ps);
+        var pseudo = new Node { Tag = "::first-letter", Parent = owner, Style = ps };
+        pseudo.Children.Add(new Node { Tag = "#text", Text = text[start..i], Parent = pseudo });
+        t.Text = text[i..];
+        owner.Children.Insert(owner.Children.IndexOf(t), pseudo);
+    }
+
+    /// <summary>Назначает стиль ::first-line первому абзацу, созданному внутри элемента.</summary>
+    void ApplyFirstLine(Node n, CssStyle s, IEnumerable<Block> created)
+    {
+        if (!n.IsElement) return;
+        var decls = CollectDecls(n, "first-line");
+        if (decls.Count == 0) return;
+        var para = created.OfType<Paragraph>().FirstOrDefault();
+        if (para == null || para.FirstLine != null) return;
+
+        var fl = s.InheritFrom();
+        ApplyAll(fl, s, decls);
+        var props = decls.Select(d => d.Property).ToHashSet();
+        bool font = props.Contains("font");
+        bool weight = font || props.Contains("font-weight"), style = font || props.Contains("font-style");
+        bool size = font || props.Contains("font-size") || props.Contains("font-variant") || props.Contains("font-variant-caps");
+        bool family = font || props.Contains("font-family");
+        bool color = props.Contains("color");
+        bool caps = props.Contains("text-transform") || props.Contains("font-variant") || props.Contains("font-variant-caps");
+        bool deco = props.Contains("text-decoration") || props.Contains("text-decoration-line");
+        bool bg = props.Contains("background") || props.Contains("background-color");
+        para.FirstLine = ts => ts with
+        {
+            Bold = weight ? fl.Bold : ts.Bold,
+            Italic = style ? fl.Italic : ts.Italic,
+            Size = size ? (ts.Size == s.FontSize ? fl.FontSize : ts.Size * fl.FontSize / Math.Max(1, s.FontSize)) : ts.Size,
+            FontAscii = family ? fl.FontFamily : ts.FontAscii,
+            FontHAnsi = family ? fl.FontFamily : ts.FontHAnsi,
+            FontEastAsia = family ? fl.FontFamily : ts.FontEastAsia,
+            Color = color ? fl.Color : ts.Color,
+            Caps = caps ? fl.Upper : ts.Caps,
+            SmallCaps = caps ? fl.SmallCaps : ts.SmallCaps,
+            LetterSpacing = props.Contains("letter-spacing") ? fl.LetterSpacing : ts.LetterSpacing,
+            Underline = deco ? fl.Underline : ts.Underline,
+            Strike = deco ? fl.Strike : ts.Strike,
+            Background = bg ? fl.Background : ts.Background,
+        };
     }
 
     /// <summary>Элементы flex/grid, float и absolute становятся блочными (CSS blockification).</summary>
@@ -731,6 +828,11 @@ public sealed partial class HtmlReader
                 };
                 break;
             case "box-sizing": s.BoxSizing = lv; break;
+            case "letter-spacing": s.LetterSpacing = lv == "normal" ? 0 : CssValues.Length(lv, fs) ?? 0; break;
+            case "font-variant" or "font-variant-caps":
+                if (lv.Contains("small-caps")) s.SmallCaps = true;
+                else if (lv == "normal") s.SmallCaps = false;
+                break;
             case "content": s.Content = v; break;
             case "counter-reset": s.CounterReset = v; break;
             case "counter-increment": s.CounterIncrement = v; break;
@@ -890,7 +992,8 @@ public sealed partial class HtmlReader
             if (t is "italic" or "oblique") s.Italic = true;
             else if (t is "bold" or "bolder") s.Bold = true;
             else if (int.TryParse(t, out var w) && w >= 100 && w <= 900) s.Bold = w >= 600;
-            else if (t is "normal" or "small-caps") { }
+            else if (t == "small-caps") s.SmallCaps = true;
+            else if (t is "normal") { }
             else break;
         }
         if (i >= tokens.Count) return;
@@ -942,7 +1045,7 @@ public sealed partial class HtmlReader
     TextStyle ToTextStyle(CssStyle s) => new()
     {
         FontAscii = s.FontFamily, FontHAnsi = s.FontFamily, FontEastAsia = s.FontFamily,
-        Bold = s.Bold, Italic = s.Italic, Underline = s.Underline, Strike = s.Strike, Caps = s.Upper,
+        Bold = s.Bold, Italic = s.Italic, Underline = s.Underline, Strike = s.Strike, Caps = s.Upper, SmallCaps = s.SmallCaps, LetterSpacing = s.LetterSpacing,
         Size = Math.Max(1, s.FontSize), Color = s.Color, Background = s.TextBackground, VertAlign = s.VertAlign, Link = s.Link,
         Box = s.InlineBox,
     };
@@ -1215,6 +1318,7 @@ public sealed partial class HtmlReader
     void EndBox(Node n, CssStyle s, Flow f, int startIdx)
     {
         var created = f.Target.Skip(startIdx).ToList();
+        ApplyFirstLine(n, s, created);
         var paras = created.OfType<Paragraph>().ToList();
         if (paras.Count > 0)
         {
@@ -1591,6 +1695,7 @@ public sealed partial class HtmlReader
                     _contentWidth = cellCtx.Width;
                     WalkChildren(cell.Node, cellFlow, cellCtx);
                     Flush(cellFlow);
+                    ApplyFirstLine(cell.Node, cs, tc.Blocks);
                     _contentWidth = savedWidth;
                 }
                 row.Cells.Add(tc);

@@ -50,11 +50,14 @@ public sealed class Piece
     /// <summary>Для Spacer: чей это край (начало или конец строчного блока).</summary>
     public InlineBox? SpacerBox;
     public bool SpacerStart;
+    /// <summary>Источник: индекс инлайна в абзаце и позиции символов каждого глифа.</summary>
+    public int Src = -1;
+    public List<int> Pos = [];
     public double X;
 
     public Piece CloneEmpty() => new()
     {
-        Kind = Kind, Style = Style, Face = Face, Size = Size, Rise = Rise, Ascent = Ascent, Descent = Descent
+        Kind = Kind, Style = Style, Face = Face, Size = Size, Rise = Rise, Ascent = Ascent, Descent = Descent, Src = Src
     };
 }
 
@@ -116,10 +119,12 @@ public sealed class LineFrag : Frag
                 if (q.Kind is not (PieceKind.Text or PieceKind.Space) || q.Face != p.Face || q.Size != p.Size || q.Rise != p.Rise || q.Style.Color != p.Style.Color || q.Gids.Count == 0)
                     break;
                 gids.AddRange(q.Gids); texts.AddRange(q.Texts);
-                for (int g = 0; g < q.Gids.Count; g++) extra.Add(0);
+                double ls = q.Kind == PieceKind.Text ? q.Style.LetterSpacing : 0;
+                for (int g = 0; g < q.Gids.Count; g++) extra.Add(ls);
+                if (ls != 0) anyExtra = true;
                 // Зазор до следующего куска (выравнивание по ширине)
                 double gap = m + 1 < Pieces.Count ? Pieces[m + 1].X - (q.X + q.Width) : 0;
-                if (Math.Abs(gap) > 0.001) { extra[^1] = gap; anyExtra = true; }
+                if (Math.Abs(gap) > 0.001) { extra[^1] += gap; anyExtra = true; }
                 m++;
             }
             c.Glyphs(p.Face, p.Size, lx + p.X, baseY - p.Rise, gids, texts, p.Style.Color, anyExtra ? extra : null);

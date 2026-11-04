@@ -60,6 +60,7 @@ public sealed partial class HtmlReader
         }
         else WalkChildren(n, flow, ctx);
         Flush(flow);
+        if (!n.IsText) ApplyFirstLine(n, s, blocks);
         _contentWidth = saved;
         if (ab != null && ab.Children.Count == 0) blocks.Remove(ab);
         return blocks;

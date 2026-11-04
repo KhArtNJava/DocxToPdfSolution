@@ -439,6 +439,7 @@ public sealed class DocxReader
         r.VertAlign = Val(rPr.Element(W + "vertAlign"));
         r.StyleId = Val(rPr.Element(W + "rStyle"));
         r.Position = HalfPoints(Val(rPr.Element(W + "position")));
+        r.Spacing = Twips(Val(rPr.Element(W + "spacing")));
         return r;
     }
 
@@ -584,7 +585,9 @@ public sealed class DocxReader
             Underline = r.Underline != null && r.Underline != "none",
             DoubleUnderline = r.Underline == "double",
             Strike = (r.Strike ?? false) || (r.DStrike ?? false),
-            Caps = (r.Caps ?? false) || (r.SmallCaps ?? false),
+            Caps = r.Caps ?? false,
+            SmallCaps = r.SmallCaps ?? false,
+            LetterSpacing = r.Spacing ?? 0,
             Size = r.Size ?? 10,
             Color = Rgb.Parse(r.Color) ?? (link != null && r.Color == null ? new Rgb(0.02, 0.39, 0.76) : Rgb.Black),
             Background = bg,
