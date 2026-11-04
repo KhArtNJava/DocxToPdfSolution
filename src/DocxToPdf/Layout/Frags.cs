@@ -632,6 +632,45 @@ public sealed class BoxFrag : Frag
     public required BoxStyle Box;
     public List<(Frag Frag, double Y)> Items = [];
 
+    /// <summary>
+    /// Разрыв блока между страницами (рамка «срезается»: у первой части нет нижней рамки и отступа,
+    /// у второй — верхних): содержимое делится между строками/строками таблицы, пересекающий элемент разрезается сам.
+    /// </summary>
+    public override (Frag First, Frag Remainder)? Split(double avail)
+    {
+        double topIn = Box.PadTop + (Box.BorderTop?.Width ?? 0), botIn = Box.PadBottom + (Box.BorderBottom?.Width ?? 0);
+        double cut = avail - topIn;
+        if (cut <= 1) return null;
+        int splitIdx = -1;
+        (Frag First, Frag Remainder)? splitParts = null;
+        for (int i = 0; i < Items.Count; i++)
+        {
+            var (f, fy) = Items[i];
+            if (fy >= cut - 0.01 || fy + f.Height <= cut + 0.01) continue;
+            var parts = f.Split(cut - fy);
+            if (parts != null && parts.Value.First.Height <= cut - fy + 0.01) { splitIdx = i; splitParts = parts; }
+            else cut = fy;
+            break;
+        }
+        if (cut <= 0.5) return null;
+        var bs1 = new BoxStyle { Background = Box.Background, BorderTop = Box.BorderTop, BorderLeft = Box.BorderLeft, BorderRight = Box.BorderRight,
+            PadTop = Box.PadTop, PadLeft = Box.PadLeft, PadRight = Box.PadRight };
+        var bs2 = new BoxStyle { Background = Box.Background, BorderBottom = Box.BorderBottom, BorderLeft = Box.BorderLeft, BorderRight = Box.BorderRight,
+            PadBottom = Box.PadBottom, PadLeft = Box.PadLeft, PadRight = Box.PadRight };
+        var first = new BoxFrag { Box = bs1, Width = Width, Height = topIn + cut, SpaceBefore = SpaceBefore };
+        double contentH = Height - topIn - botIn;
+        var rest = new BoxFrag { Box = bs2, Width = Width, Height = Math.Max(0, contentH - cut) + botIn, SpaceAfter = SpaceAfter };
+        for (int i = 0; i < Items.Count; i++)
+        {
+            var (f, fy) = Items[i];
+            if (i == splitIdx) { first.Items.Add((splitParts!.Value.First, fy)); rest.Items.Add((splitParts.Value.Remainder, 0)); }
+            else if (fy < cut && fy + f.Height <= cut + 0.01) first.Items.Add((f, fy));
+            else rest.Items.Add((f, fy - cut));
+        }
+        if (first.Items.Count == 0) return null;
+        return (first, rest);
+    }
+
     public override void Draw(PdfCanvas c, double x, double y)
     {
         var rad = Box.Radius?.Resolve(Width, Height);
@@ -683,6 +722,50 @@ public sealed class GroupFrag : Frag
     public override void Draw(PdfCanvas c, double x, double y)
     {
         foreach (var (f, fx, fy) in Items) f.Draw(c, x + fx, y + fy);
+    }
+
+    /// <summary>
+    /// Разрыв группы между страницами: разрез сдвигается вверх, пока его пересекают неразрываемые элементы
+    /// (строки, картинки); пересекающие его разрываемые элементы (блок float, строки таблицы) разрезаются сами.
+    /// Строки рядом с float остаются суженными и переходят на следующую страницу вместе с ним.
+    /// </summary>
+    public override (Frag First, Frag Remainder)? Split(double avail)
+    {
+        double cut = Math.Min(avail, Height);
+        var splits = new Dictionary<int, (Frag First, Frag Remainder)>();
+        for (int guard = 0; guard < 200; guard++)
+        {
+            bool changed = false;
+            splits.Clear();
+            for (int i = 0; i < Items.Count; i++)
+            {
+                var (f, _, fy) = Items[i];
+                if (fy >= cut - 0.01 || fy + f.Height <= cut + 0.01) continue;
+                var parts = f is GroupFrag or LineFrag ? null : f.Split(cut - fy);
+                if (parts != null && parts.Value.First.Height <= cut - fy + 0.01) { splits[i] = parts.Value; continue; }
+                cut = fy;   // элемент целиком переходит на следующую страницу
+                changed = true;
+                break;
+            }
+            if (!changed) break;
+        }
+        if (cut <= 0.5) return null;
+        var first = new GroupFrag { Height = cut, SpaceBefore = SpaceBefore, PageBreakBefore = PageBreakBefore };
+        var rest = new GroupFrag { Height = Math.Max(0, Height - cut), SpaceAfter = SpaceAfter, KeepWithNext = KeepWithNext };
+        for (int i = 0; i < Items.Count; i++)
+        {
+            var (f, fx, fy) = Items[i];
+            if (splits.TryGetValue(i, out var sp))
+            {
+                first.Items.Add((sp.First, fx, fy));
+                rest.Items.Add((sp.Remainder, fx, 0));
+            }
+            else if (fy + f.Height <= cut + 0.01 && fy < cut) first.Items.Add((f, fx, fy));
+            else rest.Items.Add((f, fx, fy - cut));
+        }
+        foreach (var a in AbsFloats) (a.Top < cut ? first : rest).AbsFloats.Add(a.Top < cut ? a : (a.Fb, a.Top - cut, a.Height));
+        if (first.Items.Count == 0) return null;
+        return (first, rest);
     }
 }
 

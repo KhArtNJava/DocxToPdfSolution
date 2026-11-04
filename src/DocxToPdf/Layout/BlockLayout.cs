@@ -173,8 +173,25 @@ public sealed class BlockLayout(LayoutContext ctx)
                 case Table t:
                 {
                     if (t.Clear != null) Clear(t.Clear);
-                    // Таблица рядом с float не сужается — размещаем ниже плавающих блоков
-                    if (group != null) { Clear("both"); EndGroup(); }
+                    if (group != null && gy >= area!.MaxBottom() - 0.01) EndGroup();
+                    if (group != null)
+                    {
+                        // Таблица рядом с плавающим блоком: сужается до свободной ширины и входит в группу
+                        area!.OffsetY = 0;
+                        var (fl, fr) = area.At(gy, gy + 14);
+                        double avail = width - fl - fr;
+                        if (avail >= Math.Min(144, width * 0.35))
+                        {
+                            var rows = LayoutTable(t, avail);
+                            if (rows.Count > 0) gy += rows[0].SpaceBefore;
+                            foreach (var row in rows) { group.Items.Add((row, fl, gy)); gy += row.Height; }
+                            if (rows.Count > 0) gy += rows[^1].SpaceAfter;
+                            prev = null; prevLast = null;
+                            break;
+                        }
+                        // Слишком узко — под плавающими блоками
+                        Clear("both"); EndGroup();
+                    }
                     frags.AddRange(LayoutTable(t, width));
                     prev = null; prevLast = null;
                     break;
@@ -189,9 +206,10 @@ public sealed class BlockLayout(LayoutContext ctx)
                     double w = fb.Width + fb.MarginLeft + fb.MarginRight;
                     var box = Transformed(BuildBox(fb.Blocks, fb.Width, fb.Box), fb.Transform);
                     double h = box.Height + fb.MarginTop + fb.MarginBottom;
-                    if (w > width + 0.5 || h - (fb.AbsVRel != null ? fb.MarginTop : 0) > _ctx.MaxImageHeight * 0.9)
+                    // Выше страницы — тоже плавающий: группа и сам блок разрываются между страницами
+                    if (w > width + 0.5)
                     {
-                        // Слишком большой для обтекания — выводим в потоке
+                        // Шире колонки — выводим в потоке
                         if (group != null) { Clear("both"); EndGroup(); }
                         frags.Add(box);
                         break;
