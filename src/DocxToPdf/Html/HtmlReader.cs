@@ -53,6 +53,8 @@ public sealed partial class HtmlReader
         small { font-size: smaller }
         big { font-size: larger }
         mark { background-color: yellow }
+        q::before { content: open-quote }
+        q::after { content: close-quote }
         center { text-align: center }
         hr { margin: .5em 0 }
         fieldset { margin: 0 2px; padding: .35em .75em .625em }
@@ -154,6 +156,10 @@ public sealed partial class HtmlReader
         var section = new Section { Props = PageSetup() };
         _contentWidth = section.Props.PageWidth - section.Props.MarginLeft - section.Props.MarginRight;
 
+        string lang = (root.Descendants().FirstOrDefault(d => d.Tag == "html")?.Attr("lang") ?? "").ToLowerInvariant();
+        if (lang.StartsWith("ru") || lang.StartsWith("uk") || lang.StartsWith("be")) _defaultQuotes = ["\u00AB", "\u00BB", "\u201E", "\u201C"];
+        else if (lang.StartsWith("de")) _defaultQuotes = ["\u201E", "\u201C", "\u201A", "\u2018"];
+        else if (lang.StartsWith("fr")) _defaultQuotes = ["\u00AB\u00A0", "\u00A0\u00BB", "\u2039", "\u203A"];
         ComputeStyles(root, new CssStyle { Display = "block" });
 
         var flow = new Flow(section.Blocks);
@@ -235,15 +241,17 @@ public sealed partial class HtmlReader
     //  Каскад стилей
     // =================================================================
 
+    static readonly HashSet<string> NoPseudo = ["img", "br", "hr", "input", "textarea", "select", "iframe", "video", "audio", "canvas", "wbr", "meta", "link", "col", "area", "base", "embed", "param", "source", "track"];
+
     void ComputeStyles(Node n, CssStyle parent)
     {
         if (n.Tag == "#root")
         {
             n.Style = parent;
-            foreach (var c in n.Children) ComputeStyles(c, parent);
+            foreach (var c in n.Children.ToList()) ComputeStyles(c, parent);
             return;
         }
-        if (!n.IsElement) return;
+        if (!n.IsElement || n.IsPseudo) return;
 
         var s = parent.InheritFrom();
         s.Display = HiddenTags.Contains(n.Tag) ? "none"
@@ -257,42 +265,305 @@ public sealed partial class HtmlReader
             };
         if (n.Tag is "body" or "html") s.Display = "block";
 
-        var decls = new List<(CssDecl D, int Prio)>();
-        AddMatches(_ua, n, decls, 0);
-        foreach (var d in PresentationalHints(n)) decls.Add((d, 1_000_000));
-        AddMatches(_author, n, decls, 2_000_000);
-        if (n.Attr("style") is { } inline)
-            foreach (var d in StyleSheet.ParseDeclarations(inline)) decls.Add((d, 3_000_000));
-        // !important поверх всего
-        var ordered = decls.Select((x, i) => (x.D, Key: (x.D.Important ? 10_000_000 : 0) + x.Prio, i))
-            .OrderBy(x => x.Key).ThenBy(x => x.i).Select(x => x.D).ToList();
-
-        // Сначала размер шрифта (от него считаются em)
-        foreach (var d in ordered.Where(d => d.Property is "font-size" or "font"))
-            Apply(s, parent, d);
-        foreach (var d in ordered.Where(d => d.Property is not ("font-size")))
-            Apply(s, parent, d);
+        ApplyAll(s, parent, CollectDecls(n, null));
 
         if (n.Tag == "a" && n.Attr("href") is { } href && IsExternalLink(href)) s.Link = href;
-        if (s.Display is "block" or "list-item" or "table" or "table-cell") s.TextBackground = null;
-        if (s.Display == "inline" && s.Background is { } bg) s.TextBackground = bg;
-
+        FixTextBackground(s);
         n.Style = s;
-        foreach (var c in n.Children) ComputeStyles(c, s);
+        if (s.Display == "none") return;
+
+        // Счётчики: сначала элемента, затем ::before, потомков и ::after (порядок документа)
+        ApplyCounters(s, n.Parent ?? n);
+        bool pseudo = !NoPseudo.Contains(n.Tag) && !HiddenTags.Contains(n.Tag);
+        if (pseudo && MakePseudo(n, s, "before") is { } before) n.Children.Insert(0, before);
+        foreach (var c in n.Children.ToList())
+            if (!c.IsPseudo) ComputeStyles(c, s);
+        if (pseudo && MakePseudo(n, s, "after") is { } after) n.Children.Add(after);
+        PopCounters(n);
+    }
+
+    static void FixTextBackground(CssStyle s)
+    {
+        if (s.Display is "block" or "list-item" or "table" or "table-cell" or "flex" or "grid") s.TextBackground = null;
+        if (s.Display == "inline" && s.Background is { } bg) s.TextBackground = bg;
+    }
+
+    /// <summary>Объявления, применимые к элементу (или его псевдоэлементу), в порядке каскада.</summary>
+    List<CssDecl> CollectDecls(Node n, string? pseudo)
+    {
+        var decls = new List<(CssDecl D, int Prio)>();
+        AddMatches(_ua, n, decls, 0, pseudo);
+        if (pseudo == null) foreach (var d in PresentationalHints(n)) decls.Add((d, 1_000_000));
+        AddMatches(_author, n, decls, 2_000_000, pseudo);
+        if (pseudo == null && n.Attr("style") is { } inline)
+            foreach (var d in StyleSheet.ParseDeclarations(inline)) decls.Add((d, 3_000_000));
+        // !important поверх всего
+        return decls.Select((x, i) => (x.D, Key: (x.D.Important ? 10_000_000 : 0) + x.Prio, i))
+            .OrderBy(x => x.Key).ThenBy(x => x.i).Select(x => x.D).ToList();
+    }
+
+    /// <summary>Применяет объявления: пользовательские свойства, подстановка var(), затем остальное.</summary>
+    void ApplyAll(CssStyle s, CssStyle parent, List<CssDecl> ordered)
+    {
+        bool copied = false;
+        foreach (var d in ordered)
+        {
+            if (!d.Property.StartsWith("--")) continue;
+            if (!copied) { s.Vars = s.Vars == null ? new() : new(s.Vars); copied = true; }
+            s.Vars![d.Property] = d.Value;
+        }
+        var resolved = new List<CssDecl>();
+        foreach (var d in ordered)
+        {
+            if (d.Property.StartsWith("--")) continue;
+            var v = CssValues.SubstituteVars(d.Value, s.Vars);
+            if (v == null) continue;   // var() без значения и запасного варианта — объявление недействительно
+            resolved.Add(v == d.Value ? d : d with { Value = v });
+        }
+        // Сначала размер шрифта (от него считаются em)
+        foreach (var d in resolved.Where(d => d.Property is "font-size" or "font"))
+            Apply(s, parent, d);
+        foreach (var d in resolved.Where(d => d.Property is not "font-size"))
+            Apply(s, parent, d);
+    }
+
+    // =================================================================
+    //  ::before / ::after
+    // =================================================================
+
+    Node? MakePseudo(Node n, CssStyle s, string which)
+    {
+        var decls = CollectDecls(n, which);
+        if (decls.Count == 0) return null;
+        var ps = s.InheritFrom();
+        ps.Display = "inline";
+        ApplyAll(ps, s, decls);
+        if (ps.Content is null || ps.Display == "none") return null;
+        string c = ps.Content.Trim();
+        if (c is "none" or "normal" || c.Length == 0) return null;
+        FixTextBackground(ps);
+
+        ApplyCounters(ps, n);
+        var node = new Node { Tag = "::" + which, Parent = n, Style = ps };
+        var text = new System.Text.StringBuilder();
+        void FlushText()
+        {
+            if (text.Length == 0) return;
+            node.Children.Add(new Node { Tag = "#text", Text = text.ToString(), Parent = node });
+            text.Clear();
+        }
+        foreach (var (kind, value) in ParseContent(c))
+        {
+            switch (kind)
+            {
+                case "string": text.Append(value); break;
+                case "attr": text.Append(n.Attr(value.Trim()) ?? ""); break;
+                case "counter":
+                case "counters":
+                {
+                    var args = SplitArgs(value);
+                    string name = args.ElementAtOrDefault(0)?.Trim() ?? "";
+                    var stack = _counters.TryGetValue(name, out var st) && st.Count > 0 ? st : null;
+                    if (kind == "counter")
+                    {
+                        string style = args.ElementAtOrDefault(1)?.Trim() ?? "decimal";
+                        text.Append(CounterText(style, stack?[^1].Value ?? 0));
+                    }
+                    else
+                    {
+                        string sep = Unquote(args.ElementAtOrDefault(1)?.Trim() ?? "\".\"");
+                        string style = args.ElementAtOrDefault(2)?.Trim() ?? "decimal";
+                        text.Append(stack == null ? CounterText(style, 0) : string.Join(sep, stack.Select(x => CounterText(style, x.Value))));
+                    }
+                    break;
+                }
+                case "open-quote": text.Append(Quote(ps, _quoteDepth++, open: true)); break;
+                case "close-quote": text.Append(Quote(ps, _quoteDepth = Math.Max(0, _quoteDepth - 1), open: false)); break;
+                case "no-open-quote": _quoteDepth++; break;
+                case "no-close-quote": _quoteDepth = Math.Max(0, _quoteDepth - 1); break;
+                case "url":
+                    FlushText();
+                    var img = new Node { Tag = "img", Parent = node, Style = ps.InheritFrom() };
+                    img.Style.Display = "inline";
+                    img.Attrs["src"] = Unquote(value.Trim());
+                    node.Children.Add(img);
+                    break;
+            }
+        }
+        FlushText();
+        return node;
+    }
+
+    int _quoteDepth;
+    string[] _defaultQuotes = ["\u201C", "\u201D", "\u2018", "\u2019"];
+
+    string Quote(CssStyle s, int depth, bool open)
+    {
+        var q = _defaultQuotes;
+        if (s.Quotes != null && s.Quotes != "auto")
+        {
+            var list = ParseContent(s.Quotes).Where(x => x.Kind == "string").Select(x => x.Value).ToArray();
+            if (list.Length >= 2) q = list;
+            else if (s.Quotes == "none") return "";
+        }
+        int pairs = q.Length / 2;
+        int idx = Math.Min(depth, pairs - 1) * 2 + (open ? 0 : 1);
+        return q[idx];
+    }
+
+    static string Unquote(string v) =>
+        v.Length >= 2 && (v[0] == '"' || v[0] == '\'') && v[^1] == v[0] ? UnescapeCss(v[1..^1]) : v;
+
+    static List<string> SplitArgs(string v)
+    {
+        var list = new List<string>();
+        int depth = 0, start = 0;
+        char quote = '\0';
+        for (int i = 0; i < v.Length; i++)
+        {
+            char c = v[i];
+            if (quote != '\0') { if (c == quote) quote = '\0'; continue; }
+            if (c is '"' or '\'') quote = c;
+            else if (c == '(') depth++;
+            else if (c == ')') depth--;
+            else if (c == ',' && depth == 0) { list.Add(v[start..i]); start = i + 1; }
+        }
+        list.Add(v[start..]);
+        return list;
+    }
+
+    /// <summary>Экранирование в строках CSS: \201C, \A, \" …</summary>
+    static string UnescapeCss(string s)
+    {
+        if (s.IndexOf('\\') < 0) return s;
+        var sb = new System.Text.StringBuilder();
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] != '\\' || i + 1 >= s.Length) { sb.Append(s[i]); continue; }
+            int j = i + 1, st = j;
+            while (j < s.Length && j - st < 6 && Uri.IsHexDigit(s[j])) j++;
+            if (j > st)
+            {
+                int cp = int.Parse(s[st..j], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+                if (cp == 0xA) sb.Append('\n');
+                else if (cp is > 0 and <= 0x10FFFF and not (>= 0xD800 and <= 0xDFFF)) sb.Append(char.ConvertFromUtf32(cp));
+                if (j < s.Length && s[j] == ' ') j++;
+                i = j - 1;
+            }
+            else { sb.Append(s[j]); i = j; }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Разбор значения content: строки, attr(), counter(), counters(), кавычки, url().</summary>
+    static List<(string Kind, string Value)> ParseContent(string v)
+    {
+        var parts = new List<(string, string)>();
+        int i = 0;
+        while (i < v.Length)
+        {
+            char c = v[i];
+            if (char.IsWhiteSpace(c)) { i++; continue; }
+            if (c is '"' or '\'')
+            {
+                int j = i + 1;
+                var sb = new System.Text.StringBuilder();
+                while (j < v.Length && v[j] != c)
+                {
+                    if (v[j] == '\\' && j + 1 < v.Length) { sb.Append(v[j]).Append(v[j + 1]); j += 2; continue; }
+                    sb.Append(v[j++]);
+                }
+                parts.Add(("string", UnescapeCss(sb.ToString())));
+                i = j + 1;
+                continue;
+            }
+            int st = i;
+            while (i < v.Length && (char.IsLetterOrDigit(v[i]) || v[i] is '-' or '_')) i++;
+            if (i == st) { i++; continue; }
+            string ident = v[st..i].ToLowerInvariant();
+            if (i < v.Length && v[i] == '(')
+            {
+                int depth = 0, a = i + 1;
+                for (; i < v.Length; i++)
+                {
+                    if (v[i] == '(') depth++;
+                    else if (v[i] == ')' && --depth == 0) break;
+                }
+                parts.Add((ident, v[a..Math.Min(i, v.Length)]));
+                i++;
+            }
+            else parts.Add((ident, ""));
+        }
+        return parts;
+    }
+
+    // =================================================================
+    //  Счётчики CSS (counter-reset / counter-set / counter-increment)
+    // =================================================================
+
+    readonly Dictionary<string, List<(Node Owner, int Value)>> _counters = new();
+
+    static IEnumerable<(string Name, int Value)> CounterPairs(string? v, int def)
+    {
+        if (string.IsNullOrWhiteSpace(v) || v.Trim() == "none") yield break;
+        var t = CssValues.Tokens(v);
+        for (int i = 0; i < t.Count; i++)
+        {
+            string name = t[i];
+            int val = def;
+            if (i + 1 < t.Count && int.TryParse(t[i + 1], out var x)) { val = x; i++; }
+            yield return (name, val);
+        }
+    }
+
+    void ApplyCounters(CssStyle s, Node scopeOwner)
+    {
+        foreach (var (name, val) in CounterPairs(s.CounterReset, 0))
+        {
+            if (!_counters.TryGetValue(name, out var list)) _counters[name] = list = [];
+            if (list.Count > 0 && list[^1].Owner == scopeOwner) list[^1] = (scopeOwner, val);
+            else list.Add((scopeOwner, val));
+        }
+        foreach (var (name, val) in CounterPairs(s.CounterSet, 0))
+        {
+            if (!_counters.TryGetValue(name, out var list) || list.Count == 0) _counters[name] = list = [(scopeOwner, 0)];
+            list[^1] = (list[^1].Owner, val);
+        }
+        foreach (var (name, val) in CounterPairs(s.CounterIncrement, 1))
+        {
+            if (!_counters.TryGetValue(name, out var list) || list.Count == 0) _counters[name] = list = [(scopeOwner, 0)];
+            list[^1] = (list[^1].Owner, list[^1].Value + val);
+        }
+    }
+
+    /// <summary>Закрывает области видимости счётчиков, созданных внутри элемента (в т.ч. его ::before/::after).</summary>
+    void PopCounters(Node owner)
+    {
+        foreach (var list in _counters.Values)
+            list.RemoveAll(x => x.Owner == owner);
+    }
+
+    static string CounterText(string style, int n)
+    {
+        string label = ListLabel(style.Trim().ToLowerInvariant(), n);
+        if (style is "decimal" or "decimal-leading-zero" or "lower-alpha" or "lower-latin" or "upper-alpha" or "upper-latin"
+            or "lower-roman" or "upper-roman" or "lower-greek" or "cyrillic-lower" or "cyrillic-upper")
+            label = label.TrimEnd('.', ')');
+        return label;
     }
 
     static bool IsExternalLink(string href) =>
         href.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || href.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
         || href.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase) || href.StartsWith("ftp://", StringComparison.OrdinalIgnoreCase);
 
-    static void AddMatches(StyleSheet sheet, Node n, List<(CssDecl, int)> output, int basePrio)
+    static void AddMatches(StyleSheet sheet, Node n, List<(CssDecl, int)> output, int basePrio, string? pseudo)
     {
         var matched = new List<(int Spec, int Order, List<CssDecl> Decls)>();
         foreach (var rule in sheet.Rules)
         {
             int best = -1;
             foreach (var sel in rule.Selectors)
-                if (sel.Specificity > best && sel.Matches(n)) best = sel.Specificity;
+                if (sel.PseudoElement == pseudo && sel.Specificity > best && sel.Matches(n)) best = sel.Specificity;
             if (best >= 0) matched.Add((best, rule.Order, rule.Decls));
         }
         foreach (var m in matched.OrderBy(m => m.Spec).ThenBy(m => m.Order))
@@ -430,6 +701,11 @@ public sealed partial class HtmlReader
                 };
                 break;
             case "box-sizing": s.BoxSizing = lv; break;
+            case "content": s.Content = v; break;
+            case "counter-reset": s.CounterReset = v; break;
+            case "counter-increment": s.CounterIncrement = v; break;
+            case "counter-set": s.CounterSet = v; break;
+            case "quotes": s.Quotes = v; break;
             case "float": s.Float = lv switch { "left" or "inline-start" => "left", "right" or "inline-end" => "right", _ => null }; break;
             case "clear": s.Clear = lv switch { "left" or "right" or "both" => lv, "inline-start" => "left", "inline-end" => "right", _ => null }; break;
             case "position": s.Position = lv switch { "sticky" => "relative", "relative" or "absolute" or "fixed" => lv, _ => "static" }; break;
@@ -836,10 +1112,20 @@ public sealed partial class HtmlReader
             list.Counter++;
             if (int.TryParse(n.Attr("value"), out var val)) list.Counter = val;
             string label = ListLabel(s.ListStyleType, list.Counter);
+            // ::marker — цвет/шрифт/содержимое маркера
+            var ms = s;
+            var markerDecls = CollectDecls(n, "marker");
+            if (markerDecls.Count > 0)
+            {
+                ms = s.InheritFrom();
+                ApplyAll(ms, s, markerDecls);
+                if (ms.Content is { } mc && mc.Trim() is not ("normal" or ""))
+                    label = mc.Trim() == "none" ? "" : string.Concat(ParseContent(mc).Where(x => x.Kind == "string").Select(x => x.Value));
+            }
             if (label.Length > 0)
             {
                 f.PendingLabel = label;
-                var ls = ToTextStyle(s) with { Underline = false, Strike = false, Link = null, Background = null };
+                var ls = ToTextStyle(ms) with { Underline = false, Strike = false, Link = null, Background = null };
                 f.LabelStyle = ls;
             }
         }

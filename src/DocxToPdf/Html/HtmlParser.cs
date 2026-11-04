@@ -15,6 +15,8 @@ public sealed class Node
 
     public bool IsText => Tag == "#text";
     public bool IsElement => Tag.Length > 0 && Tag[0] != '#';
+    /// <summary>Сгенерированный узел ::before / ::after.</summary>
+    public bool IsPseudo => Tag.StartsWith("::", StringComparison.Ordinal);
     public string? Attr(string name) => Attrs.TryGetValue(name, out var v) ? v : null;
     public IEnumerable<string> Classes => (Attr("class") ?? "").Split(' ', '\t', '\n', '\r', '\f').Where(c => c.Length > 0);
 
@@ -25,7 +27,7 @@ public sealed class Node
         foreach (var c in Parent.Children)
         {
             if (c == this) return i;
-            if (c.IsElement) i++;
+            if (c.IsElement && !c.IsPseudo) i++;
         }
         return i;
     }

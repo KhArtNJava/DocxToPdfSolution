@@ -29,7 +29,7 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 | `Layout/BlockLayout.cs` | Разбиение на строки, табуляция, выравнивание, межстрочный интервал, таблицы |
 | `Layout/Paginator.cs` | Разбивка на страницы, keepNext, висячие строки, разрыв строк таблиц, повтор шапки, колонтитулы |
 | `Html/HtmlParser.cs` | Терпимый к ошибкам HTML-парсер (неявное закрытие p/li/td/tr…, сущности, raw-text теги) |
-| `Html/Css.cs` | CSS: правила, селекторы (тег, .класс, #id, [атрибут], потомок, `>`, `+`, `~`, :first-child), специфичность, @page, @media print, разбор длин и цветов |
+| `Html/Css.cs` | CSS: правила, селекторы и псевдоклассы, специфичность, @page, @media print, длины, цвета, `calc()`, `var()` |
 | `Html/HtmlLayoutModes.cs` | float, position (relative/absolute/fixed), flexbox, grid |
 | `Html/HtmlReader.cs` | Каскад стилей (UA-стили → атрибуты → CSS → style=""), перевод HTML в модель документа: абзацы, списки, таблицы, изображения |
 | `Pdf/PdfDocument.cs` | Запись PDF 1.7: Type0/CIDFontType2 + Identity-H, ToUnicode, FlateDecode, изображения с SMask, ссылки |
@@ -70,6 +70,16 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - **grid**: `grid-template-columns/rows` (px, %, `fr`, `auto`, `minmax()`, `fit-content()`, `repeat(N | auto-fill | auto-fit, …)`),
   `gap`, `grid-column/grid-row` (`span N`, `a / b`, отрицательные линии), `grid-area` с номерами линий, авторазмещение
 - Блоки с боковыми рамками или заданной высотой выводятся рамкой целиком (с разрывом между страницами)
+- **Селекторы**: тег, `.класс`, `#id`, атрибуты (`=`, `~=`, `|=`, `^=`, `$=`, `*=`), комбинаторы (пробел, `>`, `+`, `~`),
+  `:nth-child()`, `:nth-last-child()`, `:nth-of-type()`, `:nth-last-of-type()` (`odd`, `even`, `an+b`),
+  `:first/last/only-child`, `:first/last/only-of-type`, `:not()`, `:is()`, `:where()`, `:has()`, `:empty`, `:root`,
+  `:lang()`, `:link`, `:checked`, `:disabled`; специфичность по стандарту (`:where` — нулевая)
+- **`::before` / `::after`** (и `:before`/`:after`): `content` со строками (включая `\201C`, `\A`), `attr()`,
+  `counter()`, `counters()`, `open-/close-quote` (кавычки по `lang`: «» для ru), `url()`; псевдоэлементы могут быть
+  блочными, flex-элементами, позиционированными. **`::marker`** — цвет, шрифт и содержимое маркера списка
+- **Счётчики**: `counter-reset`, `counter-increment`, `counter-set` с областями видимости (многоуровневая нумерация)
+- **CSS-переменные**: `--имя` (наследуются, задаются в `:root`, классах, `style=""`), `var(--x, запасное)` с вложенностью
+- **`calc()`**, `min()`, `max()`, `clamp()` с любыми единицами (px, pt, em, rem, %, …) в любых длинах
 
 ## Ограничения
 
@@ -78,11 +88,13 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - Нет колонок, сносок, примечаний, RTL и сложного шейпинга (арабский, индийские письменности), кернинга и автопереносов
 - Только TrueType-контуры (OTF с CFF пропускаются)
 - Условное форматирование стилей таблиц (firstRow, banded rows) не применяется
-- HTML: нет JavaScript, SVG, псевдоэлементов (`::before`), `:nth-child`, CSS-переменных, `calc()`, `transform`
+- HTML: нет JavaScript, SVG, `transform`, `::first-letter`/`::first-line`, рамок у строчных элементов;
+  динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
 - float: таблица рядом с плавающим блоком размещается ниже него; float выше страницы выводится в потоке;
   группа «float + обтекающий текст» не разрывается между страницами
 - absolute внутри relative-предка привязывается к верху предка (`bottom` — приближённо); flex/grid-контейнеры
   выводятся как таблицы без рамок, поэтому `align-content`, `grid-template-areas` (имена) и именованные линии не поддерживаются
 
 Примеры: `src/DocxToPdf/samples/sample.docx` → `sample.pdf`, `sample.html` → `sample-html.pdf`,
-`layout.html` → `layout.pdf` (float, flex, grid, position).
+`layout.html` → `layout.pdf` (float, flex, grid, position), `css-features.html` → `css-features.pdf`
+(переменные, calc, ::before/::after, счётчики, :nth-child).

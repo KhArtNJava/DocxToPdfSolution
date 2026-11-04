@@ -13,9 +13,12 @@ public sealed class CompoundSelector
     public string? Tag;
     public string? Id;
     public List<string> Classes = [];
-    public List<(string Name, string? Value)> AttrConds = [];
-    public bool FirstChild, LastChild;
+    public List<(string Name, string Op, string? Value)> AttrConds = [];
+    /// <summary>Псевдоклассы (:first-child, :nth-child(…), :not(…) …) как условия.</summary>
+    public List<Func<Node, bool>> Conditions = [];
+    public string? PseudoElement;           // before | after
     public bool Unsupported;
+    public int ExtraSpecificity;            // вклад псевдоклассов
     public char Combinator = ' '; // связь с предыдущим (левым) селектором: ' ' — потомок, '>' — ребёнок, '+' — соседний
 }
 
@@ -23,6 +26,7 @@ public sealed class Selector
 {
     public List<CompoundSelector> Parts = [];
     public int Specificity;
+    public string? PseudoElement => Parts.Count > 0 ? Parts[^1].PseudoElement : null;
 
     public bool Matches(Node n) => MatchFrom(n, Parts.Count - 1);
 
@@ -48,21 +52,20 @@ public sealed class Selector
 
     static Node? ParentElement(Node n) => n.Parent is { IsElement: true } p ? p : null;
 
-    static Node? PrevElement(Node n)
+    /// <summary>Соседи-элементы (без текста и сгенерированных ::before/::after).</summary>
+    public static List<Node> Siblings(Node n) =>
+        n.Parent == null ? [n] : n.Parent.Children.Where(c => c.IsElement && !c.IsPseudo).ToList();
+
+    public static Node? PrevElement(Node n)
     {
-        if (n.Parent == null) return null;
-        Node? prev = null;
-        foreach (var c in n.Parent.Children)
-        {
-            if (c == n) return prev;
-            if (c.IsElement) prev = c;
-        }
-        return null;
+        var sib = Siblings(n);
+        int i = sib.IndexOf(n);
+        return i > 0 ? sib[i - 1] : null;
     }
 
     static bool MatchCompound(Node n, CompoundSelector c)
     {
-        if (c.Unsupported || !n.IsElement) return false;
+        if (c.Unsupported || !n.IsElement || n.IsPseudo) return false;
         if (c.Tag != null && c.Tag != "*" && c.Tag != n.Tag) return false;
         if (c.Id != null && n.Attr("id") != c.Id) return false;
         if (c.Classes.Count > 0)
@@ -70,13 +73,24 @@ public sealed class Selector
             var cls = n.Classes.ToHashSet();
             if (!c.Classes.All(cls.Contains)) return false;
         }
-        foreach (var (name, value) in c.AttrConds)
+        foreach (var (name, op, value) in c.AttrConds)
         {
             var v = n.Attr(name);
-            if (v == null || (value != null && v != value)) return false;
+            if (v == null) return false;
+            if (value == null) continue;
+            bool ok = op switch
+            {
+                "~=" => v.Split(' ', StringSplitOptions.RemoveEmptyEntries).Contains(value),
+                "|=" => v == value || v.StartsWith(value + "-"),
+                "^=" => value.Length > 0 && v.StartsWith(value),
+                "$=" => value.Length > 0 && v.EndsWith(value),
+                "*=" => value.Length > 0 && v.Contains(value),
+                _ => v == value
+            };
+            if (!ok) return false;
         }
-        if (c.FirstChild && PrevElement(n) != null) return false;
-        if (c.LastChild && n.Parent != null && n.Parent.Children.LastOrDefault(x => x.IsElement) != n) return false;
+        foreach (var cond in c.Conditions)
+            if (!cond(n)) return false;
         return true;
     }
 }
@@ -150,7 +164,7 @@ public sealed class StyleSheet
             var decls = ParseDeclarations(css[(open + 1)..close]);
             i = close + 1;
             var rule = new CssRule { Decls = decls, Order = _order++ };
-            foreach (var s in selText.Split(','))
+            foreach (var s in SplitTopLevel(selText, ','))
             {
                 var sel = ParseSelector(s.Trim());
                 if (sel != null) rule.Selectors.Add(sel);
@@ -203,8 +217,9 @@ public sealed class StyleSheet
         yield return s[start..];
     }
 
-    static Selector? ParseSelector(string s)
+    public static Selector? ParseSelector(string s)
     {
+        s = s.Trim();
         if (s.Length == 0) return null;
         var sel = new Selector();
         int i = 0;
@@ -227,21 +242,41 @@ public sealed class StyleSheet
                     if (end < 0) end = s.Length - 1;
                     string body = s[(i + 1)..end];
                     int eq = body.IndexOf('=');
-                    if (eq < 0) c.AttrConds.Add((body.Trim().ToLowerInvariant(), null));
-                    else if (eq > 0 && body[eq - 1] is '~' or '|' or '^' or '$' or '*') c.Unsupported = true;
-                    else c.AttrConds.Add((body[..eq].Trim().ToLowerInvariant(), body[(eq + 1)..].Trim().Trim('"', '\'')));
+                    if (eq < 0) c.AttrConds.Add((body.Trim().ToLowerInvariant(), "", null));
+                    else
+                    {
+                        string op = eq > 0 && body[eq - 1] is '~' or '|' or '^' or '$' or '*' ? body.Substring(eq - 1, 2) : "=";
+                        string name = body[..(op == "=" ? eq : eq - 1)].Trim().ToLowerInvariant();
+                        string val = body[(eq + 1)..].Trim();
+                        if (val.EndsWith(" i") || val.EndsWith(" s")) val = val[..^2].Trim();
+                        c.AttrConds.Add((name, op, val.Trim('"', '\'')));
+                    }
                     i = end + 1;
                 }
                 else if (ch == ':')
                 {
                     i++;
-                    if (i < s.Length && s[i] == ':') i++;
-                    string pseudo = ReadIdent(s, ref i).ToLowerInvariant();
-                    if (i < s.Length && s[i] == '(') { int end = s.IndexOf(')', i); i = end < 0 ? s.Length : end + 1; c.Unsupported = true; }
-                    if (pseudo == "first-child") c.FirstChild = true;
-                    else if (pseudo == "last-child") c.LastChild = true;
-                    else if (pseudo is "link" or "visited" or "root") { }
-                    else c.Unsupported = true;
+                    bool element = false;
+                    if (i < s.Length && s[i] == ':') { element = true; i++; }
+                    string name = ReadIdent(s, ref i).ToLowerInvariant();
+                    string? arg = null;
+                    if (i < s.Length && s[i] == '(')
+                    {
+                        int depth = 0, st = i + 1;
+                        for (; i < s.Length; i++)
+                        {
+                            if (s[i] == '(') depth++;
+                            else if (s[i] == ')' && --depth == 0) break;
+                        }
+                        arg = s[st..Math.Min(i, s.Length)];
+                        i++;
+                    }
+                    if (element || name is "before" or "after" or "first-line" or "first-letter")
+                    {
+                        if (name is "before" or "after" or "marker") c.PseudoElement = name;
+                        else c.Unsupported = true;   // ::first-letter, ::marker, ::selection …
+                    }
+                    else AddPseudoClass(c, name, arg);
                 }
                 else if (ch == '*') { c.Tag = "*"; i++; }
                 else c.Tag = ReadIdent(s, ref i).ToLowerInvariant();
@@ -249,15 +284,128 @@ public sealed class StyleSheet
             sel.Parts.Add(c);
         }
         if (sel.Parts.Count == 0) return null;
-        int a = 0, b = 0, d = 0;
+        int a2 = 0, b2 = 0, d2 = 0, extra = 0;
         foreach (var p in sel.Parts)
         {
-            if (p.Id != null) a++;
-            b += p.Classes.Count + p.AttrConds.Count + (p.FirstChild ? 1 : 0) + (p.LastChild ? 1 : 0);
-            if (p.Tag is not (null or "*")) d++;
+            if (p.Id != null) a2++;
+            b2 += p.Classes.Count + p.AttrConds.Count;
+            if (p.Tag is not (null or "*")) d2++;
+            if (p.PseudoElement != null) d2++;
+            extra += p.ExtraSpecificity;
         }
-        sel.Specificity = a * 10000 + b * 100 + d;
+        sel.Specificity = a2 * 10000 + b2 * 100 + d2 + extra;
         return sel;
+    }
+
+    static List<Selector> ParseSelectorList(string? s) =>
+        s == null ? [] : SplitTopLevel(s, ',').Select(ParseSelector).Where(x => x != null).Cast<Selector>().ToList();
+
+    /// <summary>Разбор "an+b" (odd, even, 3, 2n+1, -n+3 …).</summary>
+    static (int A, int B)? ParseNth(string? arg)
+    {
+        if (arg == null) return null;
+        string t = arg.Replace(" ", "").ToLowerInvariant();
+        int of = t.IndexOf("of", StringComparison.Ordinal);
+        if (of > 0) t = t[..of];
+        if (t == "odd") return (2, 1);
+        if (t == "even") return (2, 0);
+        int n = t.IndexOf('n');
+        if (n < 0) return int.TryParse(t, out var b0) ? (0, b0) : null;
+        string ap = t[..n];
+        int a = ap switch { "" or "+" => 1, "-" => -1, _ => int.TryParse(ap, out var av) ? av : 1 };
+        string bp = t[(n + 1)..];
+        int b = bp.Length == 0 ? 0 : int.TryParse(bp, out var bv) ? bv : 0;
+        return (a, b);
+    }
+
+    static bool NthMatch((int A, int B) f, int k) =>
+        f.A == 0 ? k == f.B : (k - f.B) % f.A == 0 && (k - f.B) / f.A >= 0;
+
+    static void AddPseudoClass(CompoundSelector c, string name, string? arg)
+    {
+        void Add(Func<Node, bool> f, int spec = 100) { c.Conditions.Add(f); c.ExtraSpecificity += spec; }
+        static List<Node> OfType(Node n) => Selector.Siblings(n).Where(x => x.Tag == n.Tag).ToList();
+
+        switch (name)
+        {
+            case "first-child": Add(n => Selector.Siblings(n).FirstOrDefault() == n); break;
+            case "last-child": Add(n => Selector.Siblings(n).LastOrDefault() == n); break;
+            case "only-child": Add(n => Selector.Siblings(n).Count == 1); break;
+            case "first-of-type": Add(n => OfType(n).FirstOrDefault() == n); break;
+            case "last-of-type": Add(n => OfType(n).LastOrDefault() == n); break;
+            case "only-of-type": Add(n => OfType(n).Count == 1); break;
+            case "nth-child" or "nth-last-child" or "nth-of-type" or "nth-last-of-type":
+            {
+                var f = ParseNth(arg);
+                if (f == null) { c.Unsupported = true; break; }
+                bool last = name.Contains("last"), ofType = name.EndsWith("of-type");
+                Add(n =>
+                {
+                    var list = ofType ? OfType(n) : Selector.Siblings(n);
+                    int idx = list.IndexOf(n);
+                    if (idx < 0) return false;
+                    int k = last ? list.Count - idx : idx + 1;
+                    return NthMatch(f.Value, k);
+                });
+                break;
+            }
+            case "root": Add(n => n.Tag == "html" || n.Parent?.Tag == "#root" && n.Parent.Children.Count(x => x.IsElement) == 1); break;
+            case "empty": Add(n => n.Children.All(x => x.IsPseudo || (x.IsText && x.Text.Length == 0))); break;
+            case "link" or "any-link": Add(n => n.Tag is "a" or "area" && n.Attr("href") != null); break;
+            case "checked": Add(n => n.Attr("checked") != null || n.Attr("selected") != null); break;
+            case "disabled": Add(n => n.Attr("disabled") != null); break;
+            case "enabled": Add(n => n.Tag is "input" or "button" or "select" or "textarea" && n.Attr("disabled") == null); break;
+            case "required": Add(n => n.Attr("required") != null); break;
+            case "optional": Add(n => n.Tag is "input" or "select" or "textarea" && n.Attr("required") == null); break;
+            case "read-only": Add(n => n.Attr("readonly") != null); break;
+            case "lang":
+            {
+                string lang = (arg ?? "").Trim().Trim('"', '\'').ToLowerInvariant();
+                Add(n =>
+                {
+                    for (var x = n; x != null; x = x.Parent)
+                        if (x.Attr("lang") is { } l) return l.ToLowerInvariant() == lang || l.ToLowerInvariant().StartsWith(lang + "-");
+                    return false;
+                });
+                break;
+            }
+            case "not":
+            {
+                var list = ParseSelectorList(arg);
+                if (list.Count == 0) { c.Unsupported = true; break; }
+                Add(n => !list.Any(sel => sel.Matches(n)), list.Max(x => x.Specificity));
+                break;
+            }
+            case "is" or "matches" or "-webkit-any" or "-moz-any" or "where":
+            {
+                var list = ParseSelectorList(arg);
+                if (list.Count == 0) { c.Unsupported = true; break; }
+                Add(n => list.Any(sel => sel.Matches(n)), name == "where" ? 0 : list.Max(x => x.Specificity));
+                break;
+            }
+            case "has":
+            {
+                // Упрощённо: относительные селекторы ("> a", "+ b") трактуются как поиск среди потомков/соседей
+                string t = (arg ?? "").Trim();
+                char rel = t.Length > 0 && t[0] is '>' or '+' or '~' ? t[0] : ' ';
+                var list = ParseSelectorList(rel == ' ' ? t : t[1..]);
+                if (list.Count == 0) { c.Unsupported = true; break; }
+                Add(n =>
+                {
+                    IEnumerable<Node> cand = rel switch
+                    {
+                        '>' => n.Children.Where(x => x.IsElement),
+                        '+' => Selector.Siblings(n).SkipWhile(x => x != n).Skip(1).Take(1),
+                        '~' => Selector.Siblings(n).SkipWhile(x => x != n).Skip(1),
+                        _ => n.Descendants().Where(x => x.IsElement)
+                    };
+                    return cand.Any(x => list.Any(sel => sel.Matches(x)));
+                }, list.Max(x => x.Specificity));
+                break;
+            }
+            case "scope": Add(n => n.Tag == "html"); break;
+            default: c.Unsupported = true; break;   // :hover, :focus, :visited … в печати не выполняются
+        }
     }
 
     static string ReadIdent(string s, ref int i)
@@ -294,6 +442,8 @@ public sealed class CssStyle
     public int VertAlign;
     public Rgb? TextBackground;
     public bool Hidden;     // visibility: hidden
+    public Dictionary<string, string>? Vars;   // пользовательские свойства (--x), наследуются
+    public string? Quotes;
 
     // Ненаследуемые
     public string Display = "inline";
@@ -328,6 +478,10 @@ public sealed class CssStyle
     public string? GridTemplateColumns, GridTemplateRows;
     public string? GridColumnStart, GridColumnEnd, GridRowStart, GridRowEnd;
 
+    // Генерируемое содержимое и счётчики
+    public string? Content;
+    public string? CounterReset, CounterIncrement, CounterSet;
+
     public CssStyle InheritFrom()
     {
         return new CssStyle
@@ -335,7 +489,7 @@ public sealed class CssStyle
             FontFamily = FontFamily, FontSize = FontSize, Bold = Bold, Italic = Italic, Underline = Underline, Strike = Strike,
             Upper = Upper, Lower = Lower, Color = Color, TextAlign = TextAlign, LineHeightFactor = LineHeightFactor, LineHeightPt = LineHeightPt,
             WhiteSpace = WhiteSpace, TextIndent = TextIndent, ListStyleType = ListStyleType, Link = Link, VertAlign = VertAlign,
-            TextBackground = TextBackground, Hidden = Hidden,
+            TextBackground = TextBackground, Hidden = Hidden, Vars = Vars, Quotes = Quotes,
         };
     }
 }
@@ -351,6 +505,9 @@ public static class CssValues
         if (string.IsNullOrWhiteSpace(v)) return null;
         v = v.Trim().ToLowerInvariant();
         if (v is "0" or "auto" or "none" or "normal" or "initial" or "inherit") return v == "0" ? 0 : null;
+        if (v.Contains('(') && (v.StartsWith("calc(") || v.StartsWith("min(") || v.StartsWith("max(") || v.StartsWith("clamp(")
+            || v.StartsWith("-webkit-calc(")))
+            return Calc(v.StartsWith("-webkit-") ? v[8..] : v, fontSize, percentBase);
         if (v is "thin") return 0.75;
         if (v is "medium") return 2.25;
         if (v is "thick") return 3.75;
@@ -374,6 +531,165 @@ public static class CssValues
             "vw" or "vh" => num / 100 * 500,
             _ => null
         };
+    }
+
+    // ---------------------------------------------------------------
+    //  calc() / min() / max() / clamp()
+    // ---------------------------------------------------------------
+
+    /// <summary>Вычисляет выражение CSS с единицами измерения; результат в пунктах.</summary>
+    public static double? Calc(string expr, double fontSize, double percentBase)
+    {
+        var p = new CalcParser(expr, fontSize, percentBase);
+        try
+        {
+            var r = p.ParseExpr();
+            p.SkipWs();
+            return p.AtEnd ? r.Value : null;
+        }
+        catch { return null; }
+    }
+
+    readonly record struct CalcValue(double Value, bool HasUnit);
+
+    sealed class CalcParser(string s, double fontSize, double percentBase)
+    {
+        int _i;
+        public bool AtEnd => _i >= s.Length;
+        public void SkipWs() { while (_i < s.Length && char.IsWhiteSpace(s[_i])) _i++; }
+
+        public CalcValue ParseExpr()
+        {
+            var left = ParseTerm();
+            while (true)
+            {
+                SkipWs();
+                if (_i >= s.Length || s[_i] is not ('+' or '-')) return left;
+                char op = s[_i++];
+                var right = ParseTerm();
+                left = new CalcValue(op == '+' ? left.Value + right.Value : left.Value - right.Value, left.HasUnit || right.HasUnit);
+            }
+        }
+
+        CalcValue ParseTerm()
+        {
+            var left = ParseFactor();
+            while (true)
+            {
+                SkipWs();
+                if (_i >= s.Length || s[_i] is not ('*' or '/')) return left;
+                char op = s[_i++];
+                var right = ParseFactor();
+                if (op == '*') left = new CalcValue(left.Value * right.Value, left.HasUnit || right.HasUnit);
+                else left = new CalcValue(right.Value == 0 ? 0 : left.Value / right.Value, left.HasUnit);
+            }
+        }
+
+        List<CalcValue> Args()
+        {
+            var list = new List<CalcValue>();
+            while (true)
+            {
+                list.Add(ParseExpr());
+                SkipWs();
+                if (_i < s.Length && s[_i] == ',') { _i++; continue; }
+                if (_i < s.Length && s[_i] == ')') { _i++; return list; }
+                throw new FormatException();
+            }
+        }
+
+        CalcValue ParseFactor()
+        {
+            SkipWs();
+            if (_i >= s.Length) throw new FormatException();
+            if (s[_i] == '(') { _i++; var v = ParseExpr(); SkipWs(); _i++; return v; }
+            if (s[_i] == '-' && _i + 1 < s.Length && (s[_i + 1] == '(' || char.IsLetter(s[_i + 1])))
+            {
+                _i++;
+                var v = ParseFactor();
+                return v with { Value = -v.Value };
+            }
+            if (char.IsLetter(s[_i]))
+            {
+                int st = _i;
+                while (_i < s.Length && (char.IsLetter(s[_i]) || s[_i] == '-')) _i++;
+                string fn = s[st.._i];
+                if (_i < s.Length && s[_i] == '(')
+                {
+                    _i++;
+                    if (fn == "calc") { var v = ParseExpr(); SkipWs(); _i++; return v; }
+                    var args = Args();
+                    return fn switch
+                    {
+                        "min" => args.MinBy(a => a.Value),
+                        "max" => args.MaxBy(a => a.Value),
+                        "clamp" when args.Count == 3 => new CalcValue(Math.Max(args[0].Value, Math.Min(args[1].Value, args[2].Value)), true),
+                        _ => throw new FormatException()
+                    };
+                }
+                throw new FormatException();
+            }
+            int ns = _i;
+            if (s[_i] is '+' or '-') _i++;
+            while (_i < s.Length && (char.IsDigit(s[_i]) || s[_i] == '.')) _i++;
+            if (_i < s.Length && s[_i] is 'e' or 'E' && _i + 1 < s.Length && (char.IsDigit(s[_i + 1]) || s[_i + 1] is '-' or '+'))
+            {
+                _i += 2;
+                while (_i < s.Length && char.IsDigit(s[_i])) _i++;
+            }
+            double num = double.Parse(s[ns.._i], NumberStyles.Float, Inv);
+            int us = _i;
+            while (_i < s.Length && (char.IsLetter(s[_i]) || s[_i] == '%')) _i++;
+            string unit = s[us.._i];
+            if (unit.Length == 0) return new CalcValue(num, false);
+            double? v2 = Length(num.ToString("R", Inv) + unit, fontSize, percentBase);
+            if (v2 == null) throw new FormatException();
+            return new CalcValue(v2.Value, true);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    //  Переменные var(--x, fallback)
+    // ---------------------------------------------------------------
+
+    /// <summary>Подставляет значения пользовательских свойств; null — значение недействительно.</summary>
+    public static string? SubstituteVars(string value, IReadOnlyDictionary<string, string>? vars, int depth = 0)
+    {
+        if (depth > 20) return null;
+        int idx = value.IndexOf("var(", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return value;
+        var sb = new StringBuilder();
+        int pos = 0;
+        while (idx >= 0)
+        {
+            sb.Append(value, pos, idx - pos);
+            int st = idx + 4, d = 1, i = st;
+            for (; i < value.Length && d > 0; i++)
+            {
+                if (value[i] == '(') d++;
+                else if (value[i] == ')') d--;
+            }
+            if (d != 0) return null;
+            string inner = value[st..(i - 1)];
+            int comma = -1, dd = 0;
+            for (int k = 0; k < inner.Length; k++)
+            {
+                if (inner[k] == '(') dd++;
+                else if (inner[k] == ')') dd--;
+                else if (inner[k] == ',' && dd == 0) { comma = k; break; }
+            }
+            string name = (comma < 0 ? inner : inner[..comma]).Trim().ToLowerInvariant();
+            string? fallback = comma < 0 ? null : inner[(comma + 1)..].Trim();
+            string? replacement = null;
+            if (vars != null && vars.TryGetValue(name, out var v)) replacement = SubstituteVars(v, vars, depth + 1);
+            if (replacement == null && fallback != null) replacement = SubstituteVars(fallback, vars, depth + 1);
+            if (replacement == null) return null;
+            sb.Append(replacement);
+            pos = i;
+            idx = value.IndexOf("var(", pos, StringComparison.OrdinalIgnoreCase);
+        }
+        sb.Append(value, pos, value.Length - pos);
+        return sb.ToString();
     }
 
     static readonly Dictionary<string, string> NamedColors = new(StringComparer.OrdinalIgnoreCase)

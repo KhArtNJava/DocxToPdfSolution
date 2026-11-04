@@ -1,0 +1,50 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>CSS4</title>
+<style>
+ :root { --accent: #c0392b; --bg-soft: #fdf2f0; --gap: 8px; --pad: calc(var(--gap) * 1.5); --base: 10pt }
+ @page { size: A4; margin: 15mm }
+ body { font-family: Arial, sans-serif; font-size: var(--base); counter-reset: section }
+ h2 { color: var(--accent); font-size: calc(var(--base) * 1.4); counter-increment: section; counter-reset: sub; margin: 12pt 0 4pt }
+ h2::before { content: counter(section) ". "; }
+ h3 { font-size: calc(var(--base) + 1pt); margin: 6pt 0 2pt; counter-increment: sub }
+ h3::before { content: counter(section) "." counter(sub) " "; color: #888 }
+ .note { background: var(--bg-soft); padding: var(--pad); border-left: 4px solid var(--accent) }
+ .note::before { content: "\26A0  Внимание: "; font-weight: bold; color: var(--accent) }
+ a[href^="http"]::after { content: " (" attr(href) ")"; color: #888; font-size: 8pt }
+ q { font-style: italic }
+ .req::after { content: " *"; color: red }
+ .fallback { color: var(--missing, green) }
+ .badge::before { content: "NEW"; display: inline; background: var(--accent); color: #fff; padding: 0 3px; font-size: 7pt; font-weight: bold }
+ table { border-collapse: collapse; width: calc(100% - 40px); margin-left: 20px }
+ td, th { border: 1px solid #bbb; padding: 3px 6px }
+ tr:nth-child(even) td { background: #f2f2f2 }
+ tr:nth-child(3n+1) td:first-child { color: var(--accent); font-weight: bold }
+ td:last-child { text-align: right }
+ li:nth-child(odd) { color: #2a6 } li:first-child { font-weight: bold } li:nth-last-child(1) { text-decoration: underline }
+ li:not(.skip)::marker { color: red }
+ p:empty { display: none }
+ .items > span:nth-of-type(2n) { background: #ffd }
+ .items span:not(:first-child):not(:last-child) { border-bottom: 1px dotted #999 }
+ ol.toc { counter-reset: item; list-style: none; padding-left: 0 }
+ ol.toc li { counter-increment: item }
+ ol.toc li::before { content: counters(item, ".") ") "; color: #888 }
+ ol.toc ol { counter-reset: item; list-style: none; padding-left: 18px }
+ .box { width: min(300px, 50%); padding: clamp(2px, 1vw, 6px); border: 1px solid #999; margin-top: 6pt }
+ div:has(> img) { border: 2px solid #6a6 }
+</style></head><body>
+<h2>Переменные и calc()</h2>
+<div class="note">Блок с цветом и отступами из CSS-переменных; padding = calc(var(--gap) * 1.5).</div>
+<p class="fallback">Этот текст зелёный — var(--missing, green) с запасным значением.</p>
+<div class="box">Ширина min(300px, 50%), отступ clamp(…).</div>
+<table><tr><th>Позиция</th><th>Цена</th></tr><tr><td>Первая</td><td>10</td></tr><tr><td>Вторая</td><td>20</td></tr><tr><td>Третья</td><td>30</td></tr><tr><td>Четвёртая</td><td>40</td></tr><tr><td>Пятая</td><td>50</td></tr></table>
+<h2>Псевдоэлементы</h2>
+<h3>::before и ::after</h3>
+<p>Ссылка <a href="https://example.com/doc">на документ</a>, цитата: <q>генерируемые кавычки</q>, поле<span class="req">Имя</span>.</p>
+<p><span class="badge"></span> Значок, созданный через ::before.</p>
+<h3>Счётчики</h3>
+<ol class="toc"><li>Введение</li><li>Основная часть<ol><li>Теория</li><li>Практика</li></ol></li><li>Заключение</li></ol>
+<h2>Структурные псевдоклассы</h2>
+<ul><li>Первый (жирный, нечётный)</li><li>Второй</li><li>Третий (нечётный)</li><li class="skip">Четвёртый</li><li>Последний (подчёркнут)</li></ul>
+<p></p>
+<div class="items"><span>один</span> <span>два</span> <span>три</span> <span>четыре</span> <span>пять</span></div>
+<div style="margin-top:6pt"><img src="img.png" width="40"> div:has(&gt; img) — с зелёной рамкой</div>
+</body></html>
