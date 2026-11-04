@@ -25,6 +25,8 @@
 | t20_strict.docx | t1_text.docx в формате Strict OOXML (пространства имён purl.oclc.org) — результат должен совпадать с t1 |
 | t21.docx | группа фигур `wpg`, произвольный контур `custGeom`, рамка и ссылка у картинки, надписи в строке: вертикальный текст `vert270`, автоподбор высоты, поворот 30° (gen14.py; надписи дописываются в XML) |
 | t22.docx | фигуры star5/chevron/heart/plus/homePlate, текст в эллипсе (`anchor=ctr`), градиент, `schemeClr` + `lumMod`, `roundRect adj`, прозрачность и оттенки серого у картинки, `arcTo`, гистограмма (gen15.py) |
+| t23.docx | EMF и WMF (векторные, экспорт LibreOffice), TIFF: без сжатия, LZW, Deflate, PackBits, JPEG, G4, G3, 1 бит, палитра, серый, CMYK, RGBA (gen16.py; исходные файлы — в tests/images) |
+| t24.docx | EMF/WMF с растром, повёрнутым и жирным текстом (adv.svg → LibreOffice) |
 | t22_chart_*.docx | та же диаграмма как круговая, график, горизонтальные полосы с накоплением, области |
 
 Сгенерировать заново: `python3 gen.py && python3 gen2.py && python3 gen3.py && python3 gen4.py && python3 gen5.py && python3 gen6.py && python3 gen7.py && python3 gen8.py && python3 gen9.py && python3 gen10.py && python3 gen11.py && python3 gen12.py` (нужен python-docx).

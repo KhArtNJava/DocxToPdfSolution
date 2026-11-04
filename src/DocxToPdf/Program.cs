@@ -16,7 +16,7 @@ public static class Converter
         var ctx = new LayoutContext(doc, fonts);
         var paginator = new Paginator(ctx);
         var pages = paginator.Run();
-        var pdf = new PdfDocument { Title = doc.Title, Author = doc.Author, Subject = doc.Subject };
+        var pdf = new PdfDocument { Title = doc.Title, Author = doc.Author, Subject = doc.Subject, FontManager = fonts };
         Paginator.Render(pages, pdf, paginator.Destinations);
         foreach (var (name, (page, x, y)) in paginator.Destinations) pdf.Destinations[name] = (page, x, y);
         pdf.Save(output);

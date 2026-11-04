@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="260" viewBox="0 0 400 260">
+ <defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient></defs>
+ <rect x="10" y="10" width="150" height="80" fill="#ffc000" stroke="#000" stroke-width="3"/>
+ <ellipse cx="270" cy="50" rx="110" ry="40" fill="#5b9bd5" stroke="#1f3864" stroke-width="2" stroke-dasharray="8 4"/>
+ <path d="M20 240 C 80 120, 160 120, 200 240 Z" fill="#70ad47" stroke="#375623" stroke-width="2"/>
+ <polyline points="220,240 260,150 300,220 340,130 380,240" fill="none" stroke="#c00000" stroke-width="4"/>
+ <rect x="230" y="100" width="150" height="25" fill="url(#g)"/>
+ <text x="20" y="115" font-family="Liberation Sans" font-size="22" fill="#203864">Текст в EMF: Привет!</text>
+</svg>

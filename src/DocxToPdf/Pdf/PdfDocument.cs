@@ -58,6 +58,9 @@ public sealed class PdfDocument
         return pf;
     }
 
+    /// <summary>Шрифты для текста метафайлов (EMF/WMF).</summary>
+    public DocxToPdf.Fonts.FontManager? FontManager { get; set; }
+
     internal PdfImage? GetImage(string key, byte[] bytes, bool gray = false)
     {
         if (gray) key += "#gray";
@@ -415,6 +418,55 @@ public sealed class PdfCanvas
         _sb.Append("S Q\n");
     }
 
+    /// <summary>Шрифты документа (для текста метафайлов).</summary>
+    public DocxToPdf.Fonts.FontManager? FontProvider => _doc.FontManager;
+
+    /// <summary>Контур в координатах страницы (ось y вниз) для метафайлов.</summary>
+    public sealed class VectorPath
+    {
+        readonly PdfCanvas _c;
+        internal readonly StringBuilder Ops = new();
+        double _minX = double.MaxValue, _minY = double.MaxValue, _maxX = double.MinValue, _maxY = double.MinValue;
+        internal VectorPath(PdfCanvas c) => _c = c;
+        void B(double x, double y) { _minX = Math.Min(_minX, x); _minY = Math.Min(_minY, y); _maxX = Math.Max(_maxX, x); _maxY = Math.Max(_maxY, y); }
+        public void M(double x, double y) { B(x, y); Ops.Append($"{F(x)} {F(_c.Y(y))} m "); }
+        public void L(double x, double y) { B(x, y); Ops.Append($"{F(x)} {F(_c.Y(y))} l "); }
+        public void C(double x1, double y1, double x2, double y2, double x3, double y3)
+        {
+            B(x1, y1); B(x2, y2); B(x3, y3);
+            Ops.Append($"{F(x1)} {F(_c.Y(y1))} {F(x2)} {F(_c.Y(y2))} {F(x3)} {F(_c.Y(y3))} c ");
+        }
+        public void Z() => Ops.Append("h ");
+        public void Rect(double x, double y, double w, double h) { B(x, y); B(x + w, y + h); Ops.Append($"{F(x)} {F(_c.Y(y + h))} {F(w)} {F(h)} re "); }
+        public bool IsEmpty => Ops.Length == 0;
+        public (double X, double Y, double W, double H) Bounds() => IsEmpty ? (0, 0, 0, 0) : (_minX, _minY, _maxX - _minX, _maxY - _minY);
+    }
+
+    public VectorPath NewPath() => new(this);
+
+    /// <summary>Заливка и/или обводка контура (чётно-нечётное правило, пунктир, концы и стыки линий).</summary>
+    public void PaintPath(VectorPath p, Rgb? fill, Rgb? stroke, double lw, bool evenOdd, double[]? dash, int cap, int join)
+    {
+        if (Collecting > 0 || SkipGraphics || p.IsEmpty || (fill == null && stroke == null)) return;
+        _sb.Append("q ");
+        if (fill is { } f) _sb.Append($"{Color(f)} rg ");
+        if (stroke is { } st)
+        {
+            _sb.Append($"{F(lw)} w {Color(st)} RG {cap} J {join} j ");
+            if (dash is { Length: > 0 }) _sb.Append('[').Append(string.Join(' ', dash.Select(F))).Append("] 0 d ");
+        }
+        _sb.Append(p.Ops);
+        _sb.Append(fill != null && stroke != null ? (evenOdd ? "B*" : "B") : fill != null ? (evenOdd ? "f*" : "f") : "S");
+        _sb.Append(" Q\n");
+    }
+
+    /// <summary>Начинает обрезку по контуру (до EndClip).</summary>
+    public void BeginClip(VectorPath p, bool evenOdd)
+    {
+        if (Collecting > 0) return;
+        _sb.Append("q ").Append(p.IsEmpty ? "0 0 0 0 re " : p.Ops.ToString()).Append(evenOdd ? "W* n\n" : "W n\n");
+    }
+
     /// <summary>Закрашенный многоугольник (точки в координатах страницы, ось y вниз).</summary>
     public void FillPolygon(IReadOnlyList<(double X, double Y)> pts, Rgb color)
     {
@@ -680,6 +732,20 @@ public sealed class PdfCanvas
         double cropL, double cropT, double cropR, double cropB, double rotation, bool flipH, bool flipV, double opacity = 1, bool gray = false)
     {
         if (Collecting > 0 || SkipGraphics) return;
+        if (Metafile.IsMetafile(bytes))
+        {
+            // Метафайл с поворотом/отражением/обрезкой: преобразование вокруг центра, обрезка по видимой части
+            double ra = rotation * Math.PI / 180, fx = flipH ? -1 : 1, fy = flipV ? -1 : 1;
+            BeginTransform(cx, cy, Math.Cos(ra) * fx, Math.Sin(ra) * fx, -Math.Sin(ra) * fy, Math.Cos(ra) * fy, 0, 0);
+            if (opacity < 0.999) _sb.Append($"/{GState(opacity)} gs\n");
+            var vis = NewPath(); vis.Rect(cx - w / 2, cy - h / 2, w, h);
+            BeginClip(vis, false);
+            double fullW = w / (1 - cropL - cropR), fullH = h / (1 - cropT - cropB);
+            Metafile.Render(this, bytes, cx - w / 2 - cropL * fullW, cy - h / 2 - cropT * fullH, fullW, fullH);
+            EndClip();
+            EndTransform();
+            return;
+        }
         double a = -rotation * Math.PI / 180, cos = Math.Cos(a), sin = Math.Sin(a);
         double sx = flipH ? -1 : 1, sy = flipV ? -1 : 1;
         // Переход в систему рамки: начало в центре, ось Y вверх
@@ -901,6 +967,15 @@ public sealed class PdfCanvas
 
     public void Image(string key, byte[] bytes, double x, double y, double w, double h, double opacity = 1, bool gray = false)
     {
+        if (Metafile.IsMetafile(bytes))
+        {
+            // EMF/WMF — векторный вывод
+            if (Collecting > 0 || SkipGraphics) return;
+            if (opacity < 0.999) _sb.Append($"q /{GState(opacity)} gs\n");
+            Metafile.Render(this, bytes, x, y, w, h);
+            if (opacity < 0.999) _sb.Append("Q\n");
+            return;
+        }
         if (Collecting > 0) return;
         if (SkipGraphics) return;
         var img = _doc.GetImage(key, bytes, gray);

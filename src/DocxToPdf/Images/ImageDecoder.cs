@@ -13,6 +13,8 @@ public sealed class PdfImageData
     public byte[] Data = [];                   // для Flate — несжатые пиксели
     public byte[]? Alpha;                      // несжатый канал прозрачности (8 бит)
     public string? Decode;
+    /// <summary>Векторный метафайл (EMF/WMF): Data пусто, размер — собственный размер в пикселях 96 dpi.</summary>
+    public bool Metafile;
 }
 
 /// <summary>Декодеры JPEG (только заголовок), PNG, GIF и BMP без сторонних библиотек.</summary>
@@ -26,6 +28,9 @@ public static class ImageDecoder
             if (d.Length > 8 && d[0] == 0x89 && d[1] == 'P' && d[2] == 'N' && d[3] == 'G') return Png(d);
             if (d.Length > 6 && d[0] == 'G' && d[1] == 'I' && d[2] == 'F') return Gif(d);
             if (d.Length > 26 && d[0] == 'B' && d[1] == 'M') return Bmp(d);
+            if (Tiff.IsTiff(d)) return Tiff.Decode(d);
+            if (DocxToPdf.Pdf.Metafile.Size(d) is { } ms)
+                return new PdfImageData { Width = Math.Max(1, (int)Math.Round(ms.W / 0.75)), Height = Math.Max(1, (int)Math.Round(ms.H / 0.75)), Metafile = true };
         }
         catch { /* битое изображение */ }
         return null;
@@ -339,6 +344,14 @@ public static class ImageDecoder
                 switch (bpp)
                 {
                     case 24: b = d[srcRow + x * 3]; g = d[srcRow + x * 3 + 1]; r = d[srcRow + x * 3 + 2]; break;
+                    case 16:
+                    {
+                        int v = d[srcRow + x * 2] | d[srcRow + x * 2 + 1] << 8;
+                        bool rgb565 = compression == 3 && hdr >= 40 && BinaryPrimitives.ReadInt32LittleEndian(d.AsSpan(54)) == 0xF800;   // маски цветов — сразу после 40 байт заголовка
+                        if (rgb565) { r = (byte)((v >> 11 & 31) * 255 / 31); g = (byte)((v >> 5 & 63) * 255 / 63); b = (byte)((v & 31) * 255 / 31); }
+                        else { r = (byte)((v >> 10 & 31) * 255 / 31); g = (byte)((v >> 5 & 31) * 255 / 31); b = (byte)((v & 31) * 255 / 31); }
+                        break;
+                    }
                     case 32: b = d[srcRow + x * 4]; g = d[srcRow + x * 4 + 1]; r = d[srcRow + x * 4 + 2]; alpha![y * w + x] = d[srcRow + x * 4 + 3]; break;
                     case 8: case 4: case 1:
                     {
