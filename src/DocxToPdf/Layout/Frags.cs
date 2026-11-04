@@ -207,7 +207,7 @@ public sealed class LineFrag : Frag
         {
             var p = Pieces[i];
             double px = lx + p.X;
-            if (p.Kind == PieceKind.Image && p.Image is { } obj && (obj.Shape != null || obj.Content != null || obj.Children != null))
+            if (p.Kind == PieceKind.Image && p.Image is { } obj && (obj.Shape != null || obj.Content != null || obj.Children != null || obj.Chart != null))
             {
                 // Фигура, надпись или группа: рамка неповёрнутая, поворот вокруг центра
                 double sh = p.Ascent + p.Descent, sk = obj.Width > 0 ? p.Width / obj.Width : 1;
@@ -228,9 +228,9 @@ public sealed class LineFrag : Frag
                     {
                         double k = img.Width > 0 ? iw / img.Width : 1;
                         c.ImageGeometry(img.PartName, bytes, px + iw / 2, iy + ih / 2, img.FrameW * k, img.FrameH * k,
-                            img.CropL, img.CropT, img.CropR, img.CropB, img.Rotation, img.FlipH, img.FlipV);
+                            img.CropL, img.CropT, img.CropR, img.CropB, img.Rotation, img.FlipH, img.FlipV, img.Opacity, img.Grayscale);
                     }
-                    else c.Image(img.PartName, bytes, px, iy, iw, ih);
+                    else c.Image(img.PartName, bytes, px, iy, iw, ih, img.Opacity, img.Grayscale);
                     if (clip) c.EndClip();
                 }
                 if (tr != null) TransformPainter.Paint(c, px, iy, iw, ih, tr, DrawImg);
@@ -320,7 +320,7 @@ public sealed class LineFrag : Frag
         if (obj.Shape != null)
         {
             c.Shape(obj.Shape, cx, cy, fw, fh, obj.Rotation, obj.FlipH, obj.FlipV);
-            return;
+            if (obj.Built == null) return;
         }
         bool rotated = obj.Rotation != 0 || obj.FlipH || obj.FlipV;
         if (rotated)
@@ -338,16 +338,19 @@ public sealed class LineFrag : Frag
         }
         else if (obj.Built is Frag f)
         {
-            if (Math.Abs(k - 1) > 0.001) c.BeginTransform(cx - fw / 2, cy - fh / 2, k, 0, 0, k, 0, 0);
-            f.Draw(c, cx - fw / 2, cy - fh / 2);
+            // Текст в фигуре: по вертикали сверху, по центру или снизу (bodyPr anchor)
+            double dy = obj.VAnchor switch { "ctr" => (fh - f.Height * k) / 2, "b" => fh - f.Height * k, _ => 0 };
+            double ox = cx - fw / 2, oy = cy - fh / 2 + Math.Max(0, dy);
+            if (Math.Abs(k - 1) > 0.001) c.BeginTransform(ox, oy, k, 0, 0, k, 0, 0);
+            f.Draw(c, ox, oy);
             if (Math.Abs(k - 1) > 0.001) c.EndTransform();
         }
         else if (doc.Media.TryGetValue(obj.PartName, out var bytes))
         {
             // Картинка внутри группы
             if (obj.CropL != 0 || obj.CropT != 0 || obj.CropR != 0 || obj.CropB != 0)
-                c.ImageGeometry(obj.PartName, bytes, cx, cy, fw, fh, obj.CropL, obj.CropT, obj.CropR, obj.CropB, 0, false, false);
-            else c.Image(obj.PartName, bytes, cx - fw / 2, cy - fh / 2, fw, fh);
+                c.ImageGeometry(obj.PartName, bytes, cx, cy, fw, fh, obj.CropL, obj.CropT, obj.CropR, obj.CropB, 0, false, false, obj.Opacity, obj.Grayscale);
+            else c.Image(obj.PartName, bytes, cx - fw / 2, cy - fh / 2, fw, fh, obj.Opacity, obj.Grayscale);
             if (obj.Border is { } b) c.Shape(new ShapeSpec { Stroke = b.Color, StrokeWidth = b.Width }, cx, cy, fw, fh, 0, false, false);
         }
         if (rotated) c.EndTransform();

@@ -98,22 +98,85 @@ public sealed partial class DocxReader
 
     static double Emu(string? v) => double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var e) ? e / 12700.0 : 0;
 
+    /// <summary>Цвета схемы темы (заполняются при чтении theme1.xml).</summary>
+    [ThreadStatic] internal static Dictionary<string, Rgb>? ThemeColors;
+
+    /// <summary>
+    /// Цвет DrawingML (srgbClr, sysClr, schemeClr, prstClr) с модификаторами lumMod/lumOff, shade, tint.
+    /// Принимает элемент-контейнер (solidFill, fillRef, gs …).
+    /// </summary>
     static Rgb? DrawingColor(XElement? fill)
     {
         if (fill == null) return null;
-        var c = fill.Element(A + "srgbClr");
-        if (c != null) return Rgb.Parse((string?)c.Attribute("val"));
-        var sys = fill.Element(A + "sysClr");
-        if (sys != null) return Rgb.Parse((string?)sys.Attribute("lastClr"));
-        if (fill.Element(A + "schemeClr") is { } sc)
-            return ((string?)sc.Attribute("val")) switch
+        var c = fill.Elements().FirstOrDefault(e => e.Name.LocalName is "srgbClr" or "sysClr" or "schemeClr" or "prstClr" or "scrgbClr");
+        if (c == null) return null;
+        Rgb? baseColor = c.Name.LocalName switch
+        {
+            "srgbClr" => Rgb.Parse((string?)c.Attribute("val")),
+            "sysClr" => Rgb.Parse((string?)c.Attribute("lastClr")) ?? ((string?)c.Attribute("val") == "window" ? Rgb.White : Rgb.Black),
+            "schemeClr" => SchemeColor((string?)c.Attribute("val")),
+            "prstClr" => (string?)c.Attribute("val") switch
             {
-                "bg1" or "lt1" => Rgb.White, "tx1" or "dk1" => Rgb.Black,
-                "accent1" => Rgb.Parse("4472C4"), "accent2" => Rgb.Parse("ED7D31"), "accent3" => Rgb.Parse("A5A5A5"),
-                "accent4" => Rgb.Parse("FFC000"), "accent5" => Rgb.Parse("5B9BD5"), "accent6" => Rgb.Parse("70AD47"),
-                _ => null
-            };
-        return null;
+                "black" => Rgb.Black, "white" => Rgb.White, "red" => new Rgb(1, 0, 0), "green" => new Rgb(0, 0.5, 0), "blue" => new Rgb(0, 0, 1),
+                "yellow" => new Rgb(1, 1, 0), "gray" => new Rgb(0.5, 0.5, 0.5), _ => Rgb.Black
+            },
+            "scrgbClr" => new Rgb(EmuRaw(c.Attribute("r")) / 100000, EmuRaw(c.Attribute("g")) / 100000, EmuRaw(c.Attribute("b")) / 100000),
+            _ => null
+        };
+        if (baseColor is not { } col) return null;
+        return ApplyColorMods(col, c);
+    }
+
+    static Rgb? SchemeColor(string? name)
+    {
+        name = name switch { "tx1" => "dk1", "bg1" => "lt1", "tx2" => "dk2", "bg2" => "lt2", "phClr" => "accent1", _ => name };
+        if (name != null && ThemeColors != null && ThemeColors.TryGetValue(name, out var t)) return t;
+        return name switch
+        {
+            "lt1" => Rgb.White, "dk1" => Rgb.Black, "dk2" => Rgb.Parse("44546A"), "lt2" => Rgb.Parse("E7E6E6"),
+            "accent1" => Rgb.Parse("4472C4"), "accent2" => Rgb.Parse("ED7D31"), "accent3" => Rgb.Parse("A5A5A5"),
+            "accent4" => Rgb.Parse("FFC000"), "accent5" => Rgb.Parse("5B9BD5"), "accent6" => Rgb.Parse("70AD47"),
+            "hlink" => Rgb.Parse("0563C1"), _ => null
+        };
+    }
+
+    /// <summary>Модификаторы цвета DrawingML: lumMod/lumOff (в HSL), shade, tint.</summary>
+    static Rgb ApplyColorMods(Rgb col, XElement clr)
+    {
+        double V(XElement e) => EmuRaw(e.Attribute("val")) / 100000.0;
+        foreach (var m in clr.Elements())
+        {
+            switch (m.Name.LocalName)
+            {
+                case "shade": { double k = V(m); col = new Rgb(col.R * k, col.G * k, col.B * k); break; }
+                case "tint": { double k = V(m); col = new Rgb(col.R + (1 - col.R) * (1 - k), col.G + (1 - col.G) * (1 - k), col.B + (1 - col.B) * (1 - k)); break; }
+                case "lumMod" or "lumOff":
+                {
+                    var (hh, ss, ll) = ToHsl(col);
+                    ll = m.Name.LocalName == "lumMod" ? ll * V(m) : ll + V(m);
+                    col = FromHsl(hh, ss, Math.Clamp(ll, 0, 1));
+                    break;
+                }
+            }
+        }
+        return col;
+    }
+
+    static (double H, double S, double L) ToHsl(Rgb c)
+    {
+        double max = Math.Max(c.R, Math.Max(c.G, c.B)), min = Math.Min(c.R, Math.Min(c.G, c.B)), l = (max + min) / 2;
+        if (max - min < 1e-9) return (0, 0, l);
+        double d = max - min, s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        double h = max == c.R ? (c.G - c.B) / d + (c.G < c.B ? 6 : 0) : max == c.G ? (c.B - c.R) / d + 2 : (c.R - c.G) / d + 4;
+        return (h / 6, s, l);
+    }
+
+    static Rgb FromHsl(double h, double s, double l)
+    {
+        if (s < 1e-9) return new Rgb(l, l, l);
+        double q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+        double Hue(double t) { if (t < 0) t += 1; if (t > 1) t -= 1; return t < 1.0 / 6 ? p + (q - p) * 6 * t : t < 0.5 ? q : t < 2.0 / 3 ? p + (q - p) * (2.0 / 3 - t) * 6 : p; }
+        return new Rgb(Hue(h + 1.0 / 3), Hue(h), Hue(h - 1.0 / 3));
     }
 
     /// <summary>Обрезка (a:srcRect), поворот и отражение (a:xfrm) картинки DrawingML.</summary>
@@ -185,13 +248,47 @@ public sealed partial class DocxReader
                             }
                             break;
                         }
+                        case "arcTo":
+                        {
+                            // Дуга эллипса от текущей точки: радиусы wR/hR, начальный угол и размах (1/60000°)
+                            double wr = EmuRaw(cmd.Attribute("wR")) / pw, hr = EmuRaw(cmd.Attribute("hR")) / ph;
+                            double st0 = EmuRaw(cmd.Attribute("stAng")) / 60000 * Math.PI / 180, sw = EmuRaw(cmd.Attribute("swAng")) / 60000 * Math.PI / 180;
+                            double ecx = lastX - wr * Math.Cos(st0), ecy = lastY - hr * Math.Sin(st0);
+                            int segs = Math.Max(1, (int)Math.Ceiling(Math.Abs(sw) / (Math.PI / 2)));
+                            double step = sw / segs, a0 = st0;
+                            for (int k = 0; k < segs; k++)
+                            {
+                                double a1 = a0 + step, kk = 4.0 / 3 * Math.Tan(step / 4);
+                                double x0 = ecx + wr * Math.Cos(a0), y0 = ecy + hr * Math.Sin(a0);
+                                double x3 = ecx + wr * Math.Cos(a1), y3 = ecy + hr * Math.Sin(a1);
+                                double x1 = x0 - kk * wr * Math.Sin(a0), y1 = y0 + kk * hr * Math.Cos(a0);
+                                double x2 = x3 + kk * wr * Math.Sin(a1), y2 = y3 - kk * hr * Math.Cos(a1);
+                                cp.Commands.Add(('C', [x1, y1, x2, y2, x3, y3]));
+                                a0 = a1;
+                                (lastX, lastY) = (x3, y3);
+                            }
+                            break;
+                        }
                         case "close": cp.Commands.Add(('Z', [])); break;
                     }
                 }
                 sh.Paths.Add(cp);
             }
         }
+        if (spPr.Element(A + "prstGeom")?.Element(A + "avLst")?.Elements(A + "gd").FirstOrDefault() is { } gd
+            && ((string?)gd.Attribute("fmla"))?.Split(' ') is ["val", var av] && double.TryParse(av, NumberStyles.Float, CultureInfo.InvariantCulture, out var adj))
+            sh.Adj = adj / 100000;
         if (spPr.Element(A + "noFill") != null) sh.Fill = null;
+        else if (spPr.Element(A + "gradFill") is { } gf && gf.Element(A + "gsLst") is { } gs)
+        {
+            // Градиент: опорные цвета и угол (радиальный выводится линейным)
+            sh.Gradient = gs.Elements(A + "gs").Select(g => (EmuRaw(g.Attribute("pos")) / 100000, DrawingColor(g) ?? Rgb.White))
+                .OrderBy(t => t.Item1).ToList();
+            sh.GradientAngle = EmuRaw(gf.Element(A + "lin")?.Attribute("ang")) / 60000;
+            if (gf.Element(A + "path") != null) sh.GradientAngle = 90;
+            sh.Fill = sh.Gradient.Count > 0 ? sh.Gradient[0].Color : null;
+            if (sh.Gradient.Count < 2) sh.Gradient = null;
+        }
         else sh.Fill = DrawingColor(spPr.Element(A + "solidFill")) ?? DrawingColor(shapeStyle?.Element(A + "fillRef"));
         var ln = spPr.Element(A + "ln");
         if (ln?.Element(A + "noFill") != null) sh.Stroke = null;
@@ -229,7 +326,7 @@ public sealed partial class DocxReader
 
             List<Block> content;
             BoxStyle box = new();
-            if (item.Content != null && item.Rotation == 0 && item.Children == null)
+            if (item.Content != null && item.Rotation == 0 && item.Children == null && item.Shape == null)
             {
                 // Обычная надпись с привязкой: содержимое в рамке (обтекание, разрыв и т. п. как раньше)
                 content = item.Content;
@@ -261,6 +358,9 @@ public sealed partial class DocxReader
             if (tmp.Count == 0) return null;
             var img = (ImageInline)tmp[0];
             ApplyPictureGeometry(obj, img, inline);
+            // Прозрачность и оттенки серого (эффекты a:blip)
+            if (blip!.Element(A + "alphaModFix") is { } amf) img.Opacity = Math.Clamp(EmuRaw(amf.Attribute("amt")) / 100000, 0, 1);
+            img.Grayscale = blip.Element(A + "grayscl") != null;
             // Рамка картинки
             var pln = obj.Element(PIC + "spPr")?.Element(A + "ln");
             if (pln != null && pln.Element(A + "noFill") == null && DrawingColor(pln.Element(A + "solidFill")) is { } pc)
@@ -289,6 +389,9 @@ public sealed partial class DocxReader
             ApplyGroupRotation(obj, group, inline);
             return group.Children.Count > 0 ? group : null;
         }
+        if (ln == "chart" && (string?)obj.Attribute(R + "id") is { } chartRid && st.Ctx.Rels.TryGetValue(chartRid, out var chartRel)
+            && ParseChart(chartRel.Target) is { } chart)
+            return new ImageInline("", w, h, style) { Chart = chart, FrameW = w, FrameH = h };
         if (ln != "wsp") return null;
         var spPr = obj.Element(WPS + "spPr");
         var txbx = obj.Element(WPS + "txbx")?.Element(W + "txbxContent");
@@ -324,6 +427,21 @@ public sealed partial class DocxReader
                 box = new BoxStyle { MinHeight = h };
             }
             var tb = new ImageInline("", w, h, style) { Content = content, Box = box, FrameW = w, FrameH = h };
+            // Надпись в фигуре (эллипс, стрелка …), с градиентом или с выравниванием текста по вертикали:
+            // фон и контур рисуются фигурой, текст — поверх неё
+            string anchorV = (string?)bodyPr?.Attribute("anchor") ?? "t";
+            string prst = (string?)spPr?.Element(A + "prstGeom")?.Attribute("prst") ?? "rect";
+            if (spPr != null && vert is null && (prst != "rect" || anchorV != "t" || spPr.Element(A + "gradFill") != null))
+            {
+                var tShape = ParseShapeSpec(spPr, obj.Element(WPS + "style"));
+                if (box.Background is { } bg && tShape.Gradient == null) tShape.Fill = bg;
+                if (box.BorderTop is { } bt) { tShape.Stroke = bt.Color; tShape.StrokeWidth = bt.Width; }
+                box.Background = null;
+                box.BorderTop = box.BorderBottom = box.BorderLeft = box.BorderRight = null;
+                box.MinHeight = 0;
+                tb.Shape = tShape;
+                tb.VAnchor = anchorV is "ctr" or "b" ? anchorV : "t";
+            }
             ApplyPictureGeometry(obj, tb, inline);
             return tb;
         }
@@ -334,6 +452,78 @@ public sealed partial class DocxReader
         ApplyPictureGeometry(obj, img2, inline);
         return img2;
     }
+
+    static readonly XNamespace CH = "http://schemas.openxmlformats.org/drawingml/2006/chart";
+
+    /// <summary>Диаграмма (word/charts/chartN.xml): тип, ряды с кэшем значений, категории, заголовок, легенда.</summary>
+    ChartSpec? ParseChart(string part)
+    {
+        var x = LoadXml(part);
+        var chart = x?.Root?.Element(CH + "chart");
+        var plot = chart?.Element(CH + "plotArea");
+        if (plot == null) return null;
+        var kind = plot.Elements().FirstOrDefault(e => e.Name.LocalName.EndsWith("Chart"));
+        if (kind == null) return null;
+        string n = kind.Name.LocalName;
+        var spec = new ChartSpec
+        {
+            Type = n switch
+            {
+                "barChart" or "bar3DChart" => (string?)kind.Element(CH + "barDir")?.Attribute("val") == "bar" ? "bar" : "col",
+                "lineChart" or "line3DChart" or "stockChart" or "radarChart" => "line",
+                "areaChart" or "area3DChart" => "area",
+                "pieChart" or "pie3DChart" or "ofPieChart" => "pie",
+                "doughnutChart" => "doughnut",
+                "scatterChart" or "bubbleChart" => "scatter",
+                _ => "col"
+            },
+            Grouping = (string?)kind.Element(CH + "grouping")?.Attribute("val") ?? "clustered",
+        };
+        // Заголовок: текст или (если один ряд и заголовок не удалён) имя ряда
+        var title = chart!.Element(CH + "title");
+        if (title != null)
+            spec.Title = string.Concat(title.Descendants(A + "t").Select(t => t.Value)) is { Length: > 0 } tt ? tt : null;
+        spec.Legend = chart.Element(CH + "legend") != null;
+        spec.LegendPos = (string?)chart.Element(CH + "legend")?.Element(CH + "legendPos")?.Attribute("val") ?? "r";
+        spec.Gridlines = plot.Elements().Any(e => e.Name.LocalName == "valAx" && e.Element(CH + "majorGridlines") != null)
+                         || (spec.Type is not ("pie" or "doughnut") && !plot.Elements().Any(e => e.Name.LocalName == "valAx"));
+        spec.DataLabels = (string?)kind.Element(CH + "dLbls")?.Element(CH + "showVal")?.Attribute("val") is "1" or "true";
+
+        static List<string> Cache(XElement? e) =>
+            e?.Descendants().FirstOrDefault(d => d.Name.LocalName is "strCache" or "numCache")?.Elements(CH + "pt")
+                .OrderBy(pt => (int)EmuRaw(pt.Attribute("idx"))).Select(pt => (string?)pt.Element(CH + "v") ?? "").ToList() ?? [];
+
+        foreach (var ser in kind.Elements(CH + "ser"))
+        {
+            var cs = new ChartSeries
+            {
+                Name = string.Concat(ser.Element(CH + "tx")?.Descendants(CH + "v").Select(v => v.Value) ?? []),
+                Color = DrawingColor(ser.Element(CH + "spPr")?.Element(A + "solidFill"))
+                        ?? DrawingColor(ser.Element(CH + "spPr")?.Element(A + "ln")?.Element(A + "solidFill")),
+            };
+            var vals = Cache(ser.Element(CH + "val") ?? ser.Element(CH + "yVal"));
+            cs.Values = vals.Select(v => double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : 0).ToList();
+            foreach (var dpt in ser.Elements(CH + "dPt"))
+                if (DrawingColor(dpt.Element(CH + "spPr")?.Element(A + "solidFill")) is { } pc)
+                    cs.PointColors[(int)EmuRaw(dpt.Element(CH + "idx")?.Attribute("val"))] = pc;
+            if (spec.Categories.Count == 0) spec.Categories = Cache(ser.Element(CH + "cat") ?? ser.Element(CH + "xVal"));
+            spec.Series.Add(cs);
+        }
+        if (spec.Series.Count == 0) return null;
+        int count = spec.Series.Max(se => se.Values.Count);
+        while (spec.Categories.Count < count) spec.Categories.Add((spec.Categories.Count + 1).ToString(CultureInfo.InvariantCulture));
+        // Цвета по умолчанию — акценты темы по порядку
+        string[] acc = ["accent1", "accent2", "accent3", "accent4", "accent5", "accent6"];
+        for (int i = 0; i < spec.Series.Count; i++) spec.Series[i].Color ??= SchemeColor(acc[i % 6]);
+        // Круговая: у каждой точки свой цвет (по умолчанию — акценты по порядку)
+        if (spec.Type is "pie" or "doughnut")
+            foreach (var se in spec.Series)
+                for (int i = 0; i < se.Values.Count; i++) se.PointColors.TryAdd(i, AccentColor(i));
+        return spec;
+    }
+
+    /// <summary>Цвет акцента темы по номеру (для точек круговой диаграммы).</summary>
+    internal static Rgb AccentColor(int i) => SchemeColor("accent" + (i % 6 + 1)) ?? Rgb.Black;
 
     static double EmuRaw(XAttribute? a) => double.TryParse((string?)a, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
 

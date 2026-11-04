@@ -308,6 +308,14 @@ public sealed partial class DocxReader
     void LoadTheme(string part)
     {
         var x = LoadXml(part);
+        // Схема цветов темы (accent1…6, dk1/lt1 …) для цветов DrawingML
+        ThemeColors = [];
+        if (x?.Descendants(A + "clrScheme").FirstOrDefault() is { } cs)
+            foreach (var c in cs.Elements())
+            {
+                var v = (string?)c.Element(A + "srgbClr")?.Attribute("val") ?? (string?)c.Element(A + "sysClr")?.Attribute("lastClr");
+                if (Rgb.Parse(v) is { } rgb) ThemeColors[c.Name.LocalName] = rgb;
+            }
         var fs = x?.Descendants(A + "fontScheme").FirstOrDefault();
         if (fs == null) return;
         string? Latin(string n) => (string?)fs.Element(A + n)?.Element(A + "latin")?.Attribute("typeface");

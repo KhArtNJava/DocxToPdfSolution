@@ -58,13 +58,25 @@ public sealed class PdfDocument
         return pf;
     }
 
-    internal PdfImage? GetImage(string key, byte[] bytes)
+    internal PdfImage? GetImage(string key, byte[] bytes, bool gray = false)
     {
+        if (gray) key += "#gray";
         if (_images.TryGetValue(key, out var img)) return img;
         var data = ImageDecoder.Decode(bytes);
+        if (gray && data != null) data = ToGray(data);
         img = data == null ? null : new PdfImage(data, "Im" + (_images.Count + 1));
         _images[key] = img;
         return img;
+    }
+
+    /// <summary>Оттенки серого (a:grayscl): RGB → яркость. JPEG (DCT) не перекодируется и остаётся цветным.</summary>
+    static PdfImageData ToGray(PdfImageData d)
+    {
+        if (d.Filter != "/FlateDecode" || d.ColorSpace != "/DeviceRGB" || d.BitsPerComponent != 8) return d;
+        var g = new byte[d.Width * d.Height];
+        for (int i = 0; i < g.Length && i * 3 + 2 < d.Data.Length; i++)
+            g[i] = (byte)Math.Round(0.299 * d.Data[i * 3] + 0.587 * d.Data[i * 3 + 1] + 0.114 * d.Data[i * 3 + 2]);
+        return new PdfImageData { Width = d.Width, Height = d.Height, ColorSpace = "/DeviceGray", Data = g, Alpha = d.Alpha };
     }
 
     // ================================================================
@@ -164,6 +176,12 @@ public sealed class PdfDocument
                 res.Append(" /XObject <<");
                 foreach (var i in c.Images) res.Append($" /{i.Name} {imageIds[i]} 0 R");
                 for (int fi = 0; fi < c.Forms.Count; fi++) res.Append($" /{c.Forms[fi].Name} {formIds[fi]} 0 R");
+                res.Append(" >>");
+            }
+            if (c.GStates.Count > 0)
+            {
+                res.Append(" /ExtGState <<");
+                foreach (var (name, a) in c.GStates) res.Append($" /{name} << /ca {F(a)} /CA {F(a)} >>");
                 res.Append(" >>");
             }
             res.Append(" >>");
@@ -336,6 +354,18 @@ public sealed class PdfCanvas
     }
     internal readonly List<PdfFont> Fonts = [];
     internal readonly List<PdfImage> Images = [];
+    /// <summary>Графические состояния прозрачности страницы: имя → непрозрачность.</summary>
+    internal readonly List<(string Name, double Alpha)> GStates = [];
+
+    /// <summary>Имя ExtGState с заданной непрозрачностью (для «/GSn gs»).</summary>
+    string GState(double alpha)
+    {
+        alpha = Math.Round(Math.Clamp(alpha, 0, 1), 3);
+        foreach (var (n, a) in GStates) if (a == alpha) return n;
+        string name = "GS" + (GStates.Count + 1);
+        GStates.Add((name, alpha));
+        return name;
+    }
     internal readonly List<PdfLink> Links = [];
 
     internal PdfCanvas(PdfDocument doc, double pageHeight)
@@ -383,6 +413,51 @@ public sealed class PdfCanvas
             cx = nx; sign = -sign;
         }
         _sb.Append("S Q\n");
+    }
+
+    /// <summary>Закрашенный многоугольник (точки в координатах страницы, ось y вниз).</summary>
+    public void FillPolygon(IReadOnlyList<(double X, double Y)> pts, Rgb color)
+    {
+        if (Collecting > 0 || SkipGraphics || pts.Count < 3) return;
+        _sb.Append($"{Color(color)} rg {F(pts[0].X)} {F(Y(pts[0].Y))} m ");
+        for (int i = 1; i < pts.Count; i++) _sb.Append($"{F(pts[i].X)} {F(Y(pts[i].Y))} l ");
+        _sb.Append("h f\n");
+    }
+
+    /// <summary>Ломаная линия.</summary>
+    public void Polyline(IReadOnlyList<(double X, double Y)> pts, double width, Rgb color)
+    {
+        if (Collecting > 0 || SkipGraphics || pts.Count < 2) return;
+        _sb.Append($"q {F(width)} w 1 J 1 j {Color(color)} RG {F(pts[0].X)} {F(Y(pts[0].Y))} m ");
+        for (int i = 1; i < pts.Count; i++) _sb.Append($"{F(pts[i].X)} {F(Y(pts[i].Y))} l ");
+        _sb.Append("S Q\n");
+    }
+
+    /// <summary>Сектор круга (углы в градусах по часовой стрелке от 12 часов), с белой обводкой.</summary>
+    public void FillSector(double cx, double cy, double r, double a0, double a1, Rgb color, double innerR = 0)
+    {
+        if (Collecting > 0 || SkipGraphics || a1 - a0 < 0.01) return;
+        (double, double) Pt(double ang, double rr) { double t = (ang - 90) * Math.PI / 180; return (cx + rr * Math.Cos(t), cy + rr * Math.Sin(t)); }
+        var sb = new StringBuilder();
+        void Arc(double from, double to, double rr, bool move)
+        {
+            int segs = Math.Max(1, (int)Math.Ceiling(Math.Abs(to - from) / 90));
+            double step = (to - from) / segs;
+            var (x0, y0) = Pt(from, rr);
+            if (move) sb.Append($"{F(x0)} {F(Y(y0))} m "); else sb.Append($"{F(x0)} {F(Y(y0))} l ");
+            for (int i = 0; i < segs; i++)
+            {
+                double s0 = from + i * step, s1 = s0 + step, k = 4.0 / 3 * Math.Tan(step * Math.PI / 180 / 4);
+                var (ax, ay) = Pt(s0, rr); var (bx, by) = Pt(s1, rr);
+                double t0 = (s0 - 90) * Math.PI / 180, t1 = (s1 - 90) * Math.PI / 180;
+                double c1x = ax - k * rr * Math.Sin(t0), c1y = ay + k * rr * Math.Cos(t0);
+                double c2x = bx + k * rr * Math.Sin(t1), c2y = by - k * rr * Math.Cos(t1);
+                sb.Append($"{F(c1x)} {F(Y(c1y))} {F(c2x)} {F(Y(c2y))} {F(bx)} {F(Y(by))} c ");
+            }
+        }
+        if (innerR > 0) { Arc(a0, a1, r, true); Arc(a1, a0, innerR, false); }
+        else { sb.Append($"{F(cx)} {F(Y(cy))} m "); Arc(a0, a1, r, false); }
+        _sb.Append($"q {Color(color)} rg 1 1 1 RG 0.75 w ").Append(sb).Append("h B Q\n");
     }
 
     public void Rect(double x, double y, double w, double h, double width, Rgb color)
@@ -602,18 +677,19 @@ public sealed class PdfCanvas
     /// (cx, cy) — центр рамки, w×h — размер неповёрнутой рамки (видимой части).
     /// </summary>
     public void ImageGeometry(string key, byte[] bytes, double cx, double cy, double w, double h,
-        double cropL, double cropT, double cropR, double cropB, double rotation, bool flipH, bool flipV)
+        double cropL, double cropT, double cropR, double cropB, double rotation, bool flipH, bool flipV, double opacity = 1, bool gray = false)
     {
         if (Collecting > 0 || SkipGraphics) return;
         double a = -rotation * Math.PI / 180, cos = Math.Cos(a), sin = Math.Sin(a);
         double sx = flipH ? -1 : 1, sy = flipV ? -1 : 1;
         // Переход в систему рамки: начало в центре, ось Y вверх
         _sb.Append($"q {F(cos * sx)} {F(sin * sx)} {F(-sin * sy)} {F(cos * sy)} {F(cx)} {F(Y(cy))} cm ");
+        if (opacity < 0.999) _sb.Append($"/{GState(opacity)} gs ");
         bool crop = cropL != 0 || cropT != 0 || cropR != 0 || cropB != 0;
         if (crop) _sb.Append($"{F(-w / 2)} {F(-h / 2)} {F(w)} {F(h)} re W n ");
         double fw = w / (1 - cropL - cropR), fh = h / (1 - cropT - cropB);
         double left = -w / 2 - cropL * fw, top = h / 2 + cropT * fh;
-        var img = _doc.GetImage(key, bytes);
+        var img = _doc.GetImage(key, bytes, gray);
         if (img == null)
         {
             _sb.Append($"0.93 0.93 0.93 rg {F(-w / 2)} {F(-h / 2)} {F(w)} {F(h)} re f ");
@@ -659,14 +735,76 @@ public sealed class PdfCanvas
                 path.Append($"{F(-rx)} {F(-ry * K)} {F(-rx * K)} {F(-ry)} 0 {F(-ry)} c {F(rx * K)} {F(-ry)} {F(rx)} {F(-ry * K)} {F(rx)} 0 c h ");
                 break;
             }
-            case "roundRect" or "roundrect":
+            case "roundRect" or "roundrect" or "flowChartTerminator" or "flowChartAlternateProcess":
             {
-                double r = Math.Min(w, h) * 0.1667, K = 0.5523 * r;
+                double adj = sh.Geom == "flowChartTerminator" ? 0.5 : sh.Adj ?? 0.16667;
+                double r = Math.Min(w, h) * Math.Clamp(adj, 0, 0.5), K = 0.5523 * r;
                 double l = -w / 2, rr = w / 2, b = -h / 2, t = h / 2;
                 path.Append($"{F(l + r)} {F(t)} m {F(rr - r)} {F(t)} l {F(rr - r + K)} {F(t)} {F(rr)} {F(t - r + K)} {F(rr)} {F(t - r)} c ");
                 path.Append($"{F(rr)} {F(b + r)} l {F(rr)} {F(b + r - K)} {F(rr - r + K)} {F(b)} {F(rr - r)} {F(b)} c ");
                 path.Append($"{F(l + r)} {F(b)} l {F(l + r - K)} {F(b)} {F(l)} {F(b + r - K)} {F(l)} {F(b + r)} c ");
                 path.Append($"{F(l)} {F(t - r)} l {F(l)} {F(t - r + K)} {F(l + r - K)} {F(t)} {F(l + r)} {F(t)} c h ");
+                break;
+            }
+            case "flowChartConnector":
+            {
+                const double K = 0.5523;
+                double rx = w / 2, ry = h / 2;
+                path.Append($"{F(rx)} 0 m {F(rx)} {F(ry * K)} {F(rx * K)} {F(ry)} 0 {F(ry)} c {F(-rx * K)} {F(ry)} {F(-rx)} {F(ry * K)} {F(-rx)} 0 c ");
+                path.Append($"{F(-rx)} {F(-ry * K)} {F(-rx * K)} {F(-ry)} 0 {F(-ry)} c {F(rx * K)} {F(-ry)} {F(rx)} {F(-ry * K)} {F(rx)} 0 c h ");
+                break;
+            }
+            case "flowChartDecision": Poly((w / 2, 0), (w, h / 2), (w / 2, h), (0, h / 2)); break;
+            case "star4" or "star5" or "star6" or "star7" or "star8" or "star10" or "star12":
+            {
+                // Звезда: вершины на эллипсе рамки, внутренние — на уменьшенном
+                int n = int.Parse(sh.Geom[4..], CultureInfo.InvariantCulture);
+                double inner = sh.Adj ?? n switch { 4 => 0.125, 5 => 0.19098, 6 => 0.28868, _ => 0.375 };
+                inner = Math.Clamp(inner * 2, 0.05, 1);
+                var pts = new (double X, double Y)[n * 2];
+                for (int i = 0; i < n * 2; i++)
+                {
+                    double ang = -Math.PI / 2 + i * Math.PI / n, rr = i % 2 == 0 ? 1 : inner;
+                    pts[i] = (w / 2 + w / 2 * rr * Math.Cos(ang), h / 2 + h / 2 * rr * Math.Sin(ang));
+                }
+                if (n == 5)
+                {
+                    // У пятиконечной звезды Word нижние вершины касаются края рамки
+                    double minY = pts.Min(p => p.Y), maxY = pts.Max(p => p.Y);
+                    for (int i = 0; i < pts.Length; i++) pts[i].Y = (pts[i].Y - minY) / (maxY - minY) * h;
+                }
+                Poly(pts);
+                break;
+            }
+            case "chevron":
+            {
+                double d = Math.Min(w, h) * (sh.Adj ?? 0.5);
+                Poly((0, 0), (w - d, 0), (w, h / 2), (w - d, h), (0, h), (d, h / 2));
+                break;
+            }
+            case "homePlate" or "pentagon":
+            {
+                double d = Math.Min(w, h) * (sh.Adj ?? 0.5);
+                Poly((0, 0), (w - d, 0), (w, h / 2), (w - d, h), (0, h));
+                break;
+            }
+            case "regularPentagon":
+                Poly((w / 2, 0), (w, h * 0.382), (w * 0.809, h), (w * 0.191, h), (0, h * 0.382));
+                break;
+            case "plus" or "mathPlus" or "cross":
+            {
+                double d = Math.Min(w, h) * (sh.Adj ?? 0.25);
+                Poly((d, 0), (w - d, 0), (w - d, d), (w, d), (w, h - d), (w - d, h - d), (w - d, h), (d, h), (d, h - d), (0, h - d), (0, d), (d, d));
+                break;
+            }
+            case "heart":
+            {
+                // Сердце: две кубические кривые от нижней вершины к верхней выемке
+                string C(double x1, double y1, double x2, double y2, double x3, double y3) => $"{P(x1, y1)} {P(x2, y2)} {P(x3, y3)} c ";
+                path.Append(P(w / 2, h * 0.25)).Append(" m ");
+                path.Append(C(w * 0.5 + w * 0.12, -h * 0.08, w * 1.25, h * 0.15, w / 2, h));
+                path.Append(C(-w * 0.25, h * 0.15, w * 0.5 - w * 0.12, -h * 0.08, w / 2, h * 0.25));
+                path.Append("h ");
                 break;
             }
             case "triangle": Poly((w / 2, 0), (w, h), (0, h)); break;
@@ -712,6 +850,28 @@ public sealed class PdfCanvas
             default: Poly((0, 0), (w, 0), (w, h), (0, h)); break;
         }
         bool fill = sh.Fill != null && !open, stroke = sh.Stroke != null && sh.StrokeWidth > 0;
+        if (fill && sh.Gradient is { Count: >= 2 } grad)
+        {
+            // Градиент: обрезка по контуру и полосы с интерполированным цветом поперёк направления
+            _sb.Append("q ").Append(path).Append("W n ");
+            double ang = -sh.GradientAngle * Math.PI / 180, ca = Math.Cos(ang), sa = Math.Sin(ang);
+            double half = Math.Abs(w / 2 * ca) + Math.Abs(h / 2 * sa), across = Math.Sqrt(w * w + h * h);
+            _sb.Append($"{F(ca)} {F(sa)} {F(-sa)} {F(ca)} 0 0 cm ");
+            const int bands = 64;
+            for (int i = 0; i < bands; i++)
+            {
+                double t0 = (double)i / bands, t1 = (double)(i + 1) / bands, tm = (t0 + t1) / 2;
+                int j = 0;
+                while (j < grad.Count - 2 && grad[j + 1].Pos < tm) j++;
+                var (p0, c0) = grad[j]; var (p1, c1) = grad[j + 1];
+                double u = p1 > p0 ? Math.Clamp((tm - p0) / (p1 - p0), 0, 1) : 0;
+                var col = new Rgb(c0.R + (c1.R - c0.R) * u, c0.G + (c1.G - c0.G) * u, c0.B + (c1.B - c0.B) * u);
+                double x0 = -half + 2 * half * t0, x1 = -half + 2 * half * t1;
+                _sb.Append($"{Color(col)} rg {F(x0)} {F(-across)} {F(x1 - x0 + 0.05)} {F(2 * across)} re f ");
+            }
+            _sb.Append("Q ");
+            fill = false;
+        }
         if (fill) _sb.Append($"{Color(sh.Fill!.Value)} rg ");
         if (stroke)
         {
@@ -739,11 +899,11 @@ public sealed class PdfCanvas
         _sb.Append("Q\n");
     }
 
-    public void Image(string key, byte[] bytes, double x, double y, double w, double h)
+    public void Image(string key, byte[] bytes, double x, double y, double w, double h, double opacity = 1, bool gray = false)
     {
         if (Collecting > 0) return;
         if (SkipGraphics) return;
-        var img = _doc.GetImage(key, bytes);
+        var img = _doc.GetImage(key, bytes, gray);
         if (img == null)
         {
             // Неподдерживаемый формат (EMF/WMF/TIFF…) — рисуем заглушку
@@ -754,7 +914,8 @@ public sealed class PdfCanvas
             return;
         }
         if (!Images.Contains(img)) Images.Add(img);
-        _sb.Append($"q {F(w)} 0 0 {F(h)} {F(x)} {F(Y(y + h))} cm /{img.Name} Do Q\n");
+        string gs = opacity < 0.999 ? $"/{GState(opacity)} gs " : "";
+        _sb.Append($"q {gs}{F(w)} 0 0 {F(h)} {F(x)} {F(Y(y + h))} cm /{img.Name} Do Q\n");
     }
 
     public void Link(double x, double y, double w, double h, string uri)

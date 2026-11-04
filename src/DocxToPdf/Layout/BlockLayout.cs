@@ -244,6 +244,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 img.FrameH = built.Height;
             }
         }
+        if (img.Chart != null) img.Built = new ChartLayout(this).Build(img.Chart, Math.Max(20, img.FrameW), Math.Max(20, img.FrameH));
         if (img.Children != null)
             foreach (var (child, _, _) in img.Children) BuildObject(child);
     }

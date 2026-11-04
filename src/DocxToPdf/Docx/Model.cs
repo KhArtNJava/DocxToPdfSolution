@@ -333,6 +333,14 @@ public sealed class ImageInline(string partName, double width, double height, Te
     public BorderDef? Border;
     /// <summary>Свёрстанное содержимое надписи (заполняется при вёрстке).</summary>
     public object? Built;
+    /// <summary>Вертикальное положение текста в фигуре (bodyPr anchor): t, ctr, b.</summary>
+    public string VAnchor = "t";
+    /// <summary>Непрозрачность картинки (a:alphaModFix), 1 — непрозрачна.</summary>
+    public double Opacity = 1;
+    /// <summary>Картинка в оттенках серого (a:grayscl).</summary>
+    public bool Grayscale;
+    /// <summary>Диаграмма (c:chart).</summary>
+    public ChartSpec? Chart;
     public bool HasGeometry => CropL != 0 || CropT != 0 || CropR != 0 || CropB != 0 || Rotation != 0 || FlipH || FlipV;
 }
 
@@ -349,6 +357,36 @@ public sealed class ShapeSpec
     public bool HeadArrow, TailArrow;
     /// <summary>Произвольный контур (a:custGeom): подконтуры в долях рамки 0…1.</summary>
     public List<CustomPath>? Paths;
+    /// <summary>Градиентная заливка: опорные точки (0…1) и угол направления (градусы, по часовой от оси x).</summary>
+    public List<(double Pos, Rgb Color)>? Gradient;
+    public double GradientAngle;
+    /// <summary>Первый параметр фигуры (a:avLst adj), в долях 100000; null — по умолчанию.</summary>
+    public double? Adj;
+}
+
+/// <summary>Диаграмма DrawingML: тип, ряды, категории, заголовок, легенда.</summary>
+public sealed class ChartSpec
+{
+    /// <summary>bar (горизонтальные), col (столбцы), line, area, pie, doughnut, scatter</summary>
+    public string Type = "col";
+    /// <summary>clustered, stacked, percentStacked, standard</summary>
+    public string Grouping = "clustered";
+    public string? Title;
+    public List<string> Categories = [];
+    public List<ChartSeries> Series = [];
+    public bool Legend = true;
+    public string LegendPos = "r";
+    public bool Gridlines = true;
+    public bool DataLabels;
+}
+
+public sealed class ChartSeries
+{
+    public string Name = "";
+    public List<double> Values = [];
+    public Rgb? Color;
+    /// <summary>Цвета отдельных точек (круговая диаграмма, c:dPt).</summary>
+    public Dictionary<int, Rgb> PointColors = [];
 }
 
 /// <summary>Подконтур a:path: команды M/L/C/Z с точками в долях рамки.</summary>
