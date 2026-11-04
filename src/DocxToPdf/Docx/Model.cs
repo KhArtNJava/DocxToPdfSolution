@@ -168,6 +168,38 @@ public sealed class ParaProps
 //  Итоговая (вычисленная) модель документа, готовая к вёрстке
 // ------------------------------------------------------------------
 
+/// <summary>
+/// Строчный блок (inline box): рамка, фон и горизонтальные отступы вокруг фрагмента текста.
+/// Вложенные блоки образуют цепочку через Parent.
+/// </summary>
+public sealed class InlineBox
+{
+    public InlineBox? Parent;
+    public Rgb? Background;
+    public BorderDef? Top, Bottom, Left, Right;
+    public double PadTop, PadBottom, PadLeft, PadRight;
+    public double MarginLeft, MarginRight;
+
+    public double StartWidth => MarginLeft + (Left?.Width ?? 0) + PadLeft;
+    public double EndWidth => MarginRight + (Right?.Width ?? 0) + PadRight;
+
+    public int Depth { get { int d = 0; for (var b = Parent; b != null; b = b.Parent) d++; return d; } }
+
+    public bool Contains(InlineBox? inner)
+    {
+        for (var b = inner; b != null; b = b.Parent) if (b == this) return true;
+        return false;
+    }
+
+    /// <summary>Цепочка от внешнего блока к внутреннему.</summary>
+    public static List<InlineBox> Chain(InlineBox? inner)
+    {
+        var list = new List<InlineBox>();
+        for (var b = inner; b != null; b = b.Parent) list.Insert(0, b);
+        return list;
+    }
+}
+
 /// <summary>Окончательный стиль фрагмента текста.</summary>
 public sealed record TextStyle
 {
@@ -186,6 +218,8 @@ public sealed record TextStyle
     public int VertAlign { get; init; }   // 0 — нет, 1 — superscript, -1 — subscript
     public double Position { get; init; }
     public string? Link { get; init; }
+    /// <summary>Строчный блок с рамкой/фоном/отступами (CSS border у span и т.п.); сравнивается по ссылке.</summary>
+    public InlineBox? Box { get; init; }
 }
 
 public abstract class Inline { }

@@ -80,6 +80,10 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - **Счётчики**: `counter-reset`, `counter-increment`, `counter-set` с областями видимости (многоуровневая нумерация)
 - **CSS-переменные**: `--имя` (наследуются, задаются в `:root`, классах, `style=""`), `var(--x, запасное)` с вложенностью
 - **`calc()`**, `min()`, `max()`, `clamp()` с любыми единицами (px, pt, em, rem, %, …) в любых длинах
+- **Рамки у строчных элементов** (`span`, `a`, `code`, `kbd`, `::before` …): `border` любого стиля (сплошная,
+  пунктир, точки, двойная) с каждой стороны, фон под `padding`, горизонтальные `margin`, вложенные рамки;
+  при переносе фрагмента на другую строку левая рамка рисуется только у начала, правая — только у конца, как в браузерах.
+  Элементы flex/grid, float и absolute становятся блочными (CSS blockification)
 
 ## Ограничения
 
@@ -88,7 +92,7 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - Нет колонок, сносок, примечаний, RTL и сложного шейпинга (арабский, индийские письменности), кернинга и автопереносов
 - Только TrueType-контуры (OTF с CFF пропускаются)
 - Условное форматирование стилей таблиц (firstRow, banded rows) не применяется
-- HTML: нет JavaScript, SVG, `transform`, `::first-letter`/`::first-line`, рамок у строчных элементов;
+- HTML: нет JavaScript, SVG, `transform`, `::first-letter`/`::first-line`, `border-radius` (углы прямые);
   динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
 - float: таблица рядом с плавающим блоком размещается ниже него; float выше страницы выводится в потоке;
   группа «float + обтекающий текст» не разрывается между страницами
@@ -97,4 +101,4 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 
 Примеры: `src/DocxToPdf/samples/sample.docx` → `sample.pdf`, `sample.html` → `sample-html.pdf`,
 `layout.html` → `layout.pdf` (float, flex, grid, position), `css-features.html` → `css-features.pdf`
-(переменные, calc, ::before/::after, счётчики, :nth-child).
+(переменные, calc, ::before/::after, счётчики, :nth-child), `inline-boxes.html` → `inline-boxes.pdf` (рамки внутри строки).

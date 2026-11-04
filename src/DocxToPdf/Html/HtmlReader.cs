@@ -268,7 +268,9 @@ public sealed partial class HtmlReader
         ApplyAll(s, parent, CollectDecls(n, null));
 
         if (n.Tag == "a" && n.Attr("href") is { } href && IsExternalLink(href)) s.Link = href;
+        Blockify(s, parent);
         FixTextBackground(s);
+        SetupInlineBox(s);
         n.Style = s;
         if (s.Display == "none") return;
 
@@ -280,6 +282,32 @@ public sealed partial class HtmlReader
             if (!c.IsPseudo) ComputeStyles(c, s);
         if (pseudo && MakePseudo(n, s, "after") is { } after) n.Children.Add(after);
         PopCounters(n);
+    }
+
+    /// <summary>Элементы flex/grid, float и absolute становятся блочными (CSS blockification).</summary>
+    static void Blockify(CssStyle s, CssStyle parent)
+    {
+        if (s.Display != "inline") return;
+        if (parent.Display is "flex" or "grid" || s.Float != null || s.Position is "absolute" or "fixed") s.Display = "block";
+    }
+
+    /// <summary>Строчный элемент с рамкой, отступами или полями получает собственный строчный блок.</summary>
+    static void SetupInlineBox(CssStyle s)
+    {
+        if (s.Display != "inline") { s.InlineBox = null; return; }
+        var t = s.BorderTop?.ToBorderDef(); var b = s.BorderBottom?.ToBorderDef();
+        var l = s.BorderLeft?.ToBorderDef(); var r = s.BorderRight?.ToBorderDef();
+        bool pad = s.PaddingLeft > 0 || s.PaddingRight > 0 || s.PaddingTop > 0 || s.PaddingBottom > 0;
+        bool margin = Math.Abs(s.MarginLeft) > 0.01 || Math.Abs(s.MarginRight) > 0.01;
+        if (t == null && b == null && l == null && r == null && !pad && !margin) return;   // наследуем внешний блок
+        var box = new InlineBox
+        {
+            Parent = s.InlineBox, Background = s.Background, Top = t, Bottom = b, Left = l, Right = r,
+            PadTop = s.PaddingTop, PadBottom = s.PaddingBottom, PadLeft = s.PaddingLeft, PadRight = s.PaddingRight,
+            MarginLeft = s.MarginLeft, MarginRight = s.MarginRight,
+        };
+        if (box.Background != null) s.TextBackground = null;   // фон рисует сам блок (вместе с padding)
+        s.InlineBox = box;
     }
 
     static void FixTextBackground(CssStyle s)
@@ -341,7 +369,9 @@ public sealed partial class HtmlReader
         if (ps.Content is null || ps.Display == "none") return null;
         string c = ps.Content.Trim();
         if (c is "none" or "normal" || c.Length == 0) return null;
+        Blockify(ps, s);
         FixTextBackground(ps);
+        SetupInlineBox(ps);
 
         ApplyCounters(ps, n);
         var node = new Node { Tag = "::" + which, Parent = n, Style = ps };
@@ -914,6 +944,7 @@ public sealed partial class HtmlReader
         FontAscii = s.FontFamily, FontHAnsi = s.FontFamily, FontEastAsia = s.FontFamily,
         Bold = s.Bold, Italic = s.Italic, Underline = s.Underline, Strike = s.Strike, Caps = s.Upper,
         Size = Math.Max(1, s.FontSize), Color = s.Color, Background = s.TextBackground, VertAlign = s.VertAlign, Link = s.Link,
+        Box = s.InlineBox,
     };
 
     Paragraph EnsureParagraph(Flow f, BlockCtx b)
@@ -1640,6 +1671,11 @@ public sealed partial class HtmlReader
             }
             bool block = s.Display != "inline";
             if (block) { pref = Math.Max(pref, line); line = 0; }
+            else if (s.InlineBox is { } ib && ib != x.Parent?.Style?.InlineBox)
+            {
+                line += ib.StartWidth + ib.EndWidth;
+                min = Math.Max(min, ib.StartWidth + ib.EndWidth);
+            }
             double extra = block ? s.MarginLeft + s.MarginRight + s.PaddingLeft + s.PaddingRight : 0;
             if (block && x.Tag is "ul" or "ol") extra = Math.Max(extra, 30);
             double savedMin = min, savedPref = pref;

@@ -29,7 +29,7 @@ public abstract class Frag
     public virtual (Frag First, Frag Remainder)? Split(double avail) => null;
 }
 
-public enum PieceKind { Text, Space, Tab, LineBreak, PageBreak, Image }
+public enum PieceKind { Text, Space, Tab, LineBreak, PageBreak, Image, Spacer }
 
 /// <summary>Элемент строки: однородный по шрифту кусок текста, пробел, табуляция, картинка или разрыв.</summary>
 public sealed class Piece
@@ -47,6 +47,9 @@ public sealed class Piece
     public bool BreakBefore;
     public ImageInline? Image;
     public TabStop? Tab;
+    /// <summary>Для Spacer: чей это край (начало или конец строчного блока).</summary>
+    public InlineBox? SpacerBox;
+    public bool SpacerStart;
     public double X;
 
     public Piece CloneEmpty() => new()
@@ -83,6 +86,9 @@ public sealed class LineFrag : Frag
 
         // Конечные пробелы не подчёркиваются
         int lastContent = Pieces.FindLastIndex(p => p.Kind is PieceKind.Text or PieceKind.Image or PieceKind.Tab);
+
+        // 0. Строчные блоки (span с рамкой/фоном/отступами): сначала внешние
+        DrawInlineBoxes(c, lx, baseY, lastContent);
 
         // 1. Фоны (выделение цветом)
         for (int i = 0; i < Pieces.Count; i++)
@@ -157,6 +163,56 @@ public sealed class LineFrag : Frag
     }
 
     double NextX(int i) => i + 1 < Pieces.Count ? Pieces[i + 1].X : Pieces[i].X + Pieces[i].Width;
+
+    void DrawInlineBoxes(PdfCanvas c, double lx, double baseY, int lastContent)
+    {
+        var boxes = new List<InlineBox>();
+        foreach (var p in Pieces)
+            for (var b = p.Style.Box; b != null; b = b.Parent)
+                if (!boxes.Contains(b)) boxes.Add(b);
+        if (boxes.Count == 0) return;
+
+        foreach (var box in boxes.OrderBy(b => b.Depth))
+        {
+            int first = -1, last = -1;
+            double asc = 0, desc = 0, sasc = 0, sdesc = 0;
+            for (int i = 0; i < Pieces.Count; i++)
+            {
+                var p = Pieces[i];
+                // Край блока принадлежит только своему блоку и его внешним блокам
+                bool member = p.Kind == PieceKind.Spacer ? box.Contains(p.SpacerBox) : box.Contains(p.Style.Box);
+                if (!member) continue;
+                // конечные пробелы строки в блок не входят (кроме закрывающего края)
+                if (i > lastContent && p.Kind != PieceKind.Spacer) continue;
+                if (first < 0) first = i;
+                last = i;
+                if (p.Kind is PieceKind.Text or PieceKind.Image) { asc = Math.Max(asc, p.Ascent); desc = Math.Max(desc, p.Descent); }
+                else { sasc = Math.Max(sasc, p.Ascent); sdesc = Math.Max(sdesc, p.Descent); }
+            }
+            if (first < 0) continue;
+            if (asc == 0 && desc == 0) { asc = sasc; desc = sdesc; }
+            // Для текста — область шрифта (без межстрочного запаса), как у браузеров
+            var lp = Pieces[first];
+            bool hasStart = lp.SpacerBox == box && lp.SpacerStart;
+            var rp = Pieces[last];
+            bool hasEnd = rp.SpacerBox == box && !rp.SpacerStart;
+            double x1 = lx + lp.X + (hasStart ? box.MarginLeft : 0);
+            double x2 = lx + rp.X + rp.Width - (hasEnd ? box.MarginRight : 0);
+            if (x2 <= x1) continue;
+            double bt = box.Top?.Width ?? 0, bb = box.Bottom?.Width ?? 0;
+            double top = baseY - asc - box.PadTop - bt;
+            double bottom = baseY + desc + box.PadBottom + bb;
+            if (box.Background is { } bg) c.FillRect(x1, top, x2 - x1, bottom - top, bg);
+            void L(BorderDef? b, double ax, double ay, double bx, double by)
+            {
+                if (b is { IsNone: false }) c.Line(ax, ay, bx, by, b.Width, b.Color, b.Val.Contains("dash"), b.Val.Contains("dot"));
+            }
+            L(box.Top, x1, top + bt / 2, x2, top + bt / 2);
+            L(box.Bottom, x1, bottom - bb / 2, x2, bottom - bb / 2);
+            if (hasStart) L(box.Left, x1 + (box.Left?.Width ?? 0) / 2, top, x1 + (box.Left?.Width ?? 0) / 2, bottom);
+            if (hasEnd) L(box.Right, x2 - (box.Right?.Width ?? 0) / 2, top, x2 - (box.Right?.Width ?? 0) / 2, bottom);
+        }
+    }
 
     static void DrawBorder(PdfCanvas c, BorderDef b, double x1, double x2, double y)
     {

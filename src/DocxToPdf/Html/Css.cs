@@ -443,6 +443,7 @@ public sealed class CssStyle
     public Rgb? TextBackground;
     public bool Hidden;     // visibility: hidden
     public Dictionary<string, string>? Vars;   // пользовательские свойства (--x), наследуются
+    public InlineBox? InlineBox;               // ближайший строчный блок с рамкой/отступами
     public string? Quotes;
 
     // Ненаследуемые
@@ -489,7 +490,7 @@ public sealed class CssStyle
             FontFamily = FontFamily, FontSize = FontSize, Bold = Bold, Italic = Italic, Underline = Underline, Strike = Strike,
             Upper = Upper, Lower = Lower, Color = Color, TextAlign = TextAlign, LineHeightFactor = LineHeightFactor, LineHeightPt = LineHeightPt,
             WhiteSpace = WhiteSpace, TextIndent = TextIndent, ListStyleType = ListStyleType, Link = Link, VertAlign = VertAlign,
-            TextBackground = TextBackground, Hidden = Hidden, Vars = Vars, Quotes = Quotes,
+            TextBackground = TextBackground, Hidden = Hidden, Vars = Vars, Quotes = Quotes, InlineBox = InlineBox,
         };
     }
 }

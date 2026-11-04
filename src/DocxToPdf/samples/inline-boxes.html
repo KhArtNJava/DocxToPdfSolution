@@ -1,0 +1,22 @@
+<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><style>
+ @page { size: A4; margin: 15mm } body { font-family: Arial, sans-serif; font-size: 11pt; line-height: 1.6 }
+ .items span:not(:first-child):not(:last-child) { border-bottom: 1px dotted #999 }
+ code { background: #f3f3f3; border: 1px solid #ddd; padding: 1px 4px; font-family: monospace }
+ kbd { border: 1px solid #888; border-bottom-width: 2px; padding: 0 4px; background: #fafafa; font-family: monospace; font-size: 9pt }
+ .hl { background: #fff3b0; padding: 2px 6px; border: 1px solid #e0c060 }
+ .outer { border: 1px solid #36c; padding: 2px 4px } .inner { border: 1px dashed #c33; padding: 0 3px; margin: 0 4px }
+ .wrap { border: 2px solid #393; background: #effaef; padding: 0 4px }
+ a { color: #06c; text-decoration: none; border-bottom: 1px solid #06c }
+ .tag { background: #456; color: #fff; padding: 1px 6px; margin-right: 6px; font-size: 8pt }
+ img.ib { border: 2px solid #c80; padding: 2px; vertical-align: middle }
+ td span { border: 1px solid #aaa; padding: 0 3px }
+</style></head><body>
+<div class="items"><span>один</span> <span>два</span> <span>три</span> <span>четыре</span> <span>пять</span></div>
+<p>Команда <code>dotnet build -c Release</code> собирает проект, а <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> — то же из IDE.</p>
+<p>Выделение <span class="hl">с фоном, рамкой и отступами</span> внутри строки, ссылка <a href="https://example.com">с нижней границей</a>.</p>
+<p>Вложенные: <span class="outer">внешний <span class="inner">внутренний</span> снова внешний</span> конец.</p>
+<p>Длинный фрагмент с рамкой переносится: Съешь же ещё этих мягких французских булок, <span class="wrap">да выпей чаю — этот кусок текста специально длинный, чтобы рамка разорвалась между строками, как в браузере</span>, и продолжение.</p>
+<p><span class="tag">HTML</span><span class="tag">CSS</span><span class="tag">PDF</span> метки с полями справа.</p>
+<p>Картинка в рамке <img class="ib" src="img.png" width="40"> посреди текста.</p>
+<table border="1" style="border-collapse:collapse"><tr><td>В ячейке <span>рамка</span></td><td><span>ещё</span></td></tr></table>
+</body></html>

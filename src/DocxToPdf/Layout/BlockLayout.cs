@@ -299,8 +299,35 @@ public sealed class BlockLayout(LayoutContext ctx)
             return p;
         }
 
+        // Края строчных блоков (span с рамкой/отступами) — «распорки» шириной margin+border+padding
+        var openBoxes = new List<InlineBox>();
+        void SyncBoxes(TextStyle st)
+        {
+            var chain = InlineBox.Chain(st.Box);
+            int common = 0;
+            while (common < openBoxes.Count && common < chain.Count && openBoxes[common] == chain[common]) common++;
+            for (int k = openBoxes.Count - 1; k >= common; k--) AddSpacer(openBoxes[k], start: false, st);
+            openBoxes.RemoveRange(common, openBoxes.Count - common);
+            for (int k = common; k < chain.Count; k++) { AddSpacer(chain[k], start: true, st); openBoxes.Add(chain[k]); }
+        }
+        void AddSpacer(InlineBox box, bool start, TextStyle st)
+        {
+            double w = start ? box.StartWidth : box.EndWidth;
+            var face = _ctx.Fonts.Get(st.FontHAnsi, st.Bold, st.Italic);
+            var p = new Piece { Kind = PieceKind.Spacer, Style = st, Width = w, SpacerBox = box, SpacerStart = start, Size = st.Size };
+            SetMetrics(p, st, face);
+            if (start) { p.BreakBefore = breakNext; breakNext = false; }
+            pieces.Add(p);
+        }
+
         foreach (var inl in para.Inlines)
         {
+            var inlStyle = inl switch
+            {
+                TextInline ti => ti.Style, FieldInline fi => fi.Style, TabInline tb => tb.Style,
+                BreakInline bi => bi.Style, ImageInline ii => ii.Style, _ => null
+            };
+            if (inlStyle != null) SyncBoxes(inlStyle);
             switch (inl)
             {
                 case TextInline t: AddText(t.Text, t.Style); break;
@@ -332,6 +359,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 }
             }
         }
+        if (openBoxes.Count > 0) SyncBoxes(para.MarkStyle with { Box = null });
         return pieces;
     }
 
@@ -472,7 +500,7 @@ public sealed class BlockLayout(LayoutContext ctx)
             // Слово = группа кусков без точек переноса между ними
             int end = i + 1;
             double gw = pc.Width;
-            while (end < pieces.Count && pieces[end].Kind is PieceKind.Text or PieceKind.Image && !pieces[end].BreakBefore)
+            while (end < pieces.Count && pieces[end].Kind is PieceKind.Text or PieceKind.Image or PieceKind.Spacer && !pieces[end].BreakBefore)
             {
                 gw += pieces[end].Width;
                 end++;
@@ -506,9 +534,9 @@ public sealed class BlockLayout(LayoutContext ctx)
             for (; j2 < end; j2++)
             {
                 var q = pieces[j2];
-                if (q.Kind == PieceKind.Image || q.Width <= room)
+                if (q.Kind is PieceKind.Image or PieceKind.Spacer || q.Width <= room)
                 {
-                    if (q.Kind == PieceKind.Image && q.Width > room && placed) break;
+                    if (q.Kind is PieceKind.Image or PieceKind.Spacer && q.Width > room && placed) break;
                     cur.Pieces.Add(q);
                     room -= q.Width;
                     placed = true;
