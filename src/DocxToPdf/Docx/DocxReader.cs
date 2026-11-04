@@ -59,6 +59,10 @@ public sealed partial class DocxReader
         public string LvlText = "";
         public string Jc = "left";
         public string Suff = "tab";
+        /// <summary>w:isLgl — номера всех уровней в тексте этого уровня арабскими цифрами.</summary>
+        public bool IsLgl;
+        /// <summary>w:lvlRestart: перезапуск после уровня N (1-based); 0 — не перезапускать; null — после любого вышестоящего.</summary>
+        public int? Restart;
         public ParaProps? PPr;
         public RunProps? RPr;
     }
@@ -209,6 +213,10 @@ public sealed partial class DocxReader
         var blocks = new List<Block>();
         // Левое поле (для рамок и плавающих таблиц, привязанных к странице)
         _bodyMarginLeft = Twips((string?)body.Element(W + "sectPr")?.Element(W + "pgMar")?.Attribute(W + "left")) ?? 85.05;
+        // Свойства нумерации сносок по разделам: settings → sectPr каждого раздела
+        _noteSections = body.Descendants(W + "sectPr").ToList();
+        _noteSection = -1;
+        NextNoteSection();
         ParseBlockContainer(body, ctx, blocks, isBody: true);
 
         // Финальный sectPr
@@ -400,6 +408,8 @@ public sealed partial class DocxReader
         LvlText = Val(lvl.Element(W + "lvlText")) ?? "",
         Suff = Val(lvl.Element(W + "suff")) ?? "tab",
         Jc = Val(lvl.Element(W + "lvlJc")) ?? "left",
+        IsLgl = OnOff(lvl.Element(W + "isLgl")) == true,
+        Restart = ParseInt(Val(lvl.Element(W + "lvlRestart"))),
         PPr = ParsePPr(lvl.Element(W + "pPr")),
         RPr = ParseRPr(lvl.Element(W + "rPr")),
     };
@@ -412,6 +422,42 @@ public sealed partial class DocxReader
         if (dts is > 1) _doc.DefaultTabStop = dts.Value;
         _doc.EvenAndOddHeaders = x.Root.Element(W + "evenAndOddHeaders") is { } e && IsOnVal(e);
         _doc.MirrorMargins = x.Root.Element(W + "mirrorMargins") is { } mm && IsOnVal(mm);
+        _footPrDefault = x.Root.Element(W + "footnotePr");
+        _endPrDefault = x.Root.Element(W + "endnotePr");
+    }
+
+    // Нумерация сносок: формат, начальный номер, перезапуск (w:footnotePr / w:endnotePr)
+    XElement? _footPrDefault, _endPrDefault;
+    List<XElement> _noteSections = [];
+    int _noteSection;
+    string _footFmt = "decimal", _endFmt = "lowerRoman";
+    int _footStart = 1, _endStart = 1;
+
+    /// <summary>Переход к следующему разделу: свойства сносок раздела и перезапуск нумерации (numRestart="eachSect").</summary>
+    void NextNoteSection()
+    {
+        _noteSection++;
+        var sect = _noteSection < _noteSections.Count ? _noteSections[_noteSection] : null;
+        string? Get(XElement? sectPr, XElement? def, string name, string child) =>
+            Val(sectPr?.Element(W + name)?.Element(W + child)) ?? Val(def?.Element(W + child));
+        bool first = _noteSection == 0;
+        _footFmt = Get(sect, _footPrDefault, "footnotePr", "numFmt") ?? "decimal";
+        _endFmt = Get(sect, _endPrDefault, "endnotePr", "numFmt") ?? "lowerRoman";
+        _footStart = ParseInt(Get(sect, _footPrDefault, "footnotePr", "numStart")) ?? 1;
+        _endStart = ParseInt(Get(sect, _endPrDefault, "endnotePr", "numStart")) ?? 1;
+        if (first || Get(sect, _footPrDefault, "footnotePr", "numRestart") == "eachSect") _footCount = 0;
+        if (first || Get(sect, _endPrDefault, "endnotePr", "numRestart") == "eachSect") _endCount = 0;
+    }
+
+    /// <summary>Знак сноски в формате раздела (chicago — *, †, ‡, §, затем удвоенные).</summary>
+    static string NoteMark(int n, string fmt)
+    {
+        if (fmt == "chicago")
+        {
+            string[] sym = ["*", "\u2020", "\u2021", "\u00A7"];
+            return string.Concat(Enumerable.Repeat(sym[(n - 1) % 4], (n - 1) / 4 + 1));
+        }
+        return FormatNumber(n, fmt);
     }
 
     void LoadCoreProps()
@@ -562,6 +608,9 @@ public sealed partial class DocxReader
         {
             p.SpBefore = Twips((string?)sp.Attribute(W + "before"));
             p.SpAfter = Twips((string?)sp.Attribute(W + "after"));
+            // Интервал в сотых долях строки (beforeLines/afterLines) имеет приоритет; строка = 12 pt, как в Word
+            if (ParseInt((string?)sp.Attribute(W + "beforeLines")) is { } bl and > 0) p.SpBefore = bl / 100.0 * 12;
+            if (ParseInt((string?)sp.Attribute(W + "afterLines")) is { } al and > 0) p.SpAfter = al / 100.0 * 12;
             if (sp.Attribute(W + "beforeAutospacing") is { } ba) p.BeforeAuto = IsOn(ba);
             if (sp.Attribute(W + "afterAutospacing") is { } aa) p.AfterAuto = IsOn(aa);
             string? line = (string?)sp.Attribute(W + "line");
@@ -916,7 +965,10 @@ public sealed partial class DocxReader
             para.Align = "center";
 
         if (pPrEl?.Element(W + "sectPr") is { } sp && !ctx.HeaderFooter)
+        {
             para.Section = ParseSectPr(sp, ctx);
+            if (ctx.BaseDir != null && _noteMark == null) NextNoteSection();
+        }
         return para;
     }
 
@@ -983,7 +1035,12 @@ public sealed partial class DocxReader
         }
         ilvl = Math.Clamp(ilvl, 0, 9);
         counters[ilvl]++;
-        for (int i = ilvl + 1; i < 10; i++) counters[i] = (GetLevel(numId, i)?.Start ?? 1) - 1;
+        for (int i = ilvl + 1; i < 10; i++)
+        {
+            var li = GetLevel(numId, i);
+            int restartAfter = li?.Restart ?? i;   // по умолчанию — после любого вышестоящего уровня
+            if (ilvl < restartAfter) counters[i] = (li?.Start ?? 1) - 1;
+        }
         _lastLevel[key] = ilvl;
 
         var lvl = GetLevel(numId, ilvl)!;
@@ -1002,6 +1059,7 @@ public sealed partial class DocxReader
                 int value = Math.Max(counters[l], l == ilvl ? 1 : (ll?.Start ?? 1));
                 string fmt = ll?.NumFmt ?? "decimal";
                 // isLgl и "legal" формат — всегда арабские цифры
+                if (lvl.IsLgl && fmt != "decimalZero") fmt = "decimal";
                 sb.Append(FormatNumber(value, l == ilvl ? fmt : (fmt == "bullet" ? "decimal" : fmt)));
             }
             else sb.Append(t[i]);
@@ -1284,6 +1342,8 @@ public sealed partial class DocxReader
             var ind = tblPr.Element(W + "tblInd");
             if (ind != null && (string?)ind.Attribute(W + "type") != "pct") t.Indent = Twips((string?)ind.Attribute(W + "w")) ?? 0;
             t.Align = Val(tblPr.Element(W + "jc")) switch { "center" => "center", "right" or "end" => "right", _ => "left" };
+            if (tblPr.Element(W + "tblCellSpacing") is { } tcs && (string?)tcs.Attribute(W + "type") is "dxa" or null)
+                t.CellSpacing = Twips((string?)tcs.Attribute(W + "w")) ?? 0;
             var tw = tblPr.Element(W + "tblW");
             if (tw != null && (string?)tw.Attribute(W + "type") == "dxa") t.Width = Twips((string?)tw.Attribute(W + "w"));
             else if (tw != null && (string?)tw.Attribute(W + "type") == "pct" && (string?)tw.Attribute(W + "w") is { } pw)
@@ -1506,6 +1566,7 @@ public sealed partial class DocxReader
         s.TitlePage = sp.Element(W + "titlePg") is { } tp && IsOnVal(tp);
         s.PageNumberStart = ParseInt((string?)sp.Element(W + "pgNumType")?.Attribute(W + "start"));
         s.PageNumberFormat = (string?)sp.Element(W + "pgNumType")?.Attribute(W + "fmt") ?? "decimal";
+        s.VAlign = Val(sp.Element(W + "vAlign")) ?? "top";
         if (sp.Element(W + "lnNumType") is { } ln)
         {
             s.LineNumberCountBy = ParseInt((string?)ln.Attribute(W + "countBy")) ?? 0;

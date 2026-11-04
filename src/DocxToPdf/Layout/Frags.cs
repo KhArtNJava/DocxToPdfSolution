@@ -396,6 +396,11 @@ public sealed class RowFrag : Frag
     public required TableInfo Table;
     public required List<CellBox> Cells;
     public bool IsHeader, CantSplit;
+    /// <summary>Точная высота строки (hRule="exact"): содержимое ячеек обрезается по строке.</summary>
+    public bool ClipContent;
+    /// <summary>Интервалы между ячейками: отступ ячеек сверху/снизу в строке и внешняя рамка таблицы.</summary>
+    public double InsetTop, InsetBottom, OuterX, OuterWidth;
+    public BorderDef? OuterTop, OuterBottom, OuterLeft, OuterRight;
     public override IEnumerable<List<Block>> Notes => Cells.SelectMany(c => c.Items.SelectMany(i => i.Frag.Notes));
 
     public override void Draw(PdfCanvas c, double x, double y)
@@ -403,37 +408,50 @@ public sealed class RowFrag : Frag
         foreach (var cell in Cells)
             if (cell.Shading is { } shd && cell.VMerge != VMerge.Continue)
             {
-                double ch = cell.VMerge == VMerge.Restart ? Math.Max(Height, cell.MergedHeight) : Height;
-                if (cell.Radius is { Any: true }) c.FillRoundedRect(x + cell.X, y, cell.Width, ch, cell.Radius.Resolve(cell.Width, ch), shd);
-                else c.FillRect(x + cell.X, y, cell.Width, ch, shd);
+                double ch = (cell.VMerge == VMerge.Restart ? Math.Max(Height, cell.MergedHeight) : Height) - InsetTop - InsetBottom;
+                if (cell.Radius is { Any: true }) c.FillRoundedRect(x + cell.X, y + InsetTop, cell.Width, ch, cell.Radius.Resolve(cell.Width, ch), shd);
+                else c.FillRect(x + cell.X, y + InsetTop, cell.Width, ch, shd);
             }
 
         foreach (var cell in Cells)
         {
             if (cell.VMerge == VMerge.Continue) continue;
-            double inner = (cell.VMerge == VMerge.Restart ? Math.Max(Height, cell.MergedHeight) : Height) - cell.MarginTop - cell.MarginBottom;
+            double inner = (cell.VMerge == VMerge.Restart ? Math.Max(Height, cell.MergedHeight) : Height) - cell.MarginTop - cell.MarginBottom - InsetTop - InsetBottom;
             double off = cell.VAlign switch
             {
                 "center" => Math.Max(0, (inner - cell.ContentHeight) / 2),
                 "bottom" => Math.Max(0, inner - cell.ContentHeight),
                 _ => 0
             };
+            bool clip = ClipContent && cell.VMerge == VMerge.None;
+            if (clip) c.BeginRoundedClip(x + cell.X, y, cell.Width, Height, new double[8]);
             foreach (var (f, fy) in cell.Items)
-                f.Draw(c, x + cell.X + cell.MarginLeft, y + cell.MarginTop + off + fy);
+                f.Draw(c, x + cell.X + cell.MarginLeft, y + InsetTop + cell.MarginTop + off + fy);
+            if (clip) c.EndClip();
         }
 
         foreach (var cell in Cells)
         {
-            double x1 = x + cell.X, x2 = x1 + cell.Width, y1 = y, y2 = y + Height;
+            double x1 = x + cell.X, x2 = x1 + cell.Width, y1 = y + InsetTop, y2 = y + Height - InsetBottom;
             if (cell.Radius is { Any: true } && BorderDef.Same(cell.Top, cell.Bottom) && BorderDef.Same(cell.Top, cell.Left) && BorderDef.Same(cell.Top, cell.Right))
             {
-                c.StrokeRoundedRect(x1, y1, cell.Width, Height, cell.Radius.Resolve(cell.Width, Height), cell.Top!);
+                c.StrokeRoundedRect(x1, y1, cell.Width, y2 - y1, cell.Radius.Resolve(cell.Width, y2 - y1), cell.Top!);
                 continue;
             }
             if (cell.Top is { IsNone: false } t) DrawBorder(c, t, x1, y1, x2, y1);
             if (cell.Bottom is { IsNone: false } b) DrawBorder(c, b, x1, y2, x2, y2);
             if (cell.Left is { IsNone: false } l) DrawBorder(c, l, x1, y1, x1, y2);
             if (cell.Right is { IsNone: false } r) DrawBorder(c, r, x2, y1, x2, y2);
+        }
+
+        // Внешняя рамка таблицы с интервалами между ячейками
+        if (OuterWidth > 0)
+        {
+            double ox1 = x + OuterX, ox2 = ox1 + OuterWidth, oy2 = y + Height;
+            if (OuterTop is { IsNone: false } ot) DrawBorder(c, ot, ox1, y, ox2, y);
+            if (OuterBottom is { IsNone: false } ob) DrawBorder(c, ob, ox1, oy2, ox2, oy2);
+            if (OuterLeft is { IsNone: false } ol) DrawBorder(c, ol, ox1, y, ox1, oy2);
+            if (OuterRight is { IsNone: false } or) DrawBorder(c, or, ox2, y, ox2, oy2);
         }
     }
 

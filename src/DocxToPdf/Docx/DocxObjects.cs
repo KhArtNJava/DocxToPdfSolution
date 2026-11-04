@@ -55,7 +55,7 @@ public sealed partial class DocxReader
         {
             string? id = (string?)el.Attribute(W + "id");
             bool custom = el.Attribute(W + "customMarkFollows") is { } cm && IsOn(cm);
-            string mark = custom ? "" : (++_footCount).ToString(CultureInfo.InvariantCulture);
+            string mark = custom ? "" : NoteMark(_footStart - 1 + ++_footCount, _footFmt);
             var blocks = id != null && _footnotes.TryGetValue(id, out var note) ? ParseNote(note, mark) : [];
             output.Add(new FootnoteInline(mark, style, blocks));
             return true;
@@ -63,7 +63,7 @@ public sealed partial class DocxReader
         if (n == W + "endnoteReference")
         {
             string? id = (string?)el.Attribute(W + "id");
-            string mark = Roman(++_endCount).ToLowerInvariant();
+            string mark = NoteMark(_endStart - 1 + ++_endCount, _endFmt);
             if (id != null && _endnotes.TryGetValue(id, out var note)) _endnoteList.Add((mark, ParseNote(note, mark)));
             output.Add(new TextInline(mark, style));
             return true;

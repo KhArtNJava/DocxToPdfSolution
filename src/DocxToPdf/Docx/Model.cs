@@ -428,6 +428,8 @@ public sealed class Table : Block
     public double Indent;
     public string Align = "left";
     public double? Width;
+    /// <summary>Интервал между ячейками (w:tblCellSpacing), pt: отступ ячейки от соседей и края таблицы.</summary>
+    public double CellSpacing;
     /// <summary>Ширина в долях ширины текста (tblW type="pct"), 1 = 100 %</summary>
     public double? WidthPct;
     public List<TableRow> Rows = [];
@@ -561,6 +563,8 @@ public sealed class SectionProps
     public double? LineNumberDistance;
     /// <summary>newPage, newSection, continuous</summary>
     public string LineNumberRestart = "newPage";
+    /// <summary>Вертикальное выравнивание текста на странице (w:vAlign): top, center, bottom, both.</summary>
+    public string VAlign = "top";
     public double PageWidth = 595.3, PageHeight = 841.9;
     public double MarginTop = 56.7, MarginBottom = 56.7, MarginLeft = 85.05, MarginRight = 42.55;
     public double HeaderDistance = 35.4, FooterDistance = 35.4;

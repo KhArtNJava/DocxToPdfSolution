@@ -17,6 +17,7 @@
 | t12.docx | элементы `w:sdt`, `smartTag`, `customXml`, `fldSimple`, `w:sym`; позиционная табуляция `w:ptab`; стили и цвет подчёркивания; двойное зачёркивание; ширина таблицы в процентах |
 | t13.docx | нумерация строк, рамка-абзац `framePr`, узорная заливка, граница `between`, барная табуляция, плавающая таблица `tblpPr`, обрезка/поворот/отражение картинок (gen7.py дописывает `srcRect`/`rot`/`flipH` в XML) |
 | t14.docx | нумерация строк: шаг 5, `suppressLineNumbers`, перезапуск на каждой странице |
+| t15.docx | общий abstractNum у разных numId, `isLgl`/`lvlRestart`, отступы `start`/`end`, `beforeLines`, цвета выделения, `tblCellSpacing`, формат сносок `footnotePr`, точная высота строки (обрезка), титул с `vAlign=center` |
 
-Сгенерировать заново: `python3 gen.py && python3 gen2.py && python3 gen3.py && python3 gen4.py && python3 gen5.py && python3 gen6.py && python3 gen7.py && python3 gen8.py` (нужен python-docx).
+Сгенерировать заново: `python3 gen.py && python3 gen2.py && python3 gen3.py && python3 gen4.py && python3 gen5.py && python3 gen6.py && python3 gen7.py && python3 gen8.py && python3 gen9.py` (нужен python-docx).
 Сравнение с LibreOffice: сконвертировать в `ours/` и `lo/`, затем `python3 cmp.py`.

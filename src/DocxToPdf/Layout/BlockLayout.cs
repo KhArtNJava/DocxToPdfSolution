@@ -1025,10 +1025,23 @@ public sealed class BlockLayout(LayoutContext ctx)
                     Shading = cell.Shading, VAlign = cell.VAlign, VMerge = cell.VMerge, GridIndex = g, Span = span, Radius = cell.Radius,
                 };
                 var b = cell.Borders;
-                box.Top = b?.Top ?? (ri == 0 ? t.Borders.Top : t.Borders.InsideH);
-                box.Bottom = b?.Bottom ?? (ri == t.Rows.Count - 1 ? t.Borders.Bottom : t.Borders.InsideH);
-                box.Left = b?.Left ?? (g == 0 ? t.Borders.Left : t.Borders.InsideV);
-                box.Right = b?.Right ?? (g + span >= cols ? t.Borders.Right : t.Borders.InsideV);
+                if (t.CellSpacing > 0)
+                {
+                    // Интервалы между ячейками: у каждой ячейки своя рамка (внутренние границы таблицы),
+                    // внешняя рамка таблицы рисуется отдельно вокруг всех ячеек
+                    box.X += t.CellSpacing; box.Width = Math.Max(1, box.Width - 2 * t.CellSpacing);
+                    box.Top = b?.Top ?? t.Borders.InsideH ?? t.Borders.Top;
+                    box.Bottom = b?.Bottom ?? t.Borders.InsideH ?? t.Borders.Bottom;
+                    box.Left = b?.Left ?? t.Borders.InsideV ?? t.Borders.Left;
+                    box.Right = b?.Right ?? t.Borders.InsideV ?? t.Borders.Right;
+                }
+                else
+                {
+                    box.Top = b?.Top ?? (ri == 0 ? t.Borders.Top : t.Borders.InsideH);
+                    box.Bottom = b?.Bottom ?? (ri == t.Rows.Count - 1 ? t.Borders.Bottom : t.Borders.InsideH);
+                    box.Left = b?.Left ?? (g == 0 ? t.Borders.Left : t.Borders.InsideV);
+                    box.Right = b?.Right ?? (g + span >= cols ? t.Borders.Right : t.Borders.InsideV);
+                }
 
                 if (cell.VMerge != VMerge.Continue && cell.TextDirection != null)
                 {
@@ -1065,6 +1078,8 @@ public sealed class BlockLayout(LayoutContext ctx)
             }
             if (row.HeightRule == "exact" && row.Height > 0) rowH = row.Height;
             else rowH = Math.Max(rowH, row.Height);
+            // Интервал сверху и снизу ячеек: между строками — двойной, у края таблицы — одинарный
+            if (t.CellSpacing > 0) rowH += 2 * t.CellSpacing;
             if (rowH <= 0) rowH = 1;
             rowsCells.Add(boxes);
             rowHeights.Add(rowH);
@@ -1109,8 +1124,19 @@ public sealed class BlockLayout(LayoutContext ctx)
             var rf = new RowFrag
             {
                 Table = info, Cells = rowsCells[ri], Height = rowHeights[ri], IsHeader = row.IsHeader,
-                CantSplit = row.CantSplit || row.HeightRule == "exact" || rowsCells[ri].Any(c => c.VMerge == VMerge.Restart)
+                CantSplit = row.CantSplit || row.HeightRule == "exact" || rowsCells[ri].Any(c => c.VMerge == VMerge.Restart),
+                ClipContent = row.HeightRule == "exact" && row.Height > 0,
             };
+            if (t.CellSpacing > 0)
+            {
+                rf.CantSplit = true;
+                rf.InsetTop = t.CellSpacing;
+                rf.InsetBottom = t.CellSpacing;
+                rf.OuterX = x0; rf.OuterWidth = total;
+                rf.OuterTop = ri == 0 ? t.Borders.Top : null;
+                rf.OuterBottom = ri == rowsCells.Count - 1 ? t.Borders.Bottom : null;
+                rf.OuterLeft = t.Borders.Left; rf.OuterRight = t.Borders.Right;
+            }
             if (row.IsHeader && info.HeaderRows.Count == ri) info.HeaderRows.Add(rf);
             result.Add(rf);
         }

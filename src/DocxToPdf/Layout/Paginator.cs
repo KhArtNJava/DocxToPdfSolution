@@ -23,6 +23,10 @@ public sealed class Page
     public string NumberText = "1";
     /// <summary>Номера строк: правый край номера, базовая линия, текст, стиль.</summary>
     public List<(Frag Frag, double X, double Y)> LineNumbers = [];
+    /// <summary>Индексы элементов Items, относящихся к основному тексту (для вертикального выравнивания).</summary>
+    public List<int> BodyItems = [];
+    /// <summary>Верх области сносок на странице (если есть).</summary>
+    public double? NotesTop;
 }
 
 /// <summary>Разбивает поток фрагментов на страницы (и колонки), размещает сноски и колонтитулы.</summary>
@@ -126,6 +130,7 @@ public sealed class Paginator(LayoutContext ctx)
                 (a.ZIndex < 0 ? page.Underlays : page.Overlays).Add((a.Content, x, y, a.ZIndex));
             }
 
+        foreach (var page in _pages) AlignPageVertically(page);
         AddHeadersFooters();
         return _pages;
     }
@@ -229,6 +234,7 @@ public sealed class Paginator(LayoutContext ctx)
         double y = _bottom - _footH + NoteSeparator;
         // Разделитель сносок: короткая линия
         var sep = new SeparatorFrag { Width = 144, Height = 0 };
+        _page.NotesTop = y - NoteSeparator;
         _page.Items.Add((sep, _page.MarginLeft, y - NoteSeparator / 2));
         foreach (var f in _notes)
         {
@@ -245,6 +251,7 @@ public sealed class Paginator(LayoutContext ctx)
     void Put(Frag f, double spaceBefore)
     {
         _y += spaceBefore;
+        _page!.BodyItems.Add(_page.Items.Count);
         _page!.Items.Add((f, _page.MarginLeft + _colX[_col], _y));
         CollectBookmarks(f, _page.MarginLeft + _colX[_col], _y);
         if (_sp?.LineNumberCountBy > 0) NumberLines(f, _page.MarginLeft + _colX[_col], _y);
@@ -397,6 +404,39 @@ public sealed class Paginator(LayoutContext ctx)
             }
             if (f.PageBreakAfter) NewPage(sp, natural: false, firstOfSection: false);
             else if (f is LineFrag { ColumnBreakAfter: true }) NextColumn(sp, natural: false);
+        }
+    }
+
+    /// <summary>Вертикальное выравнивание раздела (w:vAlign): по центру, по нижнему краю или по высоте страницы.</summary>
+    void AlignPageVertically(Page page)
+    {
+        string va = page.Section.VAlign;
+        if (va is not ("center" or "bottom" or "both") || page.BodyItems.Count == 0) return;
+        var (top, bottom) = BodyArea(page.Section);
+        if (page.NotesTop is { } nt) bottom = Math.Min(bottom, nt);
+        var idx = page.BodyItems.OrderBy(i => page.Items[i].Y).ToList();
+        double contentBottom = idx.Max(i => page.Items[i].Y + page.Items[i].Frag.Height);
+        double free = bottom - contentBottom;
+        if (free <= 0.5) return;
+        var shifts = new double[idx.Count];
+        for (int k = 0; k < idx.Count; k++)
+            shifts[k] = va switch
+            {
+                "center" => free / 2,
+                "bottom" => free,
+                _ => idx.Count > 1 ? free * k / (idx.Count - 1) : 0,   // both: промежутки между блоками растягиваются
+            };
+        // Номера строк сдвигаются вместе со своей строкой
+        var ln = page.LineNumbers;
+        for (int j = 0; j < ln.Count; j++)
+        {
+            int k = idx.FindLastIndex(i => page.Items[i].Y <= ln[j].Y + 2);
+            if (k >= 0) ln[j] = (ln[j].Frag, ln[j].X, ln[j].Y + shifts[k]);
+        }
+        for (int k = 0; k < idx.Count; k++)
+        {
+            var it = page.Items[idx[k]];
+            page.Items[idx[k]] = (it.Frag, it.X, it.Y + shifts[k]);
         }
     }
 
