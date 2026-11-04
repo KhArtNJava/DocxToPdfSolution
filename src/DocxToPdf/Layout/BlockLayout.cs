@@ -271,13 +271,83 @@ public sealed class BlockLayout(LayoutContext ctx)
                     {
                         var af = MakeAbs(child, ab.X, ab.Width, relative: true);
                         af.TopOffset = ab.TopOffset;
+                        af.Anchor = ab;
                         Emit(af);
                     }
                     break;
+                case AnchorEndBlock ae:
+                    Emit(new AnchorEndFrag { Anchor = ae.Anchor, PadBottom = ae.PadBottom });
+                    break;
+                case FlexLinesBlock fl:
+                {
+                    // Строки flex-контейнера: высота контейнера распределяется между ними (align-content)
+                    var lines = fl.Lines.Select(t => LayoutTable(t, width)).ToList();
+                    double total = lines.Sum(l => l.Sum(f => f.Height)) + lines.Skip(1).Sum(l => l.Count > 0 ? l[0].SpaceBefore : 0);
+                    double extra = fl.MinHeight - total;
+                    int n = lines.Count;
+                    if (extra > 0.5 && n > 0)
+                    {
+                        if (fl.AlignContent is "normal" or "stretch")
+                        {
+                            // Растяжение: каждая строка выше на равную долю — повторная вёрстка с заданной высотой
+                            for (int i = 0; i < n; i++)
+                            {
+                                var t = fl.Lines[i];
+                                if (t.Rows.Count == 0) continue;
+                                t.Rows[0].Height = lines[i].Sum(f => f.Height) + extra / n;
+                                lines[i] = LayoutTable(t, width);
+                            }
+                        }
+                        else
+                        {
+                            var before = new double[n + 1];   // before[i] — перед строкой i; before[n] — после последней
+                            switch (fl.AlignContent)
+                            {
+                                case "flex-end" or "end": before[0] = extra; break;
+                                case "center": before[0] = extra / 2; before[n] = extra / 2; break;
+                                case "space-between": if (n > 1) for (int i = 1; i < n; i++) before[i] = extra / (n - 1); else before[n] = extra; break;
+                                case "space-around": for (int i = 0; i < n; i++) before[i] += extra / (2 * n); for (int i = 1; i <= n; i++) before[i] += extra / (2 * n); break;
+                                case "space-evenly": for (int i = 0; i <= n; i++) before[i] = extra / (n + 1); break;
+                                default: before[n] = extra; break;
+                            }
+                            for (int i = 0; i < n; i++) if (lines[i].Count > 0) lines[i][0].SpaceBefore += before[i];
+                            if (lines[^1].Count > 0) lines[^1][^1].SpaceAfter += before[n];
+                        }
+                    }
+                    foreach (var l in lines) foreach (var f in l) Emit(f);
+                    prev = null; prevLast = null;
+                    break;
+                }
             }
         }
         EndGroup();
+        ResolveAnchorBottoms(frags);
         return frags;
+    }
+
+    /// <summary>
+    /// absolute с bottom внутри relative-предка: когда конец предка в этом же списке фрагментов, его высота известна —
+    /// bottom переводится в top (относительно верха предка). Иначе решение откладывается до разбивки на страницы.
+    /// </summary>
+    static void ResolveAnchorBottoms(List<Frag> frags)
+    {
+        if (!frags.Any(f => f is AnchorEndFrag)) return;
+        var start = new Dictionary<AbsFrag, double>();
+        var ends = new Dictionary<AnchorBlock, (double Y, double Pad)>();
+        double y = 0;
+        foreach (var f in frags)
+        {
+            if (f is AbsFrag a) { start[a] = y; continue; }
+            if (f is AnchorEndFrag e) { ends[e.Anchor] = (y + e.SpaceBefore, e.PadBottom); continue; }
+            y += f.SpaceBefore + f.Height + f.SpaceAfter;
+        }
+        foreach (var (a, sy) in start)
+        {
+            if (a.Anchor == null || a.Top != null || a.Bottom == null || !ends.TryGetValue(a.Anchor, out var end)) continue;
+            double boxH = end.Y + end.Pad - (sy + a.TopOffset);
+            a.Top = boxH - a.Bottom.Value - a.Content.Height;
+            a.Bottom = null;
+        }
     }
 
     /// <summary>Вёрстка содержимого надписи в строке и элементов группы фигур.</summary>
@@ -1220,11 +1290,11 @@ public sealed class BlockLayout(LayoutContext ctx)
                 boxes.Add(box);
                 g += span;
             }
-            if (row.HeightRule == "exact" && row.Height > 0) rowH = row.Height;
+            if (row.HeightRule == "exact" && (row.Height > 0 || row.Role is 1 or 2 or 3)) rowH = row.Height;
             else rowH = Math.Max(rowH, row.Height);
             // Интервал сверху и снизу ячеек: между строками — двойной, у края таблицы — одинарный
             if (t.CellSpacing > 0) rowH += 2 * t.CellSpacing;
-            if (rowH <= 0) rowH = 1;
+            if (rowH <= 0 && !(row.HeightRule == "exact" && row.Role is 1 or 2 or 3)) rowH = 1;   // служебные строки сетки могут быть нулевой высоты
             if (t.Rtl)
             {
                 // Таблица справа налево: колонки зеркально, левая и правая границы ячеек меняются местами
@@ -1236,6 +1306,43 @@ public sealed class BlockLayout(LayoutContext ctx)
             }
             rowsCells.Add(boxes);
             rowHeights.Add(rowH);
+        }
+
+        // align-content: лишняя высота контейнера сетки распределяется между строками, промежутками и служебными строками
+        double contentSum = rowHeights.Sum();
+        if (t.MinContentHeight > contentSum + 0.5)
+        {
+            double extra = t.MinContentHeight - contentSum;
+            var content = Enumerable.Range(0, t.Rows.Count).Where(i => t.Rows[i].Role == 0).ToList();
+            var gaps = Enumerable.Range(0, t.Rows.Count).Where(i => t.Rows[i].Role == 1).ToList();
+            int top = t.Rows.FindIndex(r => r.Role == 2), bottom = t.Rows.FindIndex(r => r.Role == 3);
+            void Add(int i, double v) { if (i >= 0 && i < rowHeights.Count) rowHeights[i] += v; }
+            int n = content.Count;
+            switch (t.AlignContent)
+            {
+                case "start" or "flex-start": Add(bottom, extra); break;
+                case "end" or "flex-end": Add(top, extra); break;
+                case "center": Add(top, extra / 2); Add(bottom, extra / 2); break;
+                case "space-between":
+                    if (gaps.Count > 0) foreach (var gi in gaps) Add(gi, extra / gaps.Count); else Add(bottom, extra);
+                    break;
+                case "space-around":
+                    Add(top, extra / (2 * Math.Max(1, n))); Add(bottom, extra / (2 * Math.Max(1, n)));
+                    foreach (var gi in gaps) Add(gi, extra / Math.Max(1, n));
+                    break;
+                case "space-evenly":
+                    Add(top, extra / (n + 1)); Add(bottom, extra / (n + 1));
+                    foreach (var gi in gaps) Add(gi, extra / (n + 1));
+                    break;
+                default:
+                {
+                    // normal/stretch: растягиваются строки без явной высоты
+                    var auto = content.Where(i => t.Rows[i].AutoHeight).ToList();
+                    if (auto.Count == 0) Add(bottom, extra);
+                    else foreach (var i in auto) Add(i, extra / auto.Count);
+                    break;
+                }
+            }
         }
 
         // Вертикальные объединения: убираем внутренние границы, растягиваем последнюю строку

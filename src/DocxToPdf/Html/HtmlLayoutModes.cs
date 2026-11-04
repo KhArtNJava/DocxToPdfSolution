@@ -96,6 +96,8 @@ public sealed partial class HtmlReader
         if (!n.IsText) ApplyFirstLine(n, s, blocks);
         _contentWidth = saved;
         if (ab != null && ab.Children.Count == 0) blocks.Remove(ab);
+        // Конец предка: по метке определяется его высота (bottom у absolute-потомков)
+        if (ab != null) blocks.Add(new AnchorEndBlock { Anchor = ab, PadBottom = s.PaddingBottom });
         return blocks;
     }
 
@@ -613,7 +615,13 @@ public sealed partial class HtmlReader
         }
         f.PendingMargin = 0; f.PendingBreak = false; f.PendingClear = null;
         ApplyContainerBorders(tables, s);
-        f.Target.AddRange(tables);
+        // Несколько строк и заданная высота: распределение строк по высоте (align-content)
+        double? flexH = s.Height == null || s.Height.EndsWith('%') ? null : CssValues.Length(s.Height, fs);
+        if (flexH != null && s.BoxSizing == "border-box")
+            flexH -= s.PaddingTop + s.PaddingBottom + (s.BorderTop?.Width ?? 0) + (s.BorderBottom?.Width ?? 0);
+        if (tables.Count > 1 && flexH is > 0)
+            f.Target.Add(new FlexLinesBlock { Lines = tables, MinHeight = flexH.Value, AlignContent = s.AlignContent });
+        else f.Target.AddRange(tables);
         EndBox(n, s, f, startIdx);
     }
 
@@ -630,15 +638,25 @@ public sealed partial class HtmlReader
         public double Size;
     }
 
-    List<Track> ParseTracks(string? v, double avail, double gap, double fs, out bool autoFit, out bool autoRepeat)
+    List<Track> ParseTracks(string? v, double avail, double gap, double fs, out bool autoFit, out bool autoRepeat) =>
+        ParseTracks(v, avail, gap, fs, out autoFit, out autoRepeat, out _);
+
+    /// <summary>Дорожки grid-template-*; lineNames — именованные линии ([a b]) → номера линий (с 0).</summary>
+    List<Track> ParseTracks(string? v, double avail, double gap, double fs, out bool autoFit, out bool autoRepeat, out Dictionary<string, List<int>> lineNames)
     {
         autoFit = false; autoRepeat = false;
+        lineNames = [];
         var result = new List<Track>();
         if (string.IsNullOrWhiteSpace(v) || v == "none") return result;
-        // убираем имена линий [a b]
+        // Имена линий [a b] — отдельным токеном без пробелов внутри ([a|b])
         var sb = new System.Text.StringBuilder();
         int depth = 0;
-        foreach (char c in v) { if (c == '[') depth++; else if (c == ']') depth--; else if (depth == 0) sb.Append(c); }
+        foreach (char c in v)
+        {
+            if (c == '[') { depth++; if (depth == 1) sb.Append(" ["); continue; }
+            if (c == ']') { depth--; if (depth == 0) sb.Append("] "); continue; }
+            sb.Append(depth > 0 && char.IsWhiteSpace(c) ? '|' : c);
+        }
 
         Track? One(string tok)
         {
@@ -664,9 +682,18 @@ public sealed partial class HtmlReader
 
         foreach (var tok in CssValues.Tokens(sb.ToString()))
         {
+            if (tok.StartsWith('[') && tok.EndsWith(']'))
+            {
+                foreach (var name in tok[1..^1].Split('|', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    if (!lineNames.TryGetValue(name, out var list)) lineNames[name] = list = [];
+                    list.Add(result.Count);
+                }
+                continue;
+            }
             if (tok.StartsWith("repeat(") && tok.EndsWith(')'))
             {
-                string body = tok[7..^1];
+                string body = System.Text.RegularExpressions.Regex.Replace(tok[7..^1], @"\[[^\]]*\]", " ");
                 int comma = body.IndexOf(',');
                 if (comma < 0) continue;
                 string count = body[..comma].Trim();
@@ -731,8 +758,58 @@ public sealed partial class HtmlReader
         var items = ContainerItems(n, f, inner);
         if (items.Count == 0) { EndBox(n, s, f, startIdx); return; }
 
-        var tracks = ParseTracks(s.GridTemplateColumns, avail, colGap, fs, out bool autoFit, out _);
-        int cols = Math.Max(1, tracks.Count);
+        var tracks = ParseTracks(s.GridTemplateColumns, avail, colGap, fs, out bool autoFit, out _, out var colNames);
+        ParseTracks(s.GridTemplateRows, 700, rowGap, fs, out _, out _, out var rowNames);
+        // grid-template-areas: прямоугольные области по именам
+        var areas = new Dictionary<string, (int R0, int C0, int R1, int C1)>();
+        int areaRows = 0, areaCols = 0;
+        if (s.GridTemplateAreas != null)
+        {
+            var rowsStr = System.Text.RegularExpressions.Regex.Matches(s.GridTemplateAreas, "\"([^\"]*)\"|'([^']*)'").Select(m => m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value).ToList();
+            for (int r = 0; r < rowsStr.Count; r++)
+            {
+                var cells = rowsStr[r].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                areaCols = Math.Max(areaCols, cells.Length);
+                for (int c = 0; c < cells.Length; c++)
+                {
+                    if (cells[c].Trim('.').Length == 0) continue;
+                    areas[cells[c]] = areas.TryGetValue(cells[c], out var a)
+                        ? (Math.Min(a.R0, r), Math.Min(a.C0, c), Math.Max(a.R1, r + 1), Math.Max(a.C1, c + 1))
+                        : (r, c, r + 1, c + 1);
+                }
+            }
+            areaRows = rowsStr.Count;
+        }
+        int cols = Math.Max(1, Math.Max(tracks.Count, areaCols));
+
+        // Именованная линия: явное имя из шаблона дорожек, неявные «область-start/-end» или имя области
+        int? NamedLine(string v, bool col, bool isEnd)
+        {
+            var names = col ? colNames : rowNames;
+            string nm = v.Trim();
+            int nth = 1;
+            var m = System.Text.RegularExpressions.Regex.Match(nm, @"^(-?\d+)\s+(\S+)$|^(\S+)\s+(-?\d+)$");
+            if (m.Success) { nm = m.Groups[2].Success ? m.Groups[2].Value : m.Groups[3].Value; nth = int.Parse(m.Groups[1].Success ? m.Groups[1].Value : m.Groups[4].Value, CultureInfo.InvariantCulture); }
+            if (names.TryGetValue(nm, out var list) && list.Count > 0)
+                return nth > 0 ? list[Math.Min(nth, list.Count) - 1] : list[Math.Max(0, list.Count + nth)];
+            string baseName = nm.EndsWith("-start") ? nm[..^6] : nm.EndsWith("-end") ? nm[..^4] : nm;
+            bool wantEnd = nm.EndsWith("-end") || (!nm.EndsWith("-start") && isEnd);
+            if (areas.TryGetValue(baseName, out var a)) return col ? (wantEnd ? a.C1 : a.C0) : (wantEnd ? a.R1 : a.R0);
+            return null;
+        }
+        (int? Start, int Span) Place(string? start, string? end, bool col, int lines)
+        {
+            bool Named(string? x) => x != null && x != "auto" && !x.StartsWith("span") && !int.TryParse(x.Trim(), out _);
+            if (!Named(start) && !Named(end)) return ParsePlacement(start, end, lines);
+            int? sl = Named(start) ? NamedLine(start!, col, false) : null;
+            int? el = Named(end) ? NamedLine(end!, col, true) : null;
+            var (ps, pspan) = ParsePlacement(Named(start) ? null : start, Named(end) ? null : end, lines);
+            sl ??= ps;
+            if (sl != null && el != null && el > sl) return (sl, el.Value - sl.Value);
+            if (sl != null) return (sl, Math.Max(1, pspan));
+            if (el != null) return (Math.Max(0, el.Value - Math.Max(1, pspan)), Math.Max(1, pspan));
+            return (null, Math.Max(1, pspan));
+        }
 
         // Размещение элементов (row-major авторазмещение)
         var occupied = new HashSet<(int, int)>();
@@ -741,8 +818,8 @@ public sealed partial class HtmlReader
         foreach (var it in items)
         {
             var st = it.IsText ? s : it.Style!;
-            var (cs0, cspan) = it.IsText ? (null, 1) : ParsePlacement(st.GridColumnStart, st.GridColumnEnd, cols);
-            var (rs0, rspan) = it.IsText ? (null, 1) : ParsePlacement(st.GridRowStart, st.GridRowEnd, 1000);
+            var (cs0, cspan) = it.IsText ? (null, 1) : Place(st.GridColumnStart, st.GridColumnEnd, true, cols);
+            var (rs0, rspan) = it.IsText ? (null, 1) : Place(st.GridRowStart, st.GridRowEnd, false, Math.Max(1000, areaRows));
             if (cs0 != null && cs0 + cspan > cols) { cols = cs0.Value + cspan; }
             cspan = Math.Min(cspan, Math.Max(cols, cspan));
             if (cspan > cols) cols = cspan;
@@ -757,7 +834,16 @@ public sealed partial class HtmlReader
             int row, col;
             if (cs0 != null && rs0 != null) { row = rs0.Value; col = cs0.Value; }
             else if (rs0 != null) { row = rs0.Value; col = 0; while (!Free(row, col) && col < cols) col++; if (col >= cols) col = 0; }
-            else if (cs0 != null) { col = cs0.Value; row = 0; while (!Free(row, col)) row++; }
+            else if (cs0 != null)
+            {
+                // Явная колонка: курсор авторазмещения движется только вперёд (sparse) — левее курсора → следующая строка
+                col = cs0.Value;
+                if (col < curC) curR++;
+                row = curR;
+                while (!Free(row, col)) row++;
+                curR = row; curC = col + cspan;
+                if (curC >= cols) { curC = 0; curR++; }
+            }
             else
             {
                 row = curR; col = curC;
@@ -770,7 +856,7 @@ public sealed partial class HtmlReader
             var (mn, pf) = MeasureItem(it, st, avail);
             gitems.Add(new GridItem { Node = it, Style = st, Row = row, Col = col, RowSpan = rspan, ColSpan = cspan, Min = mn, Pref = pf });
         }
-        int rows = gitems.Max(g => g.Row + g.RowSpan);
+        int rows = Math.Max(gitems.Max(g => g.Row + g.RowSpan), areaRows);
 
         // auto-fit: пустые дорожки схлопываются
         if (autoFit)
@@ -841,8 +927,13 @@ public sealed partial class HtmlReader
         // Высоты строк из grid-template-rows
         var rowTracks = ParseTracks(s.GridTemplateRows, 700, rowGap, fs, out _, out _);
 
-        // Модель: дорожки чередуются с промежутками (если gap > 0)
-        int gc = colGap > 0.01 ? 2 : 1, gr = rowGap > 0.01 ? 2 : 1;
+        // Высота контейнера (для align-content): область содержимого
+        double? contH = s.Height == null || s.Height.EndsWith('%') ? null : CssValues.Length(s.Height, fs);
+        if (contH != null && s.BoxSizing == "border-box")
+            contH -= s.PaddingTop + s.PaddingBottom + (s.BorderTop?.Width ?? 0) + (s.BorderBottom?.Width ?? 0);
+        bool distribute = contH is > 0;
+        // Модель: дорожки чередуются с промежутками (если gap > 0 или нужно распределять высоту)
+        int gc = colGap > 0.01 ? 2 : 1, gr = rowGap > 0.01 || distribute ? 2 : 1;
         int mCols = cols * gc - (gc - 1), mRows = rows * gr - (gr - 1);
         var widths = new List<double>();
         for (int c = 0; c < cols; c++) { widths.Add(Math.Max(0.5, tracks[c].Size)); if (gc == 2 && c < cols - 1) widths.Add(colGap); }
@@ -858,12 +949,19 @@ public sealed partial class HtmlReader
         table.PageBreakBefore = f.PendingBreak;
         table.Clear = f.PendingClear;
         f.PendingMargin = 0; f.PendingBreak = false; f.PendingClear = null;
+        TableRow Service(int role) { var sr = new TableRow { Role = role, Height = 0, HeightRule = "exact", AutoHeight = false }; for (int k = 0; k < mCols; k++) sr.Cells.Add(SpacerCell(s)); return sr; }
+        if (distribute)
+        {
+            table.MinContentHeight = contH!.Value;
+            table.AlignContent = s.AlignContent;
+            table.Rows.Add(Service(2));
+        }
         for (int mr = 0; mr < mRows; mr++)
         {
             bool gapRow = gr == 2 && mr % 2 == 1;
             var row = new TableRow();
-            if (gapRow) { row.Height = rowGap; row.HeightRule = "exact"; }
-            else if (mr / gr < rowTracks.Count && rowTracks[mr / gr].Kind == "fixed") row.Height = rowTracks[mr / gr].Value;
+            if (gapRow) { row.Height = rowGap; row.HeightRule = "exact"; row.Role = 1; row.AutoHeight = false; }
+            else if (mr / gr < rowTracks.Count && rowTracks[mr / gr].Kind == "fixed") { row.Height = rowTracks[mr / gr].Value; row.AutoHeight = false; }
             int mc = 0;
             while (mc < mCols)
             {
@@ -903,6 +1001,7 @@ public sealed partial class HtmlReader
             }
             table.Rows.Add(row);
         }
+        if (distribute) table.Rows.Add(Service(3));
         ApplyContainerBorders([table], s);
         f.Target.Add(table);
         EndBox(n, s, f, startIdx);

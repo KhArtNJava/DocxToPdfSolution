@@ -1014,9 +1014,20 @@ public sealed partial class HtmlReader
             case "grid-column-end": s.GridColumnEnd = lv; break;
             case "grid-row-start": s.GridRowStart = lv; break;
             case "grid-row-end": s.GridRowEnd = lv; break;
+            case "grid-template-areas": s.GridTemplateAreas = lv == "none" ? null : lv; break;
+            case "align-content": s.AlignContent = lv.Replace("safe ", "").Replace("unsafe ", "").Trim(); break;
+            case "place-content":
+            {
+                var pc = lv.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (pc.Length > 0) { s.AlignContent = pc[0]; s.JustifyContent = pc.Length > 1 ? pc[1] : pc[0]; }
+                break;
+            }
             case "grid-area":
             {
                 var parts = lv.Split('/').Select(x => x.Trim()).ToArray();
+                // grid-area: имя — все четыре линии по имени области
+                if (parts.Length == 1 && parts[0].Length > 0 && !char.IsDigit(parts[0][0]) && parts[0][0] != '-' && !parts[0].StartsWith("span") && parts[0] != "auto")
+                { s.GridRowStart = s.GridColumnStart = s.GridRowEnd = s.GridColumnEnd = parts[0]; break; }
                 if (parts.Length >= 1) s.GridRowStart = parts[0];
                 if (parts.Length >= 2) s.GridColumnStart = parts[1];
                 if (parts.Length >= 3) s.GridRowEnd = parts[2];
@@ -1475,6 +1486,9 @@ public sealed partial class HtmlReader
                 }
             }
         }
+        // Конец relative-предка: по метке известна его высота (для bottom у absolute-потомков)
+        if (s.Position == "relative" && created.OfType<AnchorBlock>().FirstOrDefault() is { } anc)
+            f.Target.Add(new AnchorEndBlock { Anchor = anc, PadBottom = s.PaddingBottom + f.PendingMargin });
         if (s.PaddingBottom > 0) f.PendingMargin += s.PaddingBottom;
         f.PendingMargin = Math.Max(f.PendingMargin, s.MarginBottom);
         if (s.PageBreakAfter) f.PendingBreak = true;

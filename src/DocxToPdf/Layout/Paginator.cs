@@ -118,6 +118,13 @@ public sealed class Paginator(LayoutContext ctx)
         }
         if (_pages.Count == 0) NewPage(doc.Sections.LastOrDefault()?.Props ?? new SectionProps(), false, true);
         FlushNotes();
+        // Предок без метки конца (например, внутри группы с float) — прежний способ: от низа области страницы
+        foreach (var (a, page, flowY, sp) in _waitingAbs)
+        {
+            var (x, y) = AbsPosition(a, sp, flowY, sp.MarginTop, sp.PageHeight - sp.MarginBottom, page.MarginLeft);
+            (a.ZIndex < 0 ? page.Underlays : page.Overlays).Add((a.Content, x, y, a.ZIndex));
+        }
+        _waitingAbs.Clear();
 
         // position: fixed — на каждой странице (относительно страницы целиком)
         foreach (var page in _pages)
@@ -367,6 +374,25 @@ public sealed class Paginator(LayoutContext ctx)
         return (x2, y2);
     }
 
+    readonly List<(AbsFrag A, Page Page, double FlowY, SectionProps Sp)> _waitingAbs = [];
+
+    /// <summary>Конец relative-предка: потомки с bottom ставятся от нижнего края его рамки (на странице, где предок закончился).</summary>
+    void ResolveAnchorEnd(AnchorEndFrag end, double endY)
+    {
+        for (int i = _waitingAbs.Count - 1; i >= 0; i--)
+        {
+            var (a, page, flowY, sp) = _waitingAbs[i];
+            if (a.Anchor != end.Anchor) continue;
+            _waitingAbs.RemoveAt(i);
+            double h = a.Content.Height;
+            double bottomEdge = endY + end.PadBottom;
+            var (x, _) = AbsPosition(a, sp, flowY, _top, _bottom, _page!.MarginLeft);
+            double y = bottomEdge - a.Bottom!.Value - h;
+            var list = a.ZIndex < 0 ? _page.Underlays : _page.Overlays;
+            list.Add((a.Content, x, y, a.ZIndex));
+        }
+    }
+
     void PlaceAbs(AbsFrag a, SectionProps sp)
     {
         var (x, y) = AbsPosition(a, sp, _y, _top, _bottom, _page!.MarginLeft);
@@ -399,7 +425,15 @@ public sealed class Paginator(LayoutContext ctx)
             if (f is AbsFrag abs)
             {
                 if (abs.Fixed) _fixed.Add(abs);
+                // bottom у потомка relative-предка: ждём конца предка (его высота станет известна)
+                else if (abs.RelativeToFlow && abs.Anchor != null && abs.Top == null && abs.Bottom != null)
+                    _waitingAbs.Add((abs, _page!, _y, sp));
                 else PlaceAbs(abs, sp);
+                continue;
+            }
+            if (f is AnchorEndFrag ae)
+            {
+                ResolveAnchorEnd(ae, _y + (PageEmpty ? 0 : f.SpaceBefore));
                 continue;
             }
             if (f.PageBreakBefore && !(_page!.Items.Count == 0)) NewPage(sp, natural: false, firstOfSection: false);

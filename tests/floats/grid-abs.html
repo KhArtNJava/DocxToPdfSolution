@@ -1,0 +1,30 @@
+<html><head><style>
+body{font-family:'Liberation Sans';font-size:11pt}
+h4{margin:10px 0 4px}
+.rel{position:relative;border:2px solid #333;padding:10px;background:#f5f5f5}
+.tag{position:absolute;background:#c00;color:#fff;padding:2px 5px;font-size:9pt}
+.areas{display:grid;grid-template-columns:120px 1fr 1fr;grid-template-rows:auto auto auto;grid-template-areas:"head head head" "side main main" "side foot foot";gap:6px}
+.areas>div{background:#9dc3e6;padding:6px;border:1px solid #2f5597}
+.lines{display:grid;grid-template-columns:[full-start] 80px [content-start] 1fr 1fr [content-end] 80px [full-end];gap:4px}
+.lines>div{background:#ffd966;padding:4px;border:1px solid #bf9000}
+.ac{display:grid;grid-template-columns:1fr 1fr;height:180px;border:1px solid #555;gap:4px;margin-bottom:6px}
+.ac>div{background:#c5e0b4;border:1px solid #548235;padding:3px}
+.fx{display:flex;flex-wrap:wrap;height:150px;border:1px solid #555;width:330px;margin-bottom:6px}
+.fx>div{width:100px;background:#f4b183;border:1px solid #c55a11;margin:2px;padding:3px}
+</style></head><body>
+<h4>1. absolute в relative-предке: углы (top/bottom × left/right)</h4>
+<div class="rel"><p>Содержимое предка, несколько строк текста. Содержимое предка, несколько строк текста. Содержимое предка.</p><p>Вторая строка содержимого.</p>
+<span class="tag" style="top:0;left:0">TL</span><span class="tag" style="top:0;right:0">TR</span>
+<span class="tag" style="bottom:0;left:0">BL</span><span class="tag" style="bottom:4px;right:4px">BR</span></div>
+<h4>2. grid-template-areas</h4>
+<div class="areas"><div style="grid-area:head">Шапка</div><div style="grid-area:side">Боковая панель</div><div style="grid-area:main">Основное содержимое</div><div style="grid-area:foot">Подвал</div></div>
+<h4>3. Именованные линии</h4>
+<div class="lines"><div style="grid-column:full-start / full-end">full-start / full-end</div><div style="grid-column:content-start / content-end">content</div><div style="grid-column:full-start / content-start">лево</div><div>авто</div></div>
+<h4>4. align-content в сетке: center, space-between, stretch</h4>
+<div class="ac" style="align-content:center"><div>a</div><div>b</div><div>c</div><div>d</div></div>
+<div class="ac" style="align-content:space-between"><div>a</div><div>b</div><div>c</div><div>d</div></div>
+<div class="ac"><div>a</div><div>b</div><div>c</div><div>d</div></div>
+<h4>5. align-content во flex с переносом: flex-end, space-around</h4>
+<div class="fx" style="align-content:flex-end"><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div></div>
+<div class="fx" style="align-content:space-around"><div>1</div><div>2</div><div>3</div><div>4</div><div>5</div></div>
+</body></html>

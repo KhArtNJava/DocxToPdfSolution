@@ -769,6 +769,14 @@ public sealed class GroupFrag : Frag
     }
 }
 
+/// <summary>Метка конца позиционированного предка (нулевой высоты).</summary>
+public sealed class AnchorEndFrag : Frag
+{
+    public required AnchorBlock Anchor;
+    public double PadBottom;
+    public override void Draw(PdfCanvas c, double x, double y) { }
+}
+
 /// <summary>Абсолютно позиционированный блок: в потоке не занимает места.</summary>
 public sealed class AbsFrag : Frag
 {
@@ -776,6 +784,8 @@ public sealed class AbsFrag : Frag
     public double? Left, Top, Right, Bottom;
     public bool Fixed;
     public bool RelativeToFlow;          // относительно позиционированного предка
+    /// <summary>Позиционированный предок (для bottom — его высота известна по метке конца).</summary>
+    public AnchorBlock? Anchor;
     public double AnchorX, AnchorWidth, TopOffset;
     public int ZIndex;
     public string? HRel, VRel, AlignX, AlignY;

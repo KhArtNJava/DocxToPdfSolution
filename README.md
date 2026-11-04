@@ -105,6 +105,8 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - **Обтекание по контуру** (`wrapTight`/`wrapThrough` с `wrapPolygon`) и **обтекание объектов, привязанных к странице/полям**
 - **Плавающие блоки (float, DOCX-обтекание)**: таблица рядом с float сужается до свободной ширины; float выше страницы
   остаётся плавающим и разрывается между страницами (рамка «срезается»); группа «float + обтекающий текст» разрывается между страницами
+- **Позиционирование**: `absolute` внутри `relative`-предка — `top`/`bottom`/`left`/`right` относительно рамки предка (высота предка известна по концу его содержимого; если предок переходит на другую страницу — от низа его последней части)
+- **Grid**: `grid-template-areas` и `grid-area: имя`, именованные линии (`[a b]`, `имя-start`/`имя-end`, `имя N`), курсор авторазмещения как в CSS; `align-content` (start, end, center, space-between/around/evenly, stretch) в сетке и во flex с переносом; `place-content`
 - **Таблицы справа налево** (`w:bidiVisual`): колонки зеркально
 - **Strict OOXML** (ISO/IEC 29500 Strict, пространства имён purl.oclc.org)
 - **Эффекты шрифта** emboss (приподнятый), imprint (утопленный), shadow (тень)
@@ -215,8 +217,7 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
   преобразования); ссылки внутри преобразованного блока кликабельны по исходной (неповёрнутой) области;
   динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
 - float: если первый неразрываемый элемент группы (например, картинка) не помещается, группа целиком переходит на следующую страницу; группа со сносками не разрывается
-- absolute внутри relative-предка привязывается к верху предка (`bottom` — приближённо); flex/grid-контейнеры
-  выводятся как таблицы без рамок, поэтому `align-content`, `grid-template-areas` (имена) и именованные линии не поддерживаются
+- flex/grid-контейнеры строятся на основе таблиц: `grid-auto-flow: dense`/`column`, `subgrid` и `masonry` не поддерживаются; при `align-content` во flex фон контейнера рисуется по строкам
 
 Примеры: `src/DocxToPdf/samples/sample.docx` → `sample.pdf`, `sample.html` → `sample-html.pdf`,
 `layout.html` → `layout.pdf` (float, flex, grid, position), `css-features.html` → `css-features.pdf`

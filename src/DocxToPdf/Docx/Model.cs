@@ -574,6 +574,10 @@ public sealed class TableRow
 {
     public double Height;
     public string HeightRule = "atLeast";
+    /// <summary>Роль строки при распределении высоты (align-content): 0 — содержимое, 1 — промежуток, 2 — служебная сверху, 3 — служебная снизу.</summary>
+    public int Role;
+    /// <summary>Высота строки не задана явно (растягивается при align-content: stretch).</summary>
+    public bool AutoHeight = true;
     public bool IsHeader, CantSplit;
     public List<TableCell> Cells = [];
 }
@@ -586,6 +590,9 @@ public sealed class Table : Block
     public double Indent;
     public string Align = "left";
     public double? Width;
+    /// <summary>Высота области содержимого (CSS height контейнера сетки) и распределение лишнего места (align-content).</summary>
+    public double MinContentHeight;
+    public string AlignContent = "normal";
     /// <summary>Таблица справа налево (w:bidiVisual): первая колонка — справа.</summary>
     public bool Rtl;
     /// <summary>Интервал между ячейками (w:tblCellSpacing), pt: отступ ячейки от соседей и края таблицы.</summary>
@@ -708,6 +715,21 @@ public sealed class TransformBlock : Block
     public List<Block> Blocks = [];
     public double BoxX, BoxWidth;        // рамка элемента относительно колонки
     public required TransformResolver Resolve;
+}
+
+/// <summary>Строки flex-контейнера с переносом и заданной высотой: распределение по высоте (align-content).</summary>
+public sealed class FlexLinesBlock : Block
+{
+    public List<Table> Lines = [];
+    public double MinHeight;
+    public string AlignContent = "normal";
+}
+
+/// <summary>Конец позиционированного (relative) предка: по нему определяется высота предка для bottom у absolute-потомков.</summary>
+public sealed class AnchorEndBlock : Block
+{
+    public required AnchorBlock Anchor;
+    public double PadBottom;
 }
 
 /// <summary>Точка привязки для absolute-потомков позиционированного предка.</summary>

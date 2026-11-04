@@ -478,6 +478,10 @@ public sealed class CssStyle
 
     // Grid
     public string? GridTemplateColumns, GridTemplateRows;
+    /// <summary>grid-template-areas: строки шаблона с именами областей.</summary>
+    public string? GridTemplateAreas;
+    /// <summary>align-content: распределение строк сетки / строк flex-контейнера по высоте контейнера.</summary>
+    public string AlignContent = "normal";
     public string? GridColumnStart, GridColumnEnd, GridRowStart, GridRowEnd;
 
     // Скругление углов (TL, TR, BR, BL — исходные значения, % — от ширины)
