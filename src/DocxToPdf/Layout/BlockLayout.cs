@@ -492,8 +492,12 @@ public sealed class BlockLayout(LayoutContext ctx)
                     break;
                 }
                 case TabInline tab:
-                    pieces.Add(MakeTab(tab.Style));
+                {
+                    var tp = MakeTab(tab.Style);
+                    if (tab.PtabAlign != null) tp.PTab = tab;
+                    pieces.Add(tp);
                     breakNext = true;
+                }
                     break;
                 case BreakInline br:
                     pieces.Add(new Piece
@@ -547,6 +551,16 @@ public sealed class BlockLayout(LayoutContext ctx)
         public bool First;
         public PieceKind? EndBreak;   // LineBreak / PageBreak, если строка закончилась разрывом
         public bool ColumnBreak;
+    }
+
+    /// <summary>Позиция w:ptab: относительно полей или отступов абзаца, независимо от позиций табуляции.</summary>
+    static (double Pos, TabStop Stop) PositionalTab(Paragraph p, TabInline pt, double width)
+    {
+        bool ind = pt.PtabRelativeTo == "indent";
+        double left = ind ? p.IndLeft : 0, right = ind ? width - p.IndRight : width;
+        string align = pt.PtabAlign switch { "center" => "center", "right" => "right", _ => "left" };
+        double pos = align switch { "center" => (left + right) / 2, "right" => right, _ => left };
+        return (pos, new TabStop(pos, align, pt.PtabLeader));
     }
 
     (double Pos, TabStop Stop) NextTab(Paragraph p, double absPos)
@@ -703,7 +717,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 case PieceKind.Tab:
                 {
                     double abs = LineStart(cur.First) + x;
-                    var (pos, stop) = NextTab(p, abs);
+                    var (pos, stop) = pc.PTab is { } pt ? PositionalTab(p, pt, width) : NextTab(p, abs);
                     double w = pos - abs;
                     if (stop.Align is "right" or "end" or "center" or "decimal")
                     {
@@ -965,6 +979,14 @@ public sealed class BlockLayout(LayoutContext ctx)
         var grid = new List<double>(t.Grid);
         while (grid.Count < cols) grid.Add(grid.Count > 0 ? grid.Average() : 72);
         double total = grid.Sum();
+        // Предпочтительная ширина таблицы (tblW): в процентах — от ширины текста, в пунктах — как задана
+        double? target = t.WidthPct is { } wp ? wp * avail : t.Width is > 0 ? t.Width : null;
+        if (target is { } tw && total > 0 && Math.Abs(tw - total) > 1)
+        {
+            double k = tw / total;
+            for (int i = 0; i < grid.Count; i++) grid[i] *= k;
+            total = tw;
+        }
         double maxW = avail - Math.Max(0, t.Indent);
         if (total > maxW + 1 && maxW > 20)
         {

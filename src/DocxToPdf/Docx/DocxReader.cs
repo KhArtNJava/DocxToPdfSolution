@@ -488,7 +488,12 @@ public sealed partial class DocxReader
         r.SmallCaps = OnOff(rPr.Element(W + "smallCaps"));
         r.Vanish = OnOff(rPr.Element(W + "vanish"));
         var u = rPr.Element(W + "u");
-        if (u != null) r.Underline = Val(u) ?? "single";
+        if (u != null)
+        {
+            r.Underline = Val(u) ?? "single";
+            var uc = (string?)u.Attribute(W + "color");
+            r.UnderlineColor = uc is null or "auto" ? null : uc;
+        }
         r.Size = HalfPoints(Val(rPr.Element(W + "sz")));
         r.Color = Val(rPr.Element(W + "color"));
         r.Highlight = Val(rPr.Element(W + "highlight"));
@@ -657,7 +662,10 @@ public sealed partial class DocxReader
             Bold = r.Bold ?? false,
             Italic = r.Italic ?? false,
             Underline = r.Underline != null && r.Underline != "none",
-            DoubleUnderline = r.Underline == "double",
+            DoubleUnderline = r.Underline is "double" or "wavyDouble",
+            UnderlineStyle = r.Underline,
+            UnderlineColor = Rgb.Parse(r.UnderlineColor),
+            DoubleStrike = r.DStrike ?? false,
             Strike = (r.Strike ?? false) || (r.DStrike ?? false),
             Caps = r.Caps ?? false,
             SmallCaps = r.SmallCaps ?? false,
@@ -1078,6 +1086,13 @@ public sealed partial class DocxReader
 
             if (n == W + "t") { if (el.Value.Length > 0) output.Add(new TextInline(el.Value, style)); }
             else if (n == W + "tab") output.Add(new TabInline(style));
+            else if (n == W + "ptab")
+                output.Add(new TabInline(style)
+                {
+                    PtabAlign = (string?)el.Attribute(W + "alignment") ?? "left",
+                    PtabRelativeTo = (string?)el.Attribute(W + "relativeTo") ?? "margin",
+                    PtabLeader = (string?)el.Attribute(W + "leader") ?? "none",
+                });
             else if (n == W + "br")
             {
                 string? type = (string?)el.Attribute(W + "type");
@@ -1178,6 +1193,13 @@ public sealed partial class DocxReader
             t.Align = Val(tblPr.Element(W + "jc")) switch { "center" => "center", "right" or "end" => "right", _ => "left" };
             var tw = tblPr.Element(W + "tblW");
             if (tw != null && (string?)tw.Attribute(W + "type") == "dxa") t.Width = Twips((string?)tw.Attribute(W + "w"));
+            else if (tw != null && (string?)tw.Attribute(W + "type") == "pct" && (string?)tw.Attribute(W + "w") is { } pw)
+            {
+                // Пятидесятые доли процента ("5000" = 100 %) или явные проценты ("100%")
+                if (pw.EndsWith('%') && double.TryParse(pw.TrimEnd('%'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pp)) t.WidthPct = pp / 100;
+                else if (double.TryParse(pw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pf)) t.WidthPct = pf / 5000;
+                if (t.WidthPct is <= 0) t.WidthPct = null;
+            }
         }
         foreach (var gc in tbl.Element(W + "tblGrid")?.Elements(W + "gridCol") ?? [])
             t.Grid.Add(Twips((string?)gc.Attribute(W + "w")) ?? 0);

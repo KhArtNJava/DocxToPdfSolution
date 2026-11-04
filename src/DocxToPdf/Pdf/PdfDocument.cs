@@ -369,6 +369,22 @@ public sealed class PdfCanvas
         _sb.Append($"{F(width)} w {Color(color)} RG {F(x1)} {F(Y(y1))} m {F(x2)} {F(Y(y2))} l S Q\n");
     }
 
+    /// <summary>Волнистая линия (подчёркивание wave) от x длиной len на высоте y.</summary>
+    public void WavyLine(double x, double y, double len, double width, Rgb color)
+    {
+        if (Collecting > 0 || SkipGraphics || len <= 0) return;
+        double amp = Math.Max(0.6, width * 1.2), half = Math.Max(1.5, width * 2.5);
+        _sb.Append($"q {F(width)} w {Color(color)} RG 1 J {F(x)} {F(Y(y))} m ");
+        double cx = x; int sign = -1;
+        while (cx < x + len - 0.01)
+        {
+            double nx = Math.Min(x + len, cx + half), k = (nx - cx) / half;
+            _sb.Append($"{F(cx + (nx - cx) / 3)} {F(Y(y + sign * amp * 1.33 * k))} {F(nx - (nx - cx) / 3)} {F(Y(y + sign * amp * 1.33 * k))} {F(nx)} {F(Y(y))} c ");
+            cx = nx; sign = -sign;
+        }
+        _sb.Append("S Q\n");
+    }
+
     public void Rect(double x, double y, double w, double h, double width, Rgb color)
     {
         if (Collecting > 0) return;

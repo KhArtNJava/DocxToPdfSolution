@@ -14,6 +14,7 @@
 | t9_bidi_math.docx | иврит/арабский (bidi, формы букв), формулы OMML |
 | t10.docx | формат номера страницы (`pgNumType fmt`: римские, буквы), десятичная табуляция, внутренние ссылки на закладки (`w:anchor`), эффекты emboss/imprint/shadow |
 | t11.docx | зеркальные поля (`w:mirrorMargins`) |
+| t12.docx | элементы `w:sdt`, `smartTag`, `customXml`, `fldSimple`, `w:sym`; позиционная табуляция `w:ptab`; стили и цвет подчёркивания; двойное зачёркивание; ширина таблицы в процентах |
 
-Сгенерировать заново: `python3 gen.py && python3 gen2.py && python3 gen3.py && python3 gen4.py && python3 gen5.py` (нужен python-docx).
+Сгенерировать заново: `python3 gen.py && python3 gen2.py && python3 gen3.py && python3 gen4.py && python3 gen5.py && python3 gen6.py` (нужен python-docx).
 Сравнение с LibreOffice: сконвертировать в `ours/` и `lo/`, затем `python3 cmp.py`.

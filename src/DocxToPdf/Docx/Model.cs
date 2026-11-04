@@ -50,6 +50,7 @@ public sealed class RunProps
     public string? ThemeAscii, ThemeHAnsi, ThemeEastAsia;
     public bool? Bold, Italic, Strike, DStrike, Caps, SmallCaps, Vanish;
     public string? Underline;
+    public string? UnderlineColor;
     public double? Size;          // pt
     public string? Color;
     public string? Highlight;
@@ -83,6 +84,7 @@ public sealed class RunProps
         SmallCaps = o.SmallCaps ?? SmallCaps;
         Vanish = o.Vanish ?? Vanish;
         Underline = o.Underline ?? Underline;
+        UnderlineColor = o.Underline != null ? o.UnderlineColor : UnderlineColor;
         Size = o.Size ?? Size;
         Color = o.Color ?? Color;
         Highlight = o.Highlight ?? Highlight;
@@ -232,6 +234,11 @@ public sealed record TextStyle
     public bool Italic { get; init; }
     public bool Underline { get; init; }
     public bool DoubleUnderline { get; init; }
+    /// <summary>Стиль подчёркивания Word: single, thick, dotted, dash, wave, words …</summary>
+    public string? UnderlineStyle { get; init; }
+    /// <summary>Цвет подчёркивания (w:u w:color); null — цвет текста.</summary>
+    public Rgb? UnderlineColor { get; init; }
+    public bool DoubleStrike { get; init; }
     public bool Strike { get; init; }
     public bool Caps { get; init; }
     /// <summary>Капитель: строчные буквы — уменьшенными прописными.</summary>
@@ -270,6 +277,11 @@ public sealed class TextInline(string text, TextStyle style) : Inline
 public sealed class TabInline(TextStyle style) : Inline
 {
     public TextStyle Style = style;
+    /// <summary>Позиционная табуляция (w:ptab): выравнивание left/center/right.</summary>
+    public string? PtabAlign;
+    /// <summary>Для w:ptab: отсчёт от полей ("margin") или от отступов абзаца ("indent").</summary>
+    public string PtabRelativeTo = "margin";
+    public string PtabLeader = "none";
 }
 
 public enum BreakKind { Line, Page, Column }
@@ -405,6 +417,8 @@ public sealed class Table : Block
     public double Indent;
     public string Align = "left";
     public double? Width;
+    /// <summary>Ширина в долях ширины текста (tblW type="pct"), 1 = 100 %</summary>
+    public double? WidthPct;
     public List<TableRow> Rows = [];
     public bool PageBreakBefore;
     public double SpaceBefore, SpaceAfter;

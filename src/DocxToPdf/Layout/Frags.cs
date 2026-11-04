@@ -52,6 +52,8 @@ public sealed class Piece
     public bool BreakBefore;
     public ImageInline? Image;
     public TabStop? Tab;
+    /// <summary>Позиционная табуляция (w:ptab), из которой строится позиция табуляции.</summary>
+    public TabInline? PTab;
     /// <summary>Для Spacer: чей это край (начало или конец строчного блока).</summary>
     public InlineBox? SpacerBox;
     public bool SpacerStart;
@@ -213,16 +215,35 @@ public sealed class LineFrag : Frag
                 var f = p.Face.Font;
                 double size = st.Size;
                 double thick = Math.Max(0.4, f.UnderlineThickness / (double)f.UnitsPerEm * size);
-                if (st.Underline)
+                // «Только слова»: пробелы не подчёркиваются
+                if (st.Underline && !(st.UnderlineStyle == "words" && p.Kind is PieceKind.Space or PieceKind.Tab))
                 {
                     double uy = baseY - p.Rise - f.UnderlinePosition / (double)f.UnitsPerEm * size + thick / 2;
-                    c.Line(px, uy, px + w, uy, thick, st.Color);
-                    if (st.DoubleUnderline) c.Line(px, uy + thick * 2, px + w, uy + thick * 2, thick, st.Color);
+                    var ucol = st.UnderlineColor ?? st.Color;
+                    string us = st.UnderlineStyle ?? "single";
+                    double ut = us.Contains("thick", StringComparison.OrdinalIgnoreCase) || us.Contains("Heavy") ? thick * 2 : thick;
+                    if (us.StartsWith("wav", StringComparison.OrdinalIgnoreCase))
+                    {
+                        c.WavyLine(px, uy + ut, w, ut, ucol);
+                        if (st.DoubleUnderline) c.WavyLine(px, uy + ut * 4, w, ut, ucol);
+                    }
+                    else
+                    {
+                        bool dotted = us.StartsWith("dotted") || us == "dottedHeavy";
+                        bool dashed = us.StartsWith("dash", StringComparison.OrdinalIgnoreCase) || us.StartsWith("dot");
+                        c.Line(px, uy, px + w, uy, ut, ucol, dashed && !dotted, dotted);
+                        if (st.DoubleUnderline) c.Line(px, uy + thick * 2, px + w, uy + thick * 2, thick, ucol);
+                    }
                 }
                 if (st.Strike)
                 {
                     double sy = baseY - p.Rise - size * 0.27;
-                    c.Line(px, sy, px + w, sy, thick, st.Color);
+                    if (st.DoubleStrike)
+                    {
+                        c.Line(px, sy - thick, px + w, sy - thick, thick, st.Color);
+                        c.Line(px, sy + thick, px + w, sy + thick, thick, st.Color);
+                    }
+                    else c.Line(px, sy, px + w, sy, thick, st.Color);
                 }
             }
             if (st.Link != null)
