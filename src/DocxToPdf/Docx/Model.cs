@@ -300,6 +300,8 @@ public sealed class Table : Block
     public string Align = "left";
     public double? Width;
     public List<TableRow> Rows = [];
+    public bool PageBreakBefore;
+    public double SpaceBefore, SpaceAfter;
 }
 
 public sealed class HeaderFooter

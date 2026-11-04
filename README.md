@@ -1,4 +1,4 @@
-# docx2pdf — конвертер DOCX → PDF на чистом C# (.NET 10)
+# docx2pdf — конвертер DOCX и HTML → PDF на чистом C# (.NET 10)
 
 Без сторонних библиотек: используется только BCL (`System.IO.Compression`, `System.Xml.Linq`).
 Весь код (чтение DOCX, разбор TrueType, вёрстка, генерация PDF) написан с нуля.
@@ -9,7 +9,13 @@
 dotnet build -c Release
 dotnet bin/Release/net10.0/docx2pdf.dll document.docx -o document.pdf
 dotnet bin/Release/net10.0/docx2pdf.dll *.docx -o out_dir/ --fonts ~/my-fonts
+dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 ```
+
+Формат входного файла определяется по содержимому (ZIP → DOCX, иначе HTML).
+
+Опции для HTML (CSS `@page` имеет приоритет): `--page-size A3|A4|A5|Letter|Legal`, `--landscape`,
+`--margin <мм>`, `--page-numbers`, `--no-remote` (не загружать http(s)-ресурсы).
 
 ## Устройство
 
@@ -22,6 +28,9 @@ dotnet bin/Release/net10.0/docx2pdf.dll *.docx -o out_dir/ --fonts ~/my-fonts
 | `Images/ImageDecoder.cs` | JPEG (как есть, DCTDecode), PNG (все типы, Adam7, прозрачность), GIF (LZW), BMP |
 | `Layout/BlockLayout.cs` | Разбиение на строки, табуляция, выравнивание, межстрочный интервал, таблицы |
 | `Layout/Paginator.cs` | Разбивка на страницы, keepNext, висячие строки, разрыв строк таблиц, повтор шапки, колонтитулы |
+| `Html/HtmlParser.cs` | Терпимый к ошибкам HTML-парсер (неявное закрытие p/li/td/tr…, сущности, raw-text теги) |
+| `Html/Css.cs` | CSS: правила, селекторы (тег, .класс, #id, [атрибут], потомок, `>`, `+`, `~`, :first-child), специфичность, @page, @media print, разбор длин и цветов |
+| `Html/HtmlReader.cs` | Каскад стилей (UA-стили → атрибуты → CSS → style=""), перевод HTML в модель документа: абзацы, списки, таблицы, изображения |
 | `Pdf/PdfDocument.cs` | Запись PDF 1.7: Type0/CIDFontType2 + Identity-H, ToUnicode, FlateDecode, изображения с SMask, ссылки |
 
 ## Поддерживается
@@ -37,6 +46,19 @@ dotnet bin/Release/net10.0/docx2pdf.dll *.docx -o out_dir/ --fonts ~/my-fonts
 - Колонтитулы: default/first/even, поля PAGE и NUMPAGES
 - Гиперссылки (кликабельные), метаданные (заголовок, автор)
 
+## HTML: поддерживается
+
+- Кодировки: UTF-8/16 (BOM), `<meta charset>` (в т.ч. windows-1251, koi8-r)
+- CSS из `<style>`, `<link rel=stylesheet>` (локальные файлы), атрибута `style`; `!important`
+- Шрифт (family/size/weight/style, сокращение `font`), цвет, фон, `text-decoration`, `text-align` (включая justify),
+  `text-indent`, `line-height`, `white-space` (pre, nowrap), `text-transform`, `vertical-align` (sub/super)
+- Блочная модель: margin (со схлопыванием), padding, фон блока, верхняя/нижняя рамка, `width` + `margin: auto`
+- Заголовки, абзацы, `div`, `blockquote`, `pre`, `hr`, `br`, списки `ul/ol/dl` (вложенные, `start`, `type`, `list-style-type`)
+- Таблицы: `thead/tbody/tfoot`, `colspan`, `rowspan`, автоподбор ширин колонок по содержимому, `width` в px/%,
+  `border`, `cellpadding`, `bgcolor`, рамки и фон ячеек, повтор шапки на каждой странице
+- Изображения: файлы, `data:` URI, http(s); `width/height`; `alt` при ошибке
+- Ссылки, `page-break-before/after`, `@page { size; margin }`, номера страниц
+
 ## Ограничения
 
 - Плавающие объекты (anchor) выводятся в потоке, обтекание не поддерживается; надписи (text box) и фигуры не рисуются
@@ -44,5 +66,7 @@ dotnet bin/Release/net10.0/docx2pdf.dll *.docx -o out_dir/ --fonts ~/my-fonts
 - Нет колонок, сносок, примечаний, RTL и сложного шейпинга (арабский, индийские письменности), кернинга и автопереносов
 - Только TrueType-контуры (OTF с CFF пропускаются)
 - Условное форматирование стилей таблиц (firstRow, banded rows) не применяется
+- HTML: нет JavaScript, float/flex/grid/position (всё выводится в потоке), SVG, псевдоэлементов
+  (`::before`), `:nth-child`, левых/правых рамок у блоков, CSS-переменных и `calc()`
 
-Пример: `src/DocxToPdf/samples/sample.docx` → `src/DocxToPdf/samples/sample.pdf`.
+Примеры: `src/DocxToPdf/samples/sample.docx` → `sample.pdf`, `sample.html` → `sample-html.pdf`.

@@ -593,6 +593,12 @@ public sealed class BlockLayout(LayoutContext ctx)
             if (row.IsHeader && info.HeaderRows.Count == ri) info.HeaderRows.Add(rf);
             result.Add(rf);
         }
+        if (result.Count > 0)
+        {
+            result[0].PageBreakBefore = t.PageBreakBefore;
+            result[0].SpaceBefore = t.SpaceBefore;
+            result[^1].SpaceAfter = t.SpaceAfter;
+        }
         // Строки заголовка не отрываем от первой строки данных
         foreach (var h in info.HeaderRows) h.KeepWithNext = true;
         return result;

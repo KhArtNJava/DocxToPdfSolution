@@ -309,7 +309,7 @@ public sealed class RowFrag : Frag
         }
         if (!anyKept || !anyMoved) return null;
         var r1 = new RowFrag { Table = Table, Cells = first, Height = avail, IsHeader = IsHeader };
-        var r2 = new RowFrag { Table = Table, Cells = rest, Height = restH, IsHeader = IsHeader, KeepWithNext = KeepWithNext, PageBreakAfter = PageBreakAfter };
+        var r2 = new RowFrag { Table = Table, Cells = rest, Height = restH, IsHeader = IsHeader, KeepWithNext = KeepWithNext, PageBreakAfter = PageBreakAfter, SpaceAfter = SpaceAfter };
         return (r1, r2);
     }
 

@@ -126,6 +126,10 @@ public sealed class FontManager
             || f.Contains("cambria") || f.Contains("book") || f.Contains("bodoni") || f.Contains("palatino") || f.Contains("century");
     }
 
+    /// <summary>Есть ли гарнитура среди установленных шрифтов (или её известная замена).</summary>
+    public bool HasFamily(string family) =>
+        _index.ContainsKey(family) || (Substitutes.TryGetValue(family, out var subs) && subs.Any(_index.ContainsKey));
+
     /// <summary>Возвращает начертание для гарнитуры (с подбором замены).</summary>
     public FontFace Get(string family, bool bold, bool italic)
     {
