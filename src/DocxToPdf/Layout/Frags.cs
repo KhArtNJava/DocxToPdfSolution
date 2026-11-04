@@ -114,6 +114,10 @@ public sealed class LineFrag : Frag
         double baseY = y + TopPad + Baseline;
         double lx = x + Left;
 
+        // Барная табуляция: вертикальная черта на всю высоту строки (позиция — от левого поля)
+        foreach (var t in Para.Tabs)
+            if (t.Align == "bar") c.Line(x + t.Pos, y, x + t.Pos, y + Height, 0.5, Rgb.Black);
+
         // Конечные пробелы не подчёркиваются
         int lastContent = Pieces.FindLastIndex(p => p.Kind is PieceKind.Text or PieceKind.Image or PieceKind.Tab);
 
@@ -197,7 +201,13 @@ public sealed class LineFrag : Frag
                     var ir = img.Radius?.Resolve(iw, ih);
                     bool clip = PdfCanvas.HasRadius(ir);
                     if (clip) c.BeginRoundedClip(px, iy, iw, ih, ir!);
-                    c.Image(img.PartName, bytes, px, iy, iw, ih);
+                    if (img.HasGeometry)
+                    {
+                        double k = img.Width > 0 ? iw / img.Width : 1;
+                        c.ImageGeometry(img.PartName, bytes, px + iw / 2, iy + ih / 2, img.FrameW * k, img.FrameH * k,
+                            img.CropL, img.CropT, img.CropR, img.CropB, img.Rotation, img.FlipH, img.FlipV);
+                    }
+                    else c.Image(img.PartName, bytes, px, iy, iw, ih);
                     if (clip) c.EndClip();
                 }
                 if (tr != null) TransformPainter.Paint(c, px, iy, iw, ih, tr, DrawImg);

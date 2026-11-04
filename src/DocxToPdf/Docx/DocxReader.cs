@@ -207,6 +207,8 @@ public sealed partial class DocxReader
 
         var ctx = new PartContext { Rels = mainRels, BaseDir = baseDir };
         var blocks = new List<Block>();
+        // Левое поле (для рамок и плавающих таблиц, привязанных к странице)
+        _bodyMarginLeft = Twips((string?)body.Element(W + "sectPr")?.Element(W + "pgMar")?.Attribute(W + "left")) ?? 85.05;
         ParseBlockContainer(body, ctx, blocks, isBody: true);
 
         // Финальный sectPr
@@ -312,7 +314,7 @@ public sealed partial class DocxReader
                 {
                     PPr = ParsePPr(cp.Element(W + "pPr")),
                     RPr = ParseRPr(cp.Element(W + "rPr")),
-                    Shading = (string?)tcPr?.Element(W + "shd")?.Attribute(W + "fill"),
+                    Shading = ShdHex(tcPr?.Element(W + "shd")),
                     Borders = ParseBorders(tcPr?.Element(W + "tcBorders")),
                 };
             }
@@ -437,6 +439,32 @@ public sealed partial class DocxReader
 
     static bool? OnOff(XElement? e) => e == null ? null : IsOnVal(e);
 
+    /// <summary>
+    /// Итоговый цвет заливки w:shd: фон (fill) смешивается с цветом узора (color) в доле узора
+    /// (pct25 — 25 %, полосы — 50 %/25 %, solid — цвет узора). Возвращает "RRGGBB" или "auto".
+    /// </summary>
+    static string? ShdHex(XElement? shd)
+    {
+        if (shd == null) return null;
+        string val = (string?)shd.Attribute(W + "val") ?? "clear";
+        string? fill = (string?)shd.Attribute(W + "fill");
+        if (val is "clear" or "nil") return fill;
+        double k = val switch
+        {
+            "solid" => 1,
+            _ when val.StartsWith("pct") && double.TryParse(val[3..], NumberStyles.Float, CultureInfo.InvariantCulture, out var pc) => pc / 100,
+            _ when val.StartsWith("thin") => 0.25,       // thinHorzStripe, thinDiagCross …
+            "horzStripe" or "vertStripe" or "diagStripe" or "reverseDiagStripe" => 0.5,
+            "horzCross" or "diagCross" => 0.75,
+            _ => 0
+        };
+        if (k <= 0) return fill;
+        var bg = Rgb.Parse(fill) ?? new Rgb(1, 1, 1);
+        var fg = Rgb.Parse((string?)shd.Attribute(W + "color")) ?? new Rgb(0, 0, 0);
+        int C(double a, double b) => (int)Math.Round((a * (1 - k) + b * k) * 255);
+        return $"{C(bg.R, fg.R):X2}{C(bg.G, fg.G):X2}{C(bg.B, fg.B):X2}";
+    }
+
     static int? ParseHex(string? s) =>
         s != null && int.TryParse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v) ? v : null;
 
@@ -498,7 +526,7 @@ public sealed partial class DocxReader
         r.Color = Val(rPr.Element(W + "color"));
         r.Highlight = Val(rPr.Element(W + "highlight"));
         var shd = rPr.Element(W + "shd");
-        if (shd != null) r.Shading = (string?)shd.Attribute(W + "fill");
+        if (shd != null) r.Shading = ShdHex(shd);
         r.VertAlign = Val(rPr.Element(W + "vertAlign"));
         r.StyleId = Val(rPr.Element(W + "rStyle"));
         r.Position = HalfPoints(Val(rPr.Element(W + "position")));
@@ -568,7 +596,7 @@ public sealed partial class DocxReader
             }
         }
         var shd = pPr.Element(W + "shd");
-        if (shd != null) p.Shading = (string?)shd.Attribute(W + "fill");
+        if (shd != null) p.Shading = ShdHex(shd);
         var bdr = pPr.Element(W + "pBdr");
         if (bdr != null)
         {
@@ -580,6 +608,7 @@ public sealed partial class DocxReader
         }
         p.MarkRunProps = ParseRPr(pPr.Element(W + "rPr"));
         p.SnapToGrid = OnOff(pPr.Element(W + "snapToGrid"));
+        p.SuppressLineNumbers = OnOff(pPr.Element(W + "suppressLineNumbers"));
         p.Bidi = OnOff(pPr.Element(W + "bidi"));
         if (pPr.Element(W + "framePr") is { } fp && (string?)fp.Attribute(W + "dropCap") is "drop" or "margin")
         {
@@ -728,9 +757,21 @@ public sealed partial class DocxReader
                 output.AddRange(pending);
                 if (para.DropLines > 0)
                     output.Add(new FloatBlock { Side = "left", Width = 0, DropLines = para.DropLines, MarginRight = para.DropGap, Blocks = [para] });
+                else if (FrameFloat(el.Element(W + "pPr")?.Element(W + "framePr")) is { } ff)
+                {
+                    // Соседние абзацы с одинаковой рамкой (framePr) — одна рамка
+                    string key = el.Element(W + "pPr")!.Element(W + "framePr")!.ToString(SaveOptions.DisableFormatting);
+                    if (output.Count > 0 && output[^1] is FloatBlock prevF && prevF.FrameKey == key) prevF.Blocks.Add(para);
+                    else { ff.FrameKey = key; ff.Blocks.Add(para); output.Add(ff); }
+                }
                 else output.Add(para);
             }
-            else if (el.Name == W + "tbl") output.Add(ParseTable(el, ctx));
+            else if (el.Name == W + "tbl")
+            {
+                var table = ParseTable(el, ctx);
+                if (TableFloat(el.Element(W + "tblPr")?.Element(W + "tblpPr"), table) is { } tf) { tf.Blocks.Add(table); output.Add(tf); }
+                else output.Add(table);
+            }
             else if (el.Name == W + "sdt") { var c = el.Element(W + "sdtContent"); if (c != null) ParseBlockContainer(c, ctx, output); }
             else if (el.Name == W + "customXml" || el.Name == W + "ins" || el.Name == W + "moveTo") ParseBlockContainer(el, ctx, output);
             else if (el.Name == MC + "AlternateContent")
@@ -739,6 +780,57 @@ public sealed partial class DocxReader
                 if (alt != null) ParseBlockContainer(alt, ctx, output);
             }
         }
+    }
+
+    /// <summary>
+    /// Рамка-абзац w:framePr (не буквица) с обтеканием — плавающий блок у левого или правого края.
+    /// Без обтекания (wrap="none"/"notBeside") абзац остаётся в потоке.
+    /// </summary>
+    double _bodyMarginLeft = 85.05;
+
+    FloatBlock? FrameFloat(XElement? fp)
+    {
+        if (fp == null || fp.Attribute(W + "dropCap") is { } dc && dc.Value != "none") return null;
+        string wrap = (string?)fp.Attribute(W + "wrap") ?? "auto";
+        if (wrap is "none" or "notBeside") return null;
+        double w = Twips((string?)fp.Attribute(W + "w")) ?? 0;
+        double hSpace = Twips((string?)fp.Attribute(W + "hSpace")) ?? 0, vSpace = Twips((string?)fp.Attribute(W + "vSpace")) ?? 0;
+        string hAnchor = (string?)fp.Attribute(W + "hAnchor") ?? "page", vAnchor = (string?)fp.Attribute(W + "vAnchor") ?? "margin";
+        string? xAlign = (string?)fp.Attribute(W + "xAlign");
+        double x = Twips((string?)fp.Attribute(W + "x")) ?? 0, y = Twips((string?)fp.Attribute(W + "y")) ?? 0;
+        return MakeSideFloat(xAlign, hAnchor, x, w, vAnchor == "text" ? y : 0, hSpace, hSpace, vSpace);
+    }
+
+    /// <summary>Плавающая таблица (w:tblpPr): обтекается текстом следующих абзацев.</summary>
+    FloatBlock? TableFloat(XElement? tp, Table t)
+    {
+        if (tp == null) return null;
+        double L(string n) => Twips((string?)tp.Attribute(W + n)) ?? 0;
+        string hAnchor = (string?)tp.Attribute(W + "horzAnchor") ?? "column", vAnchor = (string?)tp.Attribute(W + "vertAnchor") ?? "margin";
+        string? xSpec = (string?)tp.Attribute(W + "tblpXSpec");
+        double w = t.Width ?? t.Grid.Sum();
+        t.Indent = 0;
+        t.Align = "left";
+        return MakeSideFloat(xSpec, hAnchor, L("tblpX"), w, vAnchor == "text" ? L("tblpY") : 0, L("leftFromText"), L("rightFromText"), L("bottomFromText"));
+    }
+
+    FloatBlock MakeSideFloat(string? align, string hAnchor, double x, double w, double top, double spaceL, double spaceR, double spaceB)
+    {
+        // Смещение от края страницы приводим к смещению от поля
+        double ml = Math.Max(0, hAnchor == "page" ? x - _bodyMarginLeft : x);
+        string side = align switch
+        {
+            "right" or "outside" => "right",
+            "left" or "inside" or "center" => "left",
+            _ => "left"
+        };
+        return new FloatBlock
+        {
+            Side = side, Width = w,
+            MarginLeft = side == "right" ? spaceL : align == null ? ml : 0,
+            MarginRight = side == "left" ? spaceR : 0,
+            MarginTop = Math.Max(0, top), MarginBottom = spaceB,
+        };
     }
 
     Paragraph ParseParagraph(XElement p, PartContext ctx)
@@ -810,6 +902,7 @@ public sealed partial class DocxReader
 
         if (lvl != null && para.Inlines.Count > 0 && lvl.Jc is "right" or "end" or "center") para.LabelAlign = lvl.Jc == "center" ? "center" : "right";
         para.SnapToGrid = pp.SnapToGrid ?? true;
+        para.SuppressLineNumbers = pp.SuppressLineNumbers ?? false;
         para.DropLines = direct?.DropLines ?? 0;
         para.DropGap = direct?.DropGap ?? 0;
         para.Rtl = pp.Bidi ?? false;
@@ -1299,7 +1392,7 @@ public sealed partial class DocxReader
                     if (vm != null) cell.VMerge = Val(vm) == "restart" ? VMerge.Restart : VMerge.Continue;
                     if (tcPr.Element(W + "hMerge") is { } hm && Val(hm) != "restart") cell.GridSpan = 0; // склеено с предыдущей
                     cell.Borders = ParseBorders(tcPr.Element(W + "tcBorders"));
-                    cell.Shading = Rgb.Parse((string?)tcPr.Element(W + "shd")?.Attribute(W + "fill"));
+                    cell.Shading = Rgb.Parse(ShdHex(tcPr.Element(W + "shd")));
                     cell.Margins = ParseMargins(tcPr.Element(W + "tcMar"));
                     cell.VAlign = Val(tcPr.Element(W + "vAlign")) ?? "top";
                     cell.TextDirection = Val(tcPr.Element(W + "textDirection")) switch
@@ -1413,6 +1506,14 @@ public sealed partial class DocxReader
         s.TitlePage = sp.Element(W + "titlePg") is { } tp && IsOnVal(tp);
         s.PageNumberStart = ParseInt((string?)sp.Element(W + "pgNumType")?.Attribute(W + "start"));
         s.PageNumberFormat = (string?)sp.Element(W + "pgNumType")?.Attribute(W + "fmt") ?? "decimal";
+        if (sp.Element(W + "lnNumType") is { } ln)
+        {
+            s.LineNumberCountBy = ParseInt((string?)ln.Attribute(W + "countBy")) ?? 0;
+            // w:start — номер первой строки минус один (отсчёт с нуля)
+            s.LineNumberStart = (ParseInt((string?)ln.Attribute(W + "start")) ?? 0) + 1;
+            s.LineNumberDistance = Twips((string?)ln.Attribute(W + "distance"));
+            s.LineNumberRestart = (string?)ln.Attribute(W + "restart") ?? "newPage";
+        }
         if (sp.Element(W + "pgBorders") is { } pb)
         {
             BorderDef? B(string n) => ParseBorder(pb.Element(W + n)) is { IsNone: false } b ? b : null;

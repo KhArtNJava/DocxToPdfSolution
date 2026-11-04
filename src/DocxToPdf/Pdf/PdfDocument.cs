@@ -595,6 +595,35 @@ public sealed class PdfCanvas
     /// <summary>Пока больше нуля — ссылки не добавляются (повторная отрисовка того же содержимого).</summary>
     public int SuppressLinks;
 
+    /// <summary>
+    /// Картинка с обрезкой, поворотом (по часовой стрелке, градусы) и отражением.
+    /// (cx, cy) — центр рамки, w×h — размер неповёрнутой рамки (видимой части).
+    /// </summary>
+    public void ImageGeometry(string key, byte[] bytes, double cx, double cy, double w, double h,
+        double cropL, double cropT, double cropR, double cropB, double rotation, bool flipH, bool flipV)
+    {
+        if (Collecting > 0 || SkipGraphics) return;
+        double a = -rotation * Math.PI / 180, cos = Math.Cos(a), sin = Math.Sin(a);
+        double sx = flipH ? -1 : 1, sy = flipV ? -1 : 1;
+        // Переход в систему рамки: начало в центре, ось Y вверх
+        _sb.Append($"q {F(cos * sx)} {F(sin * sx)} {F(-sin * sy)} {F(cos * sy)} {F(cx)} {F(Y(cy))} cm ");
+        bool crop = cropL != 0 || cropT != 0 || cropR != 0 || cropB != 0;
+        if (crop) _sb.Append($"{F(-w / 2)} {F(-h / 2)} {F(w)} {F(h)} re W n ");
+        double fw = w / (1 - cropL - cropR), fh = h / (1 - cropT - cropB);
+        double left = -w / 2 - cropL * fw, top = h / 2 + cropT * fh;
+        var img = _doc.GetImage(key, bytes);
+        if (img == null)
+        {
+            _sb.Append($"0.93 0.93 0.93 rg {F(-w / 2)} {F(-h / 2)} {F(w)} {F(h)} re f ");
+        }
+        else
+        {
+            if (!Images.Contains(img)) Images.Add(img);
+            _sb.Append($"{F(fw)} 0 0 {F(fh)} {F(left)} {F(top - fh)} cm /{img.Name} Do ");
+        }
+        _sb.Append("Q\n");
+    }
+
     public void Image(string key, byte[] bytes, double x, double y, double w, double h)
     {
         if (Collecting > 0) return;

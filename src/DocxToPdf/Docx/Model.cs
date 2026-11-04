@@ -125,7 +125,7 @@ public sealed class ParaProps
     public double? Line;          // pt (exact/atLeast) либо 240-е доли (auto)
     public string? LineRule;
     public int? NumId, Ilvl;
-    public bool? PageBreakBefore, KeepNext, KeepLines, ContextualSpacing, WidowControl, SnapToGrid, Bidi;
+    public bool? PageBreakBefore, KeepNext, KeepLines, ContextualSpacing, WidowControl, SnapToGrid, Bidi, SuppressLineNumbers;
     public int? DropLines;
     public double? DropGap;
     public List<TabStop>? Tabs;   // включая val="clear"
@@ -163,6 +163,7 @@ public sealed class ParaProps
         ContextualSpacing = o.ContextualSpacing ?? ContextualSpacing;
         WidowControl = o.WidowControl ?? WidowControl;
         SnapToGrid = o.SnapToGrid ?? SnapToGrid;
+        SuppressLineNumbers = o.SuppressLineNumbers ?? SuppressLineNumbers;
         Bidi = o.Bidi ?? Bidi;
         if (o.Tabs != null)
         {
@@ -301,6 +302,14 @@ public sealed class ImageInline(string partName, double width, double height, Te
     public double Width = width;   // pt
     public double Height = height; // pt
     public TextStyle Style = style;
+    /// <summary>Обрезка (a:srcRect) в долях исходной картинки: слева, сверху, справа, снизу.</summary>
+    public double CropL, CropT, CropR, CropB;
+    /// <summary>Поворот по часовой стрелке, градусы (a:xfrm rot).</summary>
+    public double Rotation;
+    public bool FlipH, FlipV;
+    /// <summary>Размер неповёрнутой рамки; Width/Height — описанный прямоугольник после поворота.</summary>
+    public double FrameW = width, FrameH = height;
+    public bool HasGeometry => CropL != 0 || CropT != 0 || CropR != 0 || CropB != 0 || Rotation != 0 || FlipH || FlipV;
 }
 
 public enum FieldKind { Page, NumPages }
@@ -339,6 +348,8 @@ public sealed class Paragraph : Block
     public string? LabelAlign;
     /// <summary>Привязка строк к сетке документа (docGrid).</summary>
     public bool SnapToGrid = true;
+    /// <summary>w:suppressLineNumbers — строки абзаца не нумеруются.</summary>
+    public bool SuppressLineNumbers;
     /// <summary>Буквица (w:framePr dropCap): высота в строках, отступ до текста.</summary>
     public int DropLines;
     public double DropGap;
@@ -467,6 +478,8 @@ public sealed class FloatBlock : Block
     public double MarginTop, MarginBottom, MarginLeft, MarginRight;
     public BoxStyle Box = new();
     public List<Block> Blocks = [];
+    /// <summary>Для рамок w:framePr: подпись свойств рамки (соседние абзацы с той же рамкой объединяются).</summary>
+    public string? FrameKey;
 }
 
 /// <summary>Абсолютно/фиксированно позиционированный блок (вне потока).</summary>
@@ -541,6 +554,13 @@ public sealed class HeaderFooter
 
 public sealed class SectionProps
 {
+    /// <summary>Нумерация строк (w:lnNumType): шаг вывода; 0 — нумерации нет.</summary>
+    public int LineNumberCountBy;
+    public int LineNumberStart = 1;
+    /// <summary>Расстояние от номера до текста, pt; null — авто (0,25").</summary>
+    public double? LineNumberDistance;
+    /// <summary>newPage, newSection, continuous</summary>
+    public string LineNumberRestart = "newPage";
     public double PageWidth = 595.3, PageHeight = 841.9;
     public double MarginTop = 56.7, MarginBottom = 56.7, MarginLeft = 85.05, MarginRight = 42.55;
     public double HeaderDistance = 35.4, FooterDistance = 35.4;

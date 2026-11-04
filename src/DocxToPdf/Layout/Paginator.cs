@@ -21,6 +21,8 @@ public sealed class Page
     /// <summary>Левое поле этой страницы (с учётом зеркальных полей) и текст номера страницы.</summary>
     public double MarginLeft;
     public string NumberText = "1";
+    /// <summary>Номера строк: правый край номера, базовая линия, текст, стиль.</summary>
+    public List<(Frag Frag, double X, double Y)> LineNumbers = [];
 }
 
 /// <summary>Разбивает поток фрагментов на страницы (и колонки), размещает сноски и колонтитулы.</summary>
@@ -245,6 +247,7 @@ public sealed class Paginator(LayoutContext ctx)
         _y += spaceBefore;
         _page!.Items.Add((f, _page.MarginLeft + _colX[_col], _y));
         CollectBookmarks(f, _page.MarginLeft + _colX[_col], _y);
+        if (_sp?.LineNumberCountBy > 0) NumberLines(f, _page.MarginLeft + _colX[_col], _y);
         _y += f.Height + f.SpaceAfter;
         _colMaxY = Math.Max(_colMaxY, _y - f.SpaceAfter);
         if (f is RowFrag rf) _lastTable = rf.Table;
@@ -397,6 +400,47 @@ public sealed class Paginator(LayoutContext ctx)
         }
     }
 
+    int _lineNo = 1;
+    Page? _lineNoPage;
+    SectionProps? _lineNoSection;
+
+    /// <summary>Нумерация строк основного текста (таблицы, надписи и колонтитулы не нумеруются, как в Word).</summary>
+    void NumberLines(Frag f, double colLeft, double y)
+    {
+        var sp = _sp!;
+        if (_lineNoSection != sp && sp.LineNumberRestart != "continuous" || _lineNoSection == null) _lineNo = sp.LineNumberStart;
+        else if (_lineNoPage != _page && sp.LineNumberRestart == "newPage") _lineNo = sp.LineNumberStart;
+        _lineNoSection = sp; _lineNoPage = _page;
+        double dist = sp.LineNumberDistance is > 0 ? sp.LineNumberDistance.Value : 18;
+        void Walk(Frag fr, double fy)
+        {
+            switch (fr)
+            {
+                case LineFrag lf when !lf.Para.SuppressLineNumbers:
+                    if (_lineNo % sp.LineNumberCountBy == 0)
+                    {
+                        var ms = lf.Para.MarkStyle;
+                        var st = new TextStyle
+                        {
+                            FontAscii = ms.FontAscii, FontHAnsi = ms.FontHAnsi, FontEastAsia = ms.FontEastAsia,
+                            Size = ms.Size, Color = Rgb.Black,
+                        };
+                        const double boxW = 60;
+                        var np = new Paragraph { Align = "right", MarkStyle = st, SnapToGrid = false };
+                        np.Inlines.Add(new TextInline(_lineNo.ToString(CultureInfo.InvariantCulture), st));
+                        var nl = new BlockLayout(_ctx).LayoutParagraph(np, boxW);
+                        if (nl.Count > 0) _page!.LineNumbers.Add((nl[0], colLeft - dist - boxW, fy + lf.Baseline - nl[0].Baseline));
+                    }
+                    _lineNo++;
+                    break;
+                case GroupFrag gf:
+                    foreach (var (gfr, _, gy) in gf.Items.OrderBy(t => t.Y)) if (gfr is LineFrag) Walk(gfr, fy + gy);
+                    break;
+            }
+        }
+        Walk(f, y);
+    }
+
     /// <summary>Цели внутренних ссылок: закладка → (страница, x, y).</summary>
     public readonly Dictionary<string, (int Page, double X, double Y)> Destinations = [];
 
@@ -521,6 +565,7 @@ public sealed class Paginator(LayoutContext ctx)
             foreach (var (frag, x, y, _) in page.Underlays.OrderBy(u => u.Z)) frag.Draw(canvas, x, y);
             foreach (var (frag, x, y) in page.Items) frag.Draw(canvas, x, y);
             foreach (var (x, y1, y2) in page.ColumnLines) canvas.Line(x, y1, x, y2, 0.5, Rgb.Black);
+            foreach (var (frag, x, y) in page.LineNumbers) frag.Draw(canvas, x, y);
             foreach (var (frag, x, y, _) in page.Overlays.OrderBy(u => u.Z)) frag.Draw(canvas, x, y);
             DrawPageBorders(canvas, page);
         }

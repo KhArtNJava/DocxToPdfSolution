@@ -7,6 +7,7 @@ namespace DocxToPdf.Docx;
 public sealed partial class DocxReader
 {
     static readonly XNamespace WPS = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
+    static readonly XNamespace PIC = "http://schemas.openxmlformats.org/drawingml/2006/picture";
     static readonly XNamespace W10 = "urn:schemas-microsoft-com:office:word";
 
     /// <summary>Блоки, которые абзац порождает перед собой (плавающие объекты).</summary>
@@ -114,6 +115,34 @@ public sealed partial class DocxReader
         return null;
     }
 
+    /// <summary>Обрезка (a:srcRect), поворот и отражение (a:xfrm) картинки DrawingML.</summary>
+    static void ApplyPictureGeometry(XElement container, ImageInline img, bool inline)
+    {
+        static double Pct(XElement? e, string a) => double.TryParse((string?)e?.Attribute(a), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v / 100000.0 : 0;
+        var src = container.Descendants(A + "srcRect").FirstOrDefault();
+        if (src != null)
+        {
+            img.CropL = Pct(src, "l"); img.CropT = Pct(src, "t"); img.CropR = Pct(src, "r"); img.CropB = Pct(src, "b");
+            // Отрицательные значения — поля вокруг картинки; доля видимой части должна быть положительной
+            if (1 - img.CropL - img.CropR < 0.01 || 1 - img.CropT - img.CropB < 0.01) img.CropL = img.CropT = img.CropR = img.CropB = 0;
+        }
+        var xfrm = container.Descendants(PIC + "spPr").FirstOrDefault()?.Element(A + "xfrm")
+                   ?? container.Descendants(A + "xfrm").FirstOrDefault();
+        if (xfrm != null)
+        {
+            if (double.TryParse((string?)xfrm.Attribute("rot"), NumberStyles.Float, CultureInfo.InvariantCulture, out var rot)) img.Rotation = rot / 60000.0 % 360;
+            img.FlipH = (string?)xfrm.Attribute("flipH") is "1" or "true";
+            img.FlipV = (string?)xfrm.Attribute("flipV") is "1" or "true";
+        }
+        if (inline && img.Rotation != 0)
+        {
+            // В строке картинка занимает описанный прямоугольник повёрнутой рамки
+            double a = img.Rotation * Math.PI / 180, c = Math.Abs(Math.Cos(a)), s = Math.Abs(Math.Sin(a));
+            img.Width = img.FrameW * c + img.FrameH * s;
+            img.Height = img.FrameW * s + img.FrameH * c;
+        }
+    }
+
     void ParseDrawing(XElement drawing, RunState st, TextStyle style, List<Inline> output)
     {
         foreach (var container in drawing.Elements())
@@ -157,6 +186,7 @@ public sealed partial class DocxReader
                 var tmp = new List<Inline>();
                 AddImage(rid, w, h, st, style, tmp);
                 if (tmp.Count == 0) continue;
+                ApplyPictureGeometry(container, (ImageInline)tmp[0], !anchor);
                 if (!anchor) { output.AddRange(tmp); continue; }
                 var p = new Paragraph { MarkStyle = style with { Size = 1 }, LineRule = "auto", SnapToGrid = false };
                 p.Inlines.AddRange(tmp);
