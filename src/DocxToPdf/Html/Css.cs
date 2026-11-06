@@ -500,8 +500,12 @@ public sealed class CssStyle
     /// <summary>grid-auto-columns / grid-auto-rows: размеры неявных дорожек.</summary>
     public string? GridAutoColumns, GridAutoRows;
     /// <summary>Раскладка «каменная кладка» (grid-template-rows: masonry или display: grid-lanes).</summary>
-    public bool Masonry => MasonryRows || MasonryDisplay;
-    public bool MasonryRows, MasonryDisplay;
+    public bool Masonry => MasonryRows || MasonryCols || MasonryDisplay;
+    public bool MasonryRows, MasonryCols, MasonryDisplay;
+    /// <summary>Кладка по строкам (элементы идут слева направо в строку с наименьшей занятой шириной).</summary>
+    public bool MasonryInRows => MasonryCols || (MasonryDisplay && !MasonryRows && GridTemplateColumns == null && GridTemplateRows != null);
+    /// <summary>align-tracks / justify-tracks: выравнивание элементов вдоль дорожек кладки (список — по дорожкам).</summary>
+    public string? AlignTracks, JustifyTracks;
 
     // Скругление углов (TL, TR, BR, BL — исходные значения, % — от ширины)
     // rx TL, TR, BR, BL, затем ry TL, TR, BR, BL

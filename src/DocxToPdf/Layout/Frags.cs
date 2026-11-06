@@ -546,6 +546,24 @@ public sealed class RowFrag : Frag
                 c.StrokeRoundedRect(x1, y1, cell.Width, y2 - y1, cell.Radius.Resolve(cell.Width, y2 - y1), cell.Top!);
                 continue;
             }
+            if (cell.Radius is { Any: true })
+            {
+                // Скруглены не все углы или стороны разные (угол области подсетки): стороны одной рамки — одним контуром с дугами
+                var rad = cell.Radius.Resolve(cell.Width, y2 - y1);
+                // Начало объединения по вертикали: нижние углы — у последней строки объединения
+                if (cell.VMerge == VMerge.Restart) rad[2] = rad[3] = rad[6] = rad[7] = 0;
+                BorderDef?[] sides = [cell.Top, cell.Right, cell.Bottom, cell.Left];
+                var done = new bool[4];
+                for (int i = 0; i < 4; i++)
+                {
+                    if (done[i] || sides[i] is not { IsNone: false } bd) continue;
+                    var mask = new bool[4];
+                    for (int j = 0; j < 4; j++)
+                        if (sides[j] is { IsNone: false } o && BorderDef.Same(o, bd)) { mask[j] = true; done[j] = true; }
+                    c.StrokeRoundedSides(x1, y1, cell.Width, y2 - y1, rad, bd, mask);
+                }
+                continue;
+            }
             if (cell.Top is { IsNone: false } t) DrawBorder(c, t, x1, y1, x2, y1);
             if (cell.Bottom is { IsNone: false } b) DrawBorder(c, b, x1, y2, x2, y2);
             if (cell.Left is { IsNone: false } l) DrawBorder(c, l, x1, y1, x1, y2);

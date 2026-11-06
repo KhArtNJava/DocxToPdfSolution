@@ -1067,7 +1067,9 @@ public sealed partial class HtmlReader
             }
             case "row-gap" or "grid-row-gap": s.RowGap = lv; break;
             case "column-gap" or "grid-column-gap": s.ColumnGap = lv; break;
-            case "grid-template-columns": s.GridTemplateColumns = lv; break;
+            case "grid-template-columns": s.GridTemplateColumns = lv; s.MasonryCols = lv == "masonry"; break;
+            case "align-tracks": s.AlignTracks = lv; break;
+            case "justify-tracks": s.JustifyTracks = lv; break;
             case "grid-template-rows": s.GridTemplateRows = lv; s.MasonryRows = lv == "masonry"; break;
             case "grid-auto-flow":
             {

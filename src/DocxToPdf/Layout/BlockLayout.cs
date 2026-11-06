@@ -1475,6 +1475,19 @@ public sealed class BlockLayout(LayoutContext ctx)
             for (int j = c; j < c + k; j++) run[j] = top + h + mb.RowGap;
         }
         if (placed.Count == 0) return;
+        // align-tracks: выравнивание элементов колонки по высоте контейнера (колонки с элементами на несколько колонок — как есть)
+        if (mb.AlignTracks.Count > 0)
+        {
+            double total = Math.Max(mb.ContainerHeight, placed.Max(p => p.Bottom));
+            for (int c = 0; c < n; c++)
+            {
+                if (placed.Any(p => p.K > 1 && p.C <= c && c < p.C + p.K)) continue;
+                var idx = Enumerable.Range(0, placed.Count).Where(i => placed[i].C == c).OrderBy(i => placed[i].Top).ToList();
+                var segs = idx.Select(i => (placed[i].Top, placed[i].Bottom - placed[i].Top)).ToList();
+                DocxToPdf.Html.HtmlReader.AlignTrack(mb.AlignTracks[Math.Min(c, mb.AlignTracks.Count - 1)], segs, total);
+                for (int j = 0; j < idx.Count; j++) placed[idx[j]] = placed[idx[j]] with { Top = segs[j].Item1, Bottom = segs[j].Item1 + segs[j].Item2 };
+            }
+        }
         // Границы строк — верх и низ каждого элемента
         var ys = new List<double>();
         foreach (var y in placed.SelectMany(p => new[] { p.Top, p.Bottom }).OrderBy(y => y))
@@ -1632,11 +1645,11 @@ public sealed class BlockLayout(LayoutContext ctx)
                 boxes.Add(box);
                 g += span;
             }
-            if (row.HeightRule == "exact" && (row.Height > 0 || row.Role is 1 or 2 or 3)) rowH = row.Height;
+            if (row.HeightRule == "exact" && (row.Height > 0 || row.Role is 1 or 2 or 3 or 4)) rowH = row.Height;
             else rowH = Math.Max(rowH, row.Height);
             // Интервал сверху и снизу ячеек: между строками — двойной, у края таблицы — одинарный
             if (t.CellSpacing > 0) rowH += 2 * t.CellSpacing;
-            if (rowH <= 0 && !(row.HeightRule == "exact" && row.Role is 1 or 2 or 3)) rowH = 1;   // служебные строки сетки могут быть нулевой высоты
+            if (rowH <= 0 && !(row.HeightRule == "exact" && row.Role is 1 or 2 or 3 or 4)) rowH = 1;   // служебные строки сетки могут быть нулевой высоты
             if (t.Rtl)
             {
                 // Таблица справа налево: колонки зеркально, левая и правая границы ячеек меняются местами
@@ -1688,6 +1701,7 @@ public sealed class BlockLayout(LayoutContext ctx)
         }
 
         // Вертикальные объединения: убираем внутренние границы, растягиваем последнюю строку
+        var merged = new List<(CellBox Box, int First, int Last)>();
         for (int ri = 0; ri < rowsCells.Count; ri++)
         {
             foreach (var box in rowsCells[ri])
@@ -1705,10 +1719,14 @@ public sealed class BlockLayout(LayoutContext ctx)
                 double need = box.ContentHeight + box.MarginTop + box.MarginBottom;
                 double have = 0;
                 for (int k = ri; k <= last; k++) have += rowHeights[k];
-                if (need > have) rowHeights[last] += need - have;
-                have = 0;
-                for (int k = ri; k <= last; k++) have += rowHeights[k];
-                box.MergedHeight = have;
+                if (need > have)
+                {
+                    // Нехватка высоты — в последнюю строку содержимого (промежутки сетки и их части не растягиваются)
+                    int grow = last;
+                    while (grow > ri && t.Rows[grow].Role is 1 or 4 && t.Rows[grow].HeightRule == "exact") grow--;
+                    rowHeights[grow] += need - have;
+                }
+                merged.Add((box, ri, last));
                 box.Bottom = null;
                 for (int k = ri + 1; k <= last; k++)
                 {
@@ -1718,6 +1736,13 @@ public sealed class BlockLayout(LayoutContext ctx)
                     cont.Shading ??= box.Shading;
                 }
             }
+        }
+        // Высота объединения — после всех растяжений (соседнее объединение могло увеличить общую строку)
+        foreach (var (box, first, last) in merged)
+        {
+            double h = 0;
+            for (int k = first; k <= last; k++) h += rowHeights[k];
+            box.MergedHeight = h;
         }
 
         for (int ri = 0; ri < rowsCells.Count; ri++)

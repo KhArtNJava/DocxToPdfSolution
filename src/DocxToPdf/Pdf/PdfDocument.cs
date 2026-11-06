@@ -749,6 +749,53 @@ public sealed class PdfCanvas
         _sb.Append("S Q\n");
     }
 
+    /// <summary>
+    /// Обводка выбранных сторон прямоугольника (верх, право, низ, лево) по линии края; между двумя выбранными
+    /// соседними сторонами — дуга скругления угла, у невыбранной соседней стороны сторона обрывается у начала дуги.
+    /// </summary>
+    public void StrokeRoundedSides(double x, double y, double w, double h, double[] radii, BorderDef b, bool[] sides)
+    {
+        if (Collecting > 0 || SkipGraphics || b.IsNone || w <= 0 || h <= 0) return;
+        if (sides.All(v => v)) { StrokeRoundedRect(x, y, w, h, radii, b); return; }
+        var r = ClampRadii(w, h, radii);
+        const double K = 0.5523;
+        double x2 = x + w, y2 = y + h, t = b.Val == "double" ? b.Width / 3 * 2 : b.Width;
+        // Начало и конец каждой стороны по часовой стрелке; угол k — после стороны k: TR, BR, BL, TL
+        (double X, double Y)[] start = [(x + r[0], y), (x2, y + r[5]), (x2 - r[2], y2), (x, y2 - r[7])];
+        (double X, double Y)[] end = [(x2 - r[1], y), (x2, y2 - r[6]), (x + r[3], y2), (x, y + r[4])];
+        int[] cornerRx = [1, 2, 3, 0];
+        _sb.Append("q ");
+        if (b.Val.Contains("dash")) _sb.Append($"[{F(t * 3)} {F(t * 2)}] 0 d ");
+        else if (b.Val.Contains("dot")) _sb.Append($"1 J [0 {F(t * 2)}] 0 d ");
+        _sb.Append($"{F(t)} w {Color(b.Color)} RG ");
+        int first = Array.FindIndex(Enumerable.Range(0, 4).ToArray(), k => sides[k] && !sides[(k + 3) % 4]);
+        if (first < 0) first = 0;
+        bool open = false;
+        for (int n = 0; n < 4; n++)
+        {
+            int k = (first + n) % 4;
+            if (!sides[k]) { open = false; continue; }
+            if (!open) { _sb.Append($"{F(start[k].X)} {F(Y(start[k].Y))} m "); open = true; }
+            _sb.Append($"{F(end[k].X)} {F(Y(end[k].Y))} l ");
+            int nk = (k + 1) % 4;
+            if (sides[nk] && n < 3)
+            {
+                int ci = cornerRx[k];
+                double rx = r[ci], ry = r[ci + 4];
+                if (rx > 0 && ry > 0)
+                {
+                    var (ex, ey) = end[k]; var (sx, sy) = start[nk];
+                    // Касательные: вдоль стороны k к углу и от угла вдоль стороны nk
+                    double c1x = ex + (k == 0 ? rx * K : k == 2 ? -rx * K : 0), c1y = ey + (k == 1 ? ry * K : k == 3 ? -ry * K : 0);
+                    double c2x = sx + (nk == 0 ? -rx * K : nk == 2 ? rx * K : 0), c2y = sy + (nk == 1 ? -ry * K : nk == 3 ? ry * K : 0);
+                    _sb.Append($"{F(c1x)} {F(Y(c1y))} {F(c2x)} {F(Y(c2y))} {F(sx)} {F(Y(sy))} c ");
+                }
+                else _sb.Append($"{F(start[nk].X)} {F(Y(start[nk].Y))} l ");
+            }
+        }
+        _sb.Append("S Q\n");
+    }
+
     /// <summary>Ограничивает рисование скруглённой областью до EndClip().</summary>
     public void BeginRoundedClip(double x, double y, double w, double h, double[] radii)
     {

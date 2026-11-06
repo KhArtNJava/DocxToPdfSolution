@@ -598,7 +598,8 @@ public sealed class TableRow
 {
     public double Height;
     public string HeightRule = "atLeast";
-    /// <summary>Роль строки при распределении высоты (align-content): 0 — содержимое, 1 — промежуток, 2 — служебная сверху, 3 — служебная снизу.</summary>
+    /// <summary>Роль строки при распределении высоты (align-content): 0 — содержимое, 1 — промежуток, 2 — служебная сверху, 3 — служебная снизу,
+    /// 4 — часть промежутка, в которую заходят элементы подсетки (не растягивается).</summary>
     public int Role;
     /// <summary>Высота строки не задана явно (растягивается при align-content: stretch).</summary>
     public bool AutoHeight = true;
@@ -749,6 +750,9 @@ public sealed class MasonryBlock : Table
 {
     public int Columns, GapCols = 1;
     public double RowGap;
+    /// <summary>align-tracks: выравнивание элементов в каждой колонке; высота контейнера (CSS height), если задана.</summary>
+    public List<string> AlignTracks = [];
+    public double ContainerHeight;
     /// <summary>Ячейка элемента для каждого возможного начала (ширины колонок могут различаться), размах, явная колонка, высота из CSS.</summary>
     public List<(TableCell[] ByStart, int Span, int? Col, double MinHeight)> Items = [];
 }
