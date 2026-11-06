@@ -724,6 +724,13 @@ public sealed class GroupFrag : Frag
     public List<(Frag Frag, double X, double Y)> Items = [];
     /// <summary>Объекты с привязкой к странице/полям: верх объекта в группе (без MarginTop) и его высота.</summary>
     public List<(FloatBlock Fb, double Top, double Height)> AbsFloats = [];
+    /// <summary>
+    /// Пересборка группы, если её первый неразрываемый элемент (картинка) не помещается в остаток страницы:
+    /// текст группы — во всю ширину в остаток страницы (First), плавающий блок с остальным текстом — дальше (Rest).
+    /// Заменяет группу и следующие за ней TailFrags фрагментов (строки последнего абзаца вне группы).
+    /// </summary>
+    public Func<double, (List<Frag> First, List<Frag> Remainder, int Consumed)?>? Rebuild;
+    public int TailFrags;
     public override IEnumerable<List<Block>> Notes => Items.SelectMany(i => i.Frag.Notes);
 
     public override void Draw(PdfCanvas c, double x, double y)
@@ -774,6 +781,12 @@ public sealed class GroupFrag : Frag
         if (first.Items.Count == 0) return null;
         return (first, rest);
     }
+}
+
+/// <summary>Переход к следующей колонке/странице (после текста, вынесенного из группы перед плавающим блоком).</summary>
+public sealed class BreakFrag : Frag
+{
+    public override void Draw(PdfCanvas c, double x, double y) { }
 }
 
 /// <summary>Метка конца позиционированного предка (нулевой высоты).</summary>

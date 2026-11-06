@@ -121,19 +121,53 @@ public sealed class BlockLayout(LayoutContext ctx)
         GroupFrag? group = null;
         FloatArea? area = null;
         double gy = 0;   // текущая позиция внутри группы
+        int groupStart = -1, curBlock = -1;
+        var blockFrags = new Dictionary<int, int>();   // число фрагментов блока вне групп
+        int fragsAtStart = -1;
+        bool groupTouched = false;
+        bool curInGroup = false;          // у текущего блока уже есть строки в группе
+        GroupFrag? tailOf = null;         // группа, после которой идут остальные строки её последнего абзаца
+        int tailBlock = -1;
 
         void EndGroup()
         {
+            groupTouched = true;
             if (group == null) return;
             group.Height = Math.Max(gy, area!.MaxBottom());
             frags.Add(group);
-            group = null; area = null; gy = 0;
+            // Последний блок группы: текущий, если его строки начались в группе
+            int last = curInGroup ? curBlock : curBlock - 1;
+            if (groupStart >= 0 && last >= groupStart && group.AbsFloats.Count == 0)
+            {
+                var src = blocks.Skip(groupStart).Take(last - groupStart + 1).ToList();
+                double w0 = width;
+                int after = last + 1;
+                // Следующие блоки (их фрагменты вне групп) — для обтекания отложенного плавающего блока
+                group.Rebuild = room =>
+                {
+                    var follow = new List<(Block B, int Frags)>();
+                    for (int k = after; k < blocks.Count && follow.Count < 8; k++)
+                    {
+                        if (!blockFrags.TryGetValue(k, out var n) || blocks[k] is not Paragraph) break;
+                        follow.Add((blocks[k], n));
+                    }
+                    return RebuildGroup(src, follow, w0, room);
+                };
+                if (curInGroup) { tailOf = group; tailBlock = curBlock; }
+            }
+            group = null; area = null; gy = 0; groupStart = -1;
         }
 
         void Emit(Frag f)
         {
             if (group != null && gy >= area!.MaxBottom() - 0.01) EndGroup();
-            if (group == null) { frags.Add(f); return; }
+            if (group == null)
+            {
+                if (tailOf != null && tailBlock == curBlock) tailOf.TailFrags++;
+                frags.Add(f);
+                return;
+            }
+            curInGroup = true;
             gy += f.SpaceBefore;
             group.Items.Add((f, 0, gy));
             gy += f.Height + f.SpaceAfter;
@@ -147,7 +181,13 @@ public sealed class BlockLayout(LayoutContext ctx)
 
         for (int bi = 0; bi < blocks.Count; bi++)
         {
+            if (bi > 0 && fragsAtStart >= 0 && group == null && !groupTouched) blockFrags[bi - 1] = frags.Count - fragsAtStart;
+            fragsAtStart = group == null ? frags.Count : -1;
+            groupTouched = false;
             var block = blocks[bi];
+            curBlock = bi;
+            curInGroup = false;
+            if (tailBlock != bi) tailOf = null;
             switch (block)
             {
                 case Paragraph p:
@@ -185,6 +225,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                             var rows = LayoutTable(t, avail);
                             if (rows.Count > 0) gy += rows[0].SpaceBefore;
                             foreach (var row in rows) { group.Items.Add((row, fl, gy)); gy += row.Height; }
+                            curInGroup = true;
                             if (rows.Count > 0) gy += rows[^1].SpaceAfter;
                             prev = null; prevLast = null;
                             break;
@@ -214,7 +255,9 @@ public sealed class BlockLayout(LayoutContext ctx)
                         frags.Add(box);
                         break;
                     }
-                    if (group == null) { group = new GroupFrag(); area = new FloatArea(width, 0); gy = 0; }
+                    if (group == null) { group = new GroupFrag(); area = new FloatArea(width, 0); gy = 0; groupStart = bi; }
+                    groupTouched = true;
+                    curInGroup = true;
                     double top = gy;
                     if (bi + 1 < blocks.Count && blocks[bi + 1] is Paragraph np && np.Clear == null) top += np.SpaceBefore;
                     double x;
@@ -551,6 +594,7 @@ public sealed class BlockLayout(LayoutContext ctx)
             if (st.Caps) text = text.ToUpperInvariant();
             var (size, rise) = EffectiveSize(st);
             Piece? cur = null;
+            Piece? kernPrev = null;     // кусок с предыдущим глифом прогона (для кернинга пары)
             int pos = 0;
             var shaped = Bidi.ShapeArabic(text);
             foreach (var rune in text.EnumerateRunes())
@@ -558,7 +602,12 @@ public sealed class BlockLayout(LayoutContext ctx)
                 int cp = rune.Value;
                 int at = pos;
                 pos += rune.Utf16SequenceLength;
-                if (cp == 0xAD) continue;          // мягкий перенос не отображаем
+                if (cp == 0xAD)
+                {
+                    // Мягкий перенос не отображается; это допустимое место переноса (с дефисом)
+                    if (cur != null && cur.Kind == PieceKind.Text && st.Hyphens > 0) (cur.Soft ??= []).Add(cur.Gids.Count);
+                    continue;
+                }
                 if (Bidi.IsControl(cp)) continue;  // управляющие символы направления не выводятся
                 byte level = LevelAt(textBase + at);
                 if (shaped != null && shaped[at] == -1)
@@ -567,7 +616,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                     if (cur != null && cur.Texts.Count > 0) cur.Texts[^1] += char.ConvertFromUtf32(cp);
                     continue;
                 }
-                if (cp == '\t') { var tp = MakeTab(st); tp.Pos.Add(at); pieces.Add(tp); cur = null; breakNext = true; continue; }
+                if (cp == '\t') { var tp = MakeTab(st); tp.Pos.Add(at); pieces.Add(tp); cur = null; kernPrev = null; breakNext = true; continue; }
                 if (cp is '\n' or '\r') { pieces.Add(new Piece { Kind = PieceKind.LineBreak, Style = st, Src = src, Pos = [at] }); cur = null; continue; }
                 if (cp == 0x200B) { cur = null; breakNext = true; continue; } // нулевой пробел — точка переноса
 
@@ -596,11 +645,18 @@ public sealed class BlockLayout(LayoutContext ctx)
                     breakNext = false;
                 }
                 double adv = face.Font.Advance(gid) * gsize * st.HScale + (space ? st.WordSpacing : st.LetterSpacing);
+                // Парный кернинг с предыдущим глифом прогона (в т.ч. с пробелом; не для текста справа налево)
+                if (st.Kerning && kernPrev is { } kp && kp.Face == face && kp.Size == gsize && kp.Gids.Count > 0 && kp.Adv.Count == kp.Gids.Count && level % 2 == 0 && kp.Level % 2 == 0)
+                {
+                    double kern = face.Font.Kerning(kp.Gids[^1], gid) * gsize * st.HScale;
+                    if (kern != 0) { kp.Adv[^1] += kern; kp.Width += kern; }
+                }
                 cur.Gids.Add(gid);
                 cur.Pos.Add(at);
                 cur.Texts.Add(char.ConvertFromUtf32(outCp == 0xA0 ? ' ' : outCp));
                 cur.Adv.Add(adv);
                 cur.Width += adv;
+                kernPrev = cur;
                 if (space) { breakNext = true; }
                 else if ((cp is '-' or 0x2013 or 0x2014 or '/' && cur.Gids.Count > 1) || cjk)
                 {
@@ -900,6 +956,7 @@ public sealed class BlockLayout(LayoutContext ctx)
         }
 
         int i = 0;
+        int hyphenRun = 0;      // строк подряд, заканчивающихся переносом
         while (i < pieces.Count)
         {
             var pc = pieces[i];
@@ -978,9 +1035,19 @@ public sealed class BlockLayout(LayoutContext ctx)
                 i = end;
                 continue;
             }
+            // Перенос слова по слогам (мягкие переносы и словарь): начало слова — в конце строки с дефисом
+            if ((HasContent() ? avail - x >= p.HyphenZone : true) && (p.HyphenLimit <= 0 || hyphenRun < p.HyphenLimit)
+                && TryHyphenate(p, pieces, i, end, avail - x, cur.Pieces) is int cut)
+            {
+                i = cut;
+                Finish(null);
+                hyphenRun++;
+                continue;
+            }
             if (HasContent())
             {
                 Finish(null);
+                hyphenRun = 0;
                 continue;
             }
             // Рядом с плавающим блоком не помещается — опускаем строку ниже него
@@ -1033,6 +1100,190 @@ public sealed class BlockLayout(LayoutContext ctx)
         if (cur.Pieces.Count > 0 || lines.Count == 0 || lines[^1].EndBreak == PieceKind.LineBreak)
             lines.Add(cur);
         return lines;
+    }
+
+    /// <summary>
+    /// Пересборка группы «float + текст», когда плавающий блок не помещается в остаток страницы (room):
+    /// текстовые блоки группы набираются во всю ширину, пока помещаются (абзац может разрезаться по строке);
+    /// плавающие блоки с остальным текстом набираются заново и идут дальше (на следующей странице текст снова их обтекает).
+    /// </summary>
+    (List<Frag> First, List<Frag> Remainder, int Consumed)? RebuildGroup(List<Block> src, List<(Block B, int Frags)> follow, double width, double room)
+    {
+        var first = new List<Frag>();
+        var rest = new List<Block>();
+        double y = 0;
+        bool full = true;          // текст ещё помещается
+        foreach (var b in src)
+        {
+            if (b is FloatBlock) { rest.Add(b); continue; }
+            if (!full) { rest.Add(b); continue; }
+            var fr = LayoutBlocks([b], width);
+            if (fr.Any(f => f is GroupFrag)) return null;      // вложенная группа — не пересобираем
+            double h = 0;
+            int take = 0;
+            for (int k = 0; k < fr.Count; k++)
+            {
+                double sb = k == 0 && y == 0 ? 0 : fr[k].SpaceBefore;
+                if (y + h + sb + fr[k].Height > room + 0.01) break;
+                h += sb + fr[k].Height + (k < fr.Count - 1 ? 0 : fr[k].SpaceAfter);
+                take++;
+            }
+            if (take == fr.Count) { first.AddRange(fr); y += h; continue; }
+            full = false;
+            // Абзац частично: строки по разрез, остаток — новым абзацем без отступа первой строки
+            if (b is Paragraph p && fr.All(f => f is LineFrag))
+            {
+                int n = take;
+                if (p.WidowControl && fr.Count > 1)
+                {
+                    if (n == 1) n = 0;                          // висячая строка
+                    if (fr.Count - n == 1 && n > 1) n--;        // одинокая последняя строка
+                }
+                if (n > 0 && CutParagraph(p, (LineFrag)fr[n - 1]) is { } restP)
+                {
+                    first.AddRange(fr.Take(n));
+                    rest.Add(restP);
+                    continue;
+                }
+            }
+            rest.Add(b);
+        }
+        if (first.Count == 0) return null;
+        // Следующие абзацы обтекают отложенный блок: добавляем их, пока текст не дойдёт до низа блока
+        int consumed = 0;
+        double floatH = 0, textH = 0;
+        foreach (var b in rest)
+        {
+            if (b is FloatBlock fb) floatH = Math.Max(floatH, LayoutBlocks([fb], width).Sum(f => f.Height));
+            else textH += LayoutBlocks([b], width * 0.6).Sum(f => f.Height + f.SpaceBefore);
+        }
+        foreach (var (b, n) in follow)
+        {
+            if (textH >= floatH) break;
+            rest.Add(b);
+            consumed += n;
+            textH += LayoutBlocks([b], width * 0.6).Sum(f => f.Height + f.SpaceBefore);
+        }
+        var restFrags = LayoutBlocks(rest, width);
+        if (restFrags.Count > 0) restFrags[0].SpaceBefore = 0;
+        return (first, restFrags, consumed);
+    }
+
+    /// <summary>Остаток абзаца после строки line (с того же места текста); null — строка последняя.</summary>
+    static Paragraph? CutParagraph(Paragraph p, LineFrag line)
+    {
+        var last = line.Pieces.LastOrDefault(q => q.Src >= 0 && q.Pos.Count > 0);
+        if (last == null) return null;
+        int cutInline = last.Src, cutOffset;
+        if (p.Inlines[last.Src] is TextInline lt)
+        {
+            int at = last.Pos[^1];
+            cutOffset = at + (at < lt.Text.Length && char.IsHighSurrogate(lt.Text[at]) ? 2 : 1);
+            if (cutOffset >= lt.Text.Length) { cutInline++; cutOffset = 0; }
+        }
+        else { cutInline++; cutOffset = 0; }
+        var restInl = new List<Inline>();
+        for (int i = cutInline; i < p.Inlines.Count; i++)
+        {
+            if (i == cutInline && cutOffset > 0 && p.Inlines[i] is TextInline t)
+            {
+                string tail = t.Text[cutOffset..].TrimStart(' ');
+                if (tail.Length > 0) restInl.Add(new TextInline(tail, t.Style));
+                continue;
+            }
+            restInl.Add(p.Inlines[i]);
+        }
+        if (restInl.Count == 0) return null;
+        var r = p.ShallowCopy();
+        r.Inlines = restInl;
+        r.SpaceBefore = 0;
+        r.IndFirst = 0;
+        r.PageBreakBefore = false;
+        r.DropLines = 0;
+        r.Bookmarks = null;
+        r.FirstLine = null;
+        r.LabelAlign = null;
+        return r;
+    }
+
+    /// <summary>
+    /// Перенос слова (куски i..end−1) так, чтобы начало с дефисом поместилось в room. Места переноса — мягкие переносы
+    /// и (при автоматических переносах) шаблоны словаря языка. Возвращает индекс куска-остатка либо null.
+    /// </summary>
+    int? TryHyphenate(Paragraph p, List<Piece> pieces, int i, int end, double room, List<Piece> line)
+    {
+        if (room <= 0) return null;
+        // Слово: только текстовые куски (картинки и распорки внутри слова не переносим)
+        for (int j = i; j < end; j++) if (pieces[j].Kind != PieceKind.Text || pieces[j].Face == null || pieces[j].Field != null) return null;
+        // Текст слова и соответствие символов глифам
+        var sb = new StringBuilder();
+        var map = new List<(int Piece, int Glyph)>();     // для каждого символа текста — глиф
+        for (int j = i; j < end; j++)
+        {
+            var q = pieces[j];
+            for (int g = 0; g < q.Texts.Count; g++)
+                foreach (char ch in q.Texts[g]) { sb.Append(ch); map.Add((j, g)); }
+        }
+        string word = sb.ToString();
+        if (word.Length < 2) return null;
+        // Кандидаты: (кусок, индекс глифа, перед которым ставится перенос)
+        var cands = new SortedSet<(int Piece, int Glyph)>();
+        bool anySoft = false;
+        for (int j = i; j < end; j++)
+            if (pieces[j].Soft is { } soft)
+                foreach (int g in soft) if (g > 0 && g < pieces[j].Gids.Count) { cands.Add((j, g)); anySoft = true; }
+        var st0 = pieces[i].Style;
+        if (!anySoft && st0.Hyphens == 2 && !p.NoHyphenation && Hyphenator.For(st0.Lang) is { } hy)
+        {
+            // Буквы слова без начальной и конечной пунктуации
+            int a = 0, b = word.Length;
+            while (a < b && !char.IsLetter(word[a])) a++;
+            while (b > a && !char.IsLetter(word[b - 1]) && word[b - 1] != '\'') b--;
+            string core = word[a..b];
+            bool caps = core.Length > 1 && core.All(c => !char.IsLetter(c) || char.IsUpper(c));
+            int minWord = p.HyphenMinWord > 0 ? p.HyphenMinWord : 5;
+            if (core.Length >= minWord && core.All(c => char.IsLetter(c) || c is '\'' or '’') && !(caps && p.HyphenNoCaps))
+            {
+                foreach (int L in hy.Points(core, p.HyphenMinLeft, p.HyphenMinRight))
+                {
+                    int at = a + L;                         // символ, перед которым перенос
+                    if (at <= 0 || at >= map.Count) continue;
+                    var (pj, pg) = map[at];
+                    if (map[at - 1] == map[at]) continue;   // внутри лигатуры
+                    cands.Add((pj, pg));
+                }
+            }
+        }
+        if (cands.Count == 0) return null;
+        // Наибольшее начало слова, которое помещается вместе с дефисом
+        foreach (var (pj, pg) in cands.Reverse())
+        {
+            double w = 0;
+            for (int j = i; j < pj; j++) w += pieces[j].Width;
+            var q = pieces[pj];
+            for (int g = 0; g < pg; g++) w += q.Adv[g];
+            var face = q.Face!;
+            face.Font.TryGetGlyph('-', out var hg);
+            double hw = face.Font.Advance(hg) * q.Size * q.Style.HScale;
+            if (w + hw > room + 0.01) continue;
+            for (int j = i; j < pj; j++) line.Add(pieces[j]);
+            var head = q.CloneEmpty();
+            head.Gids.AddRange(q.Gids.Take(pg)); head.Texts.AddRange(q.Texts.Take(pg)); head.Adv.AddRange(q.Adv.Take(pg)); head.Pos.AddRange(q.Pos.Take(pg));
+            // Кернинг последней буквы начала рассчитан на следующую букву — заменяем на ширину самой буквы
+            if (head.Adv.Count > 0) head.Adv[^1] = face.Font.Advance(head.Gids[^1]) * q.Size * q.Style.HScale + q.Style.LetterSpacing;
+            head.Gids.Add(hg); head.Texts.Add("-"); head.Adv.Add(hw); head.Pos.Add(q.Pos.Count > pg ? q.Pos[pg] : q.Pos.LastOrDefault());
+            head.Width = head.Adv.Sum();
+            head.BreakBefore = q.BreakBefore;
+            line.Add(head);
+            var tail = q.CloneEmpty();
+            tail.Gids.AddRange(q.Gids.Skip(pg)); tail.Texts.AddRange(q.Texts.Skip(pg)); tail.Adv.AddRange(q.Adv.Skip(pg)); tail.Pos.AddRange(q.Pos.Skip(pg));
+            if (q.Soft != null) tail.Soft = q.Soft.Where(g => g > pg).Select(g => g - pg).ToList();
+            tail.Width = tail.Adv.Sum();
+            tail.BreakBefore = true;
+            pieces[pj] = tail;
+            return pj;
+        }
+        return null;
     }
 
     (double H, double Baseline) LineMetrics(Paragraph p, List<Piece> pieces, RawLine raw)

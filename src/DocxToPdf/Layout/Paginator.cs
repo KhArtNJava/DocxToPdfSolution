@@ -433,6 +433,11 @@ public sealed class Paginator(LayoutContext ctx)
                 else PlaceAbs(abs, sp);
                 continue;
             }
+            if (f is BreakFrag)
+            {
+                if (!PageEmpty) NextColumn(sp, natural: true);
+                continue;
+            }
             if (f is AnchorEndFrag ae)
             {
                 ResolveAnchorEnd(ae, _y + (PageEmpty ? 0 : f.SpaceBefore));
@@ -455,6 +460,7 @@ public sealed class Paginator(LayoutContext ctx)
             }
 
             var (noteFrags, noteH) = LayoutNotes(f);
+            bool spliced = false;
             while (true)
             {
                 RepeatHeaderRows(f);
@@ -463,24 +469,76 @@ public sealed class Paginator(LayoutContext ctx)
                 double need = sb + f.Height;
                 if (_y + need <= Bottom - noteH + 0.01) break;
 
-                // Пытаемся разрезать (строки таблицы)
+                // Пытаемся разрезать (строки таблицы, группы с плавающими блоками); первая часть — вместе со своими сносками
                 double room = Bottom - _y - sb;
-                if (room > 12 && noteFrags.Count == 0)
+                if (room > 12)
                 {
-                    var parts = f.Split(room);
+                    double r = room;
+                    (Frag First, Frag Remainder)? parts = null;
+                    List<Frag> firstNotes = [];
+                    double firstNoteH = 0;
+                    for (int attempt = 0; attempt < 8 && r > 12; attempt++)
+                    {
+                        parts = f.Split(r);
+                        if (parts == null) break;
+                        (firstNotes, firstNoteH) = LayoutNotes(parts.Value.First);
+                        double over = sb + parts.Value.First.Height + firstNoteH - (Bottom - _y);
+                        if (over <= 0.01) break;
+                        r -= Math.Max(1, over);          // сноски не помещаются — режем выше
+                        parts = null;
+                    }
                     if (parts != null)
                     {
                         Put(parts.Value.First, sb);
+                        if (firstNotes.Count > 0) { _notes.AddRange(firstNotes); _footH += firstNoteH; }
                         NextColumn(sp, natural: true);
                         f = parts.Value.Remainder;
+                        (noteFrags, noteH) = LayoutNotes(f);
                         sb = 0;
                         continue;
+                    }
+                    // Плавающий блок в начале группы не помещается: текст группы — во всю ширину здесь, блок — дальше
+                    (List<Frag> First, List<Frag> Remainder, int Consumed)? rbOk = null;
+                    if (!PageEmpty && f is GroupFrag { Rebuild: { } rebuildFn })
+                    {
+                        // Строки во всю ширину вместе со своими сносками должны поместиться в остаток страницы
+                        double rr = room;
+                        for (int attempt = 0; attempt < 8 && rr > 12; attempt++)
+                        {
+                            var cand = rebuildFn(rr);
+                            if (cand == null || cand.Value.First.Count == 0) break;
+                            double h = 0, nh = 0;
+                            var noteSrc = new GroupFrag();
+                            for (int k = 0; k < cand.Value.First.Count; k++)
+                            {
+                                var q = cand.Value.First[k];
+                                h += (k == 0 ? 0 : q.SpaceBefore) + q.Height;
+                                noteSrc.Items.Add((q, 0, 0));
+                            }
+                            if (noteSrc.Notes.Any()) nh = LayoutNotes(noteSrc).Height;
+                            double over = h + nh - room;
+                            if (over <= 0.01) { rbOk = cand; break; }
+                            rr -= Math.Max(1, over);
+                        }
+                    }
+                    if (rbOk is { } rb && f is GroupFrag gf)
+                    {
+                        rb.First[0].SpaceBefore = f.SpaceBefore;
+                        rb.First[0].PageBreakBefore = false;
+                        int tail = Math.Min(gf.TailFrags + rb.Consumed, frags.Count - i - 1);
+                        frags.RemoveRange(i, 1 + tail);
+                        var repl = new List<Frag>(rb.First) { new BreakFrag() };
+                        repl.AddRange(rb.Remainder);
+                        frags.InsertRange(i, repl);
+                        spliced = true;
+                        break;
                     }
                 }
                 if (PageEmpty) break; // не помещается даже на пустую страницу — выводим как есть
                 NextColumn(sp, natural: true);
                 sb = 0;
             }
+            if (spliced) { i--; continue; }   // группа заменена пересобранными фрагментами — разбираем их заново
             Put(f, sb);
             if (noteFrags.Count > 0)
             {
