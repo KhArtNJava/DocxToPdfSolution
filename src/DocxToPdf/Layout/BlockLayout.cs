@@ -399,7 +399,10 @@ public sealed class BlockLayout(LayoutContext ctx)
     {
         if (img.Content != null)
         {
+            // Вёрстка надписи меняет ширину колонки для картинок — после неё восстанавливаем
+            double hint = _contentWidthHint;
             var built = BuildBox(img.Content, Math.Max(1, img.FrameW), img.Box ?? new BoxStyle());
+            _contentWidthHint = hint;
             img.Built = built;
             // Автоподбор высоты: содержимое выше рамки увеличивает её
             if (built.Height > img.FrameH + 0.5)

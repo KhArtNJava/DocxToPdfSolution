@@ -150,6 +150,8 @@ public sealed partial class RtfReader
         public int OutlineLevel = -1;
         public int SbAuto, SaAuto;
         public bool NoHyph;
+        /// <summary>\nosnaplinegrid — абзац не привязан к сетке строк документа.</summary>
+        public bool NoSnap;
         public ParaProps Clone()
         {
             var p = (ParaProps)MemberwiseClone();
@@ -264,10 +266,12 @@ public sealed partial class RtfReader
         };
         _sect = CloneSect(_docSect);
         var st = new State();
+        ScanAnnotations(top);
         Walk(top, st, first: true);
         FlushParagraph(st, force: false);
         CloseTables(0, st);
         AppendEndnotes();
+        AppendAnnotationList();
         _sections.Add(new Section { Props = _sect, Blocks = _sink.Blocks });
         _doc.Sections.AddRange(_sections);
         // Колонтитулы наследуются следующими разделами
@@ -286,6 +290,10 @@ public sealed partial class RtfReader
         return _doc;
     }
 
+    bool _gridOn;
+    double _gridPitch = 18;
+    void UpdateGrid() => _sect.LinePitch = _gridOn && _gridPitch > 0 ? _gridPitch : 0;
+
     static SectionProps CloneSect(SectionProps s)
     {
         var c = new SectionProps
@@ -295,6 +303,7 @@ public sealed partial class RtfReader
             Columns = s.Columns, ColumnSpace = s.ColumnSpace, TitlePage = s.TitlePage, Type = s.Type,
             PageBorderTop = s.PageBorderTop, PageBorderBottom = s.PageBorderBottom, PageBorderLeft = s.PageBorderLeft, PageBorderRight = s.PageBorderRight,
             PageBorderFromText = s.PageBorderFromText, PageNumberFormat = s.PageNumberFormat, VAlign = s.VAlign,
+            LinePitch = s.LinePitch,
         };
         return c;
     }
@@ -460,7 +469,7 @@ public sealed partial class RtfReader
     internal TextStyle Style(CharProps c)
     {
         string font = _fonts.TryGetValue(c.Font >= 0 ? c.Font : _defFont, out var f) && f.Name.Length > 0 ? f.Name : "Times New Roman";
-        Rgb? bg = c.Highlight > 0 ? ColorAt(c.Highlight) : c.Back > 0 ? ColorAt(c.Back) : null;
+        Rgb? bg = c.Highlight > 0 ? ColorAt(c.Highlight) : c.Back > 0 ? ColorAt(c.Back) : AnnotationBackground();
         var ts = new TextStyle
         {
             FontAscii = font, FontHAnsi = font, FontEastAsia = font,
@@ -515,6 +524,7 @@ public sealed partial class RtfReader
             MarkStyle = Style(markChar),
         };
         para.NoHyphenation = p.NoHyph;
+        para.SnapToGrid = !p.NoSnap;
         para.HyphenZone = _hyphZone;
         para.HyphenLimit = _hyphConsec;
         para.HyphenNoCaps = _hyphNoCaps;
@@ -548,6 +558,10 @@ public sealed partial class RtfReader
         if (_pendingLabel != null) { para.Inlines.AddRange(_pendingLabel); _pendingLabel = null; }
         else if (st.P.Ls > 0 && ListLabel(st.P, st.C) is { } lbl) para.Inlines.AddRange(lbl);
         para.Inlines.AddRange(inl);
+        // Отдельная формула (\moMathPara) — по центру, как в Word
+        if (inl.Any(i => i is ImageInline { Math: not null, MathDisplay: true })
+            && inl.All(i => i is ImageInline { Math: not null } or BreakInline || i is TextInline t && t.Text.Trim().Length == 0))
+            para.Align = "center";
         para.Bookmarks = _sink.Bookmarks;
         _sink.Bookmarks = null;
         _sink.Inlines = [];
@@ -611,6 +625,11 @@ public sealed partial class RtfReader
             case "hyphconsec": _hyphConsec = v; break;
             case "hyphcaps": _hyphNoCaps = !on; break;
             case "hyphpar": p.NoHyph = !on; break;
+            case "nosnaplinegrid": p.NoSnap = on; break;
+            // Сетка строк документа (w:docGrid): шаг \sectlinegrid; включена при \sectspecifyl / \sectspecifycl
+            case "sectlinegrid": _gridPitch = Tw(v); UpdateGrid(); break;
+            case "sectspecifyl" or "sectspecifycl" or "sectspecifygenN": _gridOn = true; UpdateGrid(); break;
+            case "sectdefaultcl": _gridOn = false; UpdateGrid(); break;
             case "deftab": if (v > 0) _doc.DefaultTabStop = Tw(v); break;
             case "paperw": _docSect.PageWidth = _sect.PageWidth = Tw(v); break;
             case "paperh": _docSect.PageHeight = _sect.PageHeight = Tw(v); break;
@@ -646,6 +665,7 @@ public sealed partial class RtfReader
                 _sect = CloneSect(_docSect);
                 _sect.HeaderDefault = _sect.HeaderFirst = _sect.HeaderEven = _sect.FooterDefault = _sect.FooterFirst = _sect.FooterEven = null;
                 _sect.TitlePage = false;
+                _gridOn = false; _gridPitch = 18;
                 break;
             case "sect": EndSection(st); break;
             case "sbknone": _sect.Type = "continuous"; break;
@@ -831,6 +851,7 @@ public sealed partial class RtfReader
             case "ltrmark": AddText("‎", st); break;
             case "rtlmark": AddText("‏", st); break;
             case "chpgn": _sink.Inlines.Add(new FieldInline(FieldKind.Page, Style(c))); break;
+            case "chatn": AnnotationMark(st); break;
             case "chftn":
                 if (_noteMark != null) AddText(_noteMark, st);
                 else
@@ -924,6 +945,12 @@ public sealed partial class RtfReader
                 return true;
             }
             case "pict": Picture(g, st); return true;
+            case "mmath": RtfMath(g, st, star); return true;
+            case "annotation": Annotation(g, st, star); return true;
+            case "atrfstart":
+                if (CommentMode() != null) _activeAtn.Add(PlainText(StripFirst(g, star)).Trim());
+                return true;
+            case "atrfend": _activeAtn.Remove(PlainText(StripFirst(g, star)).Trim()); return true;
             case "shppict":
                 foreach (var pg in g.Items.OfType<Group>()) Walk(pg, st.Clone());
                 return true;
@@ -940,7 +967,7 @@ public sealed partial class RtfReader
             case "footnote": Footnote(g, st); return true;
             case "header" or "headerl" or "headerr" or "headerf" or "footer" or "footerl" or "footerr" or "footerf":
                 HeaderFooter(dest, g, st); return true;
-            case "shp": Shape(g, st); return true;
+            case "shp" or "shpgrp": Shape(g, st); return true;
             case "listtext" or "pntext":
             {
                 // Готовая метка списка (номер или маркер) с оформлением

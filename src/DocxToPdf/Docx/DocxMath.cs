@@ -10,7 +10,7 @@ public sealed partial class DocxReader
     static bool MOn(XElement? e, string name) => e?.Element(M + name) is { } x && (string?)x.Attribute(M + "val") is null or "1" or "on" or "true";
 
     /// <summary>Содержимое элемента (m:e, m:num …) как строка формулы.</summary>
-    MathNode MathRow(XElement? e)
+    internal static MathNode MathRow(XElement? e)
     {
         var items = new List<MathNode>();
         if (e != null)
@@ -19,7 +19,7 @@ public sealed partial class DocxReader
         return items.Count == 1 ? items[0] : new MRow(items);
     }
 
-    MathNode? MathElement(XElement c)
+    static MathNode? MathElement(XElement c)
     {
         var n = c.Name;
         if (n.Namespace == W)
@@ -99,7 +99,7 @@ public sealed partial class DocxReader
     }
 
     /// <summary>Формула (m:oMath / m:oMathPara) → строчные объекты двумерной вёрстки.</summary>
-    void MathToInlines(XElement e, TextStyle st, List<Inline> output)
+    internal static void MathToInlines(XElement e, TextStyle st, List<Inline> output)
     {
         if (e.Name == M + "oMathPara")
         {
