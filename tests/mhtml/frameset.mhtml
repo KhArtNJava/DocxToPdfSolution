@@ -1,0 +1,128 @@
+From: <Saved by Blink>
+Snapshot-Content-Location: https://frames.example/fs.html
+Subject: frameset
+Date: Fri, 06 Nov 2026 17:39:14 GMT
+MIME-Version: 1.0
+Content-Type: multipart/related;
+	type="text/html";
+	boundary="----MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr----"
+
+
+------MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr----
+Content-Type: text/html
+Content-ID: <frame-C408B9992E64DD637854172A5750C2A3@mhtml.blink>
+Content-Transfer-Encoding: quoted-printable
+Content-Location: https://frames.example/fs.html
+
+<!DOCTYPE html><html><head><meta http-equiv=3D"Content-Type" content=3D"tex=
+t/html; charset=3DUTF-8"><title>frameset</title></head>
+<frameset cols=3D"25%,*"><frame src=3D"cid:frame-06560D702DF39B49C6270020C4=
+A44D35@mhtml.blink"><frameset rows=3D"120,*"><frame src=3D"cid:frame-F257FE=
+F5F57F2F8BBF864B92674F0E44@mhtml.blink"><frame src=3D"cid:frame-A2CF9F772E6=
+2C74014658D0B1686461B@mhtml.blink"></frameset>
+<noframes>=D0=92=D0=B0=D1=88 =D0=B1=D1=80=D0=B0=D1=83=D0=B7=D0=B5=D1=80 =D0=
+=BD=D0=B5 =D0=BF=D0=BE=D0=B4=D0=B4=D0=B5=D1=80=D0=B6=D0=B8=D0=B2=D0=B0=D0=
+=B5=D1=82 =D1=84=D1=80=D0=B5=D0=B9=D0=BC=D1=8B.</noframes></frameset>
+</html>
+------MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr----
+Content-Type: text/html
+Content-ID: <frame-06560D702DF39B49C6270020C4A44D35@mhtml.blink>
+Content-Transfer-Encoding: quoted-printable
+Content-Location: https://frames.example/menu.html
+
+<!DOCTYPE html><html><head><meta http-equiv=3D"Content-Type" content=3D"tex=
+t/html; charset=3DUTF-8"><link rel=3D"stylesheet" type=3D"text/css" href=3D=
+"cid:css-80921877-f840-4093-a3d6-72d38d0a5f73@mhtml.blink" /></head><body><=
+b>=D0=9C=D0=B5=D0=BD=D1=8E</b><a href=3D"https://frames.example/menu.html#"=
+>=D0=A0=D0=B0=D0=B7=D0=B4=D0=B5=D0=BB 1</a><a href=3D"https://frames.exampl=
+e/menu.html#">=D0=A0=D0=B0=D0=B7=D0=B4=D0=B5=D0=BB 2</a><a href=3D"https://=
+frames.example/menu.html#">=D0=A0=D0=B0=D0=B7=D0=B4=D0=B5=D0=BB 3</a>
+</body></html>
+------MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr----
+Content-Type: text/css
+Content-Transfer-Encoding: quoted-printable
+Content-Location: cid:css-80921877-f840-4093-a3d6-72d38d0a5f73@mhtml.blink
+
+@charset "utf-8";
+
+body { background: rgb(45, 58, 74); color: rgb(255, 255, 255); font: 14px s=
+ans-serif; }
+
+a { color: rgb(153, 204, 255); display: block; margin: 6px 0px; }
+------MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr----
+Content-Type: text/html
+Content-ID: <frame-F257FEF5F57F2F8BBF864B92674F0E44@mhtml.blink>
+Content-Transfer-Encoding: quoted-printable
+Content-Location: https://frames.example/nested.html
+
+<!DOCTYPE html><html><head><meta http-equiv=3D"Content-Type" content=3D"tex=
+t/html; charset=3DUTF-8"></head><body style=3D"background:#fff3d6;margin:4p=
+x;font:12px serif"><b>=D0=92=D0=BB=D0=BE=D0=B6=D0=B5=D0=BD=D0=BD=D1=8B=D0=
+=B9 =D1=84=D1=80=D0=B5=D0=B9=D0=BC</b> =D0=B2=D1=82=D0=BE=D1=80=D0=BE=D0=B3=
+=D0=BE =D1=83=D1=80=D0=BE=D0=B2=D0=BD=D1=8F.
+</body></html>
+------MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr----
+Content-Type: text/html
+Content-ID: <frame-A2CF9F772E62C74014658D0B1686461B@mhtml.blink>
+Content-Transfer-Encoding: quoted-printable
+Content-Location: https://frames.example/inner.html
+
+<!DOCTYPE html><html lang=3D"ru"><head><meta http-equiv=3D"Content-Type" co=
+ntent=3D"text/html; charset=3DUTF-8"><link rel=3D"stylesheet" type=3D"text/=
+css" href=3D"cid:css-205c344f-467d-4188-88d7-09a5f762fc08@mhtml.blink" /></=
+head><body><h2>=D0=94=D0=BE=D0=BA=D1=83=D0=BC=D0=B5=D0=BD=D1=82 =D0=B2=D0=
+=BE =D1=84=D1=80=D0=B5=D0=B9=D0=BC=D0=B5</h2><p>=D0=A1=D0=B2=D0=BE=D0=B8 =
+=D1=81=D1=82=D0=B8=D0=BB=D0=B8: =D1=88=D1=80=D0=B8=D1=84=D1=82 =D0=B1=D0=B5=
+=D0=B7 =D0=B7=D0=B0=D1=81=D0=B5=D1=87=D0=B5=D0=BA, =D0=B3=D0=BE=D0=BB=D1=83=
+=D0=B1=D0=BE=D0=B9 =D1=84=D0=BE=D0=BD. =D0=9A=D0=B0=D1=80=D1=82=D0=B8=D0=BD=
+=D0=BA=D0=B0 =D0=B8=D0=B7 =D0=B0=D1=80=D1=85=D0=B8=D0=B2=D0=B0:</p>
+<img src=3D"https://frames.example/dot.png" width=3D"40" height=3D"40" styl=
+e=3D"border-radius:50%"> <ul><li>=D0=BF=D0=B5=D1=80=D0=B2=D1=8B=D0=B9</li><=
+li>=D0=B2=D1=82=D0=BE=D1=80=D0=BE=D0=B9</li><li>=D1=82=D1=80=D0=B5=D1=82=D0=
+=B8=D0=B9</li><li>=D1=87=D0=B5=D1=82=D0=B2=D1=91=D1=80=D1=82=D1=8B=D0=B9 =
+=E2=80=94 =D0=BE=D0=B1=D1=80=D0=B5=D0=B7=D0=B0=D0=B5=D1=82=D1=81=D1=8F =D0=
+=BF=D0=BE =D0=B2=D1=8B=D1=81=D0=BE=D1=82=D0=B5 =D1=84=D1=80=D0=B5=D0=B9=D0=
+=BC=D0=B0</li><li>=D0=BF=D1=8F=D1=82=D1=8B=D0=B9</li><li>=D1=88=D0=B5=D1=81=
+=D1=82=D0=BE=D0=B9</li></ul>
+<span class=3D"tag">absolute =D0=B2=D0=BD=D1=83=D1=82=D1=80=D0=B8 =D1=84=D1=
+=80=D0=B5=D0=B9=D0=BC=D0=B0</span>
+<iframe src=3D"cid:frame-A2296C1614E9C5B1BB5193B7AD4C3300@mhtml.blink" widt=
+h=3D"220" height=3D"60"></iframe>
+</body></html>
+------MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr----
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Location: https://frames.example/dot.png
+
+iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGO4Y2NDEmIY1TCqYfhq
+AABhl1QQ50OvrwAAAABJRU5ErkJggg==
+
+------MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr----
+Content-Type: text/css
+Content-Transfer-Encoding: quoted-printable
+Content-Location: cid:css-205c344f-467d-4188-88d7-09a5f762fc08@mhtml.blink
+
+@charset "utf-8";
+
+body { background: rgb(238, 246, 255); font-family: sans-serif; font-size: =
+13px; }
+
+h2 { color: rgb(26, 95, 180); margin: 0px 0px 6px; }
+
+.tag { position: absolute; right: 6px; bottom: 4px; color: rgb(136, 136, 13=
+6); font-size: 11px; }
+
+li { color: rgb(51, 51, 51); }
+------MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr----
+Content-Type: text/html
+Content-ID: <frame-A2296C1614E9C5B1BB5193B7AD4C3300@mhtml.blink>
+Content-Transfer-Encoding: quoted-printable
+Content-Location: https://frames.example/nested.html
+
+<!DOCTYPE html><html><head><meta http-equiv=3D"Content-Type" content=3D"tex=
+t/html; charset=3DUTF-8"></head><body style=3D"background:#fff3d6;margin:4p=
+x;font:12px serif"><b>=D0=92=D0=BB=D0=BE=D0=B6=D0=B5=D0=BD=D0=BD=D1=8B=D0=
+=B9 =D1=84=D1=80=D0=B5=D0=B9=D0=BC</b> =D0=B2=D1=82=D0=BE=D1=80=D0=BE=D0=B3=
+=D0=BE =D1=83=D1=80=D0=BE=D0=B2=D0=BD=D1=8F.
+</body></html>
+------MultipartBoundary--thYznGPw6bvfqMh1foEuZOQK2Eo1pcL9nkvgCG45Wr------

@@ -59,6 +59,7 @@ public sealed partial class HtmlReader
         _contentWidth = ctx.Width;
         if (n.Tag is "pre" or "listing" or "xmp") flow.FirstNewlineInPre = true;
         if (n.IsText) AddText(n.Text, s, flow, ctx);
+        else if (n.Tag == "iframe") blocks.Add(FrameTable(n, s, ctx.Width));
         else if (n.Tag == "img")
         {
             var imgStyle = n.Style!;
@@ -179,9 +180,20 @@ public sealed partial class HtmlReader
             Left = s.PaddingLeft + (cell.Borders.Left.IsNone ? 0 : cell.Borders.Left.Width),
             Right = s.PaddingRight + (cell.Borders.Right.IsNone ? 0 : cell.Borders.Right.Width),
         };
-        cell.Blocks = WalkInto(n, s, width - (cell.Margins.Left ?? 0) - (cell.Margins.Right ?? 0), anchor: s.Position == "relative");
+        double innerW = width - (cell.Margins.Left ?? 0) - (cell.Margins.Right ?? 0);
         var row = new TableRow { CantSplit = s.AvoidBreakInside };
-        if (BoxHeight(s) is double h) row.Height = h;
+        if (n.Tag == "iframe")
+        {
+            // Фрейм: документ внутри рамки точной высоты, обрезается по ней
+            double ch = FrameContentHeight(s);
+            cell.Blocks = FrameBlocks(n, innerW, ch, out var fbg);
+            cell.Shading = fbg ?? cell.Shading;   // фон документа фрейма закрывает фон самого iframe
+            if (cell.Blocks.Count == 0) cell.Blocks.Add(new Paragraph());
+            row.Height = ch + (cell.Margins.Top ?? 0) + (cell.Margins.Bottom ?? 0);
+            row.HeightRule = "exact"; row.AutoHeight = false; row.CantSplit = true;
+        }
+        else cell.Blocks = WalkInto(n, s, innerW, anchor: s.Position == "relative");
+        if (n.Tag != "iframe" && BoxHeight(s) is double h) row.Height = h;
         row.Cells.Add(cell);
         var t = new Table
         {
@@ -218,6 +230,8 @@ public sealed partial class HtmlReader
         double indent = b.IndL + s.MarginLeft;
         if (s.MarginLeftAuto && s.MarginRightAuto) indent += (avail - width) / 2;
         else if (s.MarginLeftAuto) indent += avail - width;
+        else if (n.Tag == "iframe" && s.Display == "inline")
+            indent += b.Owner.TextAlign switch { "center" => (avail - width) / 2, "right" or "end" => avail - width, _ => 0 };
 
         var t = MakeBoxTable(n, s, width);
         t.Indent = indent;

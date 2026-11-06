@@ -388,7 +388,8 @@ public sealed class BlockLayout(LayoutContext ctx)
         foreach (var (a, sy) in start)
         {
             if (a.Anchor == null || a.Top != null || a.Bottom == null || !ends.TryGetValue(a.Anchor, out var end)) continue;
-            double boxH = end.Y + end.Pad - (sy + a.TopOffset);
+            // Высота предка задана (CSS height, область просмотра фрейма) — по ней, иначе по концу содержимого
+            double boxH = a.Anchor.Height ?? end.Y + end.Pad - (sy + a.TopOffset);
             a.Top = boxH - a.Bottom.Value - a.Content.Height;
             a.Bottom = null;
         }

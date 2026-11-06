@@ -57,6 +57,7 @@ public sealed partial class HtmlReader
         q::after { content: close-quote }
         center { text-align: center }
         hr { margin: .5em 0 }
+        iframe { border: 2px inset; border-color: #9a9a9a #eeeeee #eeeeee #9a9a9a }
         fieldset { margin: 0 2px; padding: .35em .75em .625em }
         """;
 
@@ -64,10 +65,10 @@ public sealed partial class HtmlReader
     [
         "html", "body", "div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "menu", "dir", "dl", "dt", "dd", "blockquote",
         "pre", "address", "article", "aside", "footer", "header", "nav", "section", "main", "figure", "figcaption", "form",
-        "fieldset", "legend", "center", "details", "summary", "hgroup", "listing", "xmp", "hr", "caption", "dialog", "search"
+        "fieldset", "legend", "center", "details", "summary", "hgroup", "listing", "xmp", "hr", "caption", "dialog", "search", "frameset"
     ];
     static readonly HashSet<string> HiddenTags =
-        ["head", "script", "style", "title", "meta", "link", "template", "noscript", "base", "datalist", "param", "source", "track", "area", "map", "audio", "video", "iframe", "object", "embed", "svg", "math", "canvas", "button", "input", "select", "textarea", "option"];
+        ["head", "script", "style", "title", "meta", "link", "template", "noscript", "base", "datalist", "param", "source", "track", "area", "map", "audio", "video", "frame", "noframes", "object", "embed", "svg", "math", "canvas", "button", "input", "select", "textarea", "option"];
 
     static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
 
@@ -81,7 +82,7 @@ public sealed partial class HtmlReader
     readonly string _baseDir;
     MhtmlArchive? _mht;                       // веб-архив MHTML: ресурсы берутся из него
     string? _baseUrl;                         // адрес страницы в архиве (Content-Location или <base href>)
-    readonly DocxDocument _doc = new() { DefaultTabStop = 36 };
+    DocxDocument _doc = new() { DefaultTabStop = 36 };
     readonly StyleSheet _ua = new();
     readonly StyleSheet _author = new();
     readonly Dictionary<string, string?> _fontPick = new(StringComparer.OrdinalIgnoreCase);
@@ -100,6 +101,7 @@ public sealed partial class HtmlReader
     {
         var bytes = File.ReadAllBytes(path);
         var reader = new HtmlReader(fonts, options ?? new HtmlOptions(), Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
+        reader._frameChain.Add(Path.GetFullPath(path));
         if (MhtmlArchive.Looks(bytes))
         {
             var mht = MhtmlArchive.Parse(bytes);
@@ -159,6 +161,37 @@ public sealed partial class HtmlReader
 
     DocxDocument Convert(string html)
     {
+        var root = Prepare(html);
+        _doc.Title = root.Descendants().FirstOrDefault(d => d.Tag == "title")?.Children.FirstOrDefault()?.Text.Trim();
+
+        var section = new Section { Props = PageSetup() };
+        _contentWidth = section.Props.PageWidth - section.Props.MarginLeft - section.Props.MarginRight;
+        _viewportHeight = section.Props.PageHeight - section.Props.MarginTop - section.Props.MarginBottom;
+        ComputeStyles(root, new CssStyle { Display = "block" });
+
+        var flow = new Flow(section.Blocks);
+        var ctx = new BlockCtx { IndL = 0, IndR = 0, Owner = root.Style!, Width = _contentWidth };
+        WalkChildren(root, flow, ctx);
+        Flush(flow);
+        if (section.Blocks.Count == 0) section.Blocks.Add(new Paragraph());
+
+        if (_opt.PageNumbers)
+        {
+            var st = new TextStyle { FontAscii = "Arial", FontHAnsi = "Arial", FontEastAsia = "Arial", Size = 9, Color = new Rgb(0.3, 0.3, 0.3) };
+            var p = new Paragraph { Align = "center", MarkStyle = st };
+            p.Inlines.Add(new FieldInline(FieldKind.Page, st));
+            p.Inlines.Add(new TextInline(" / ", st));
+            p.Inlines.Add(new FieldInline(FieldKind.NumPages, st));
+            section.Props.FooterDefault = new HeaderFooter { Blocks = [p] };
+        }
+        section.Props.FixedBlocks.AddRange(_fixedBlocks);
+        _doc.Sections.Add(section);
+        return _doc;
+    }
+
+    /// <summary>Разбор разметки, &lt;base&gt;, стили документа (&lt;style&gt;, &lt;link&gt;), кавычки по языку.</summary>
+    Node Prepare(string html)
+    {
         var root = HtmlParser.Parse(html);
         if (_mht != null && root.Descendants().FirstOrDefault(d => d.Tag == "base" && d.Attr("href") != null) is { } baseEl)
         {
@@ -198,35 +231,12 @@ public sealed partial class HtmlReader
             if (css != null) { _author.Parse(DecodeBytes(css)); svgCss.Insert(0, DecodeBytes(css) + "\n"); }
         }
         _svgCss = svgCss.ToString();
-        _doc.Title = root.Descendants().FirstOrDefault(d => d.Tag == "title")?.Children.FirstOrDefault()?.Text.Trim();
-
-        var section = new Section { Props = PageSetup() };
-        _contentWidth = section.Props.PageWidth - section.Props.MarginLeft - section.Props.MarginRight;
 
         string lang = (root.Descendants().FirstOrDefault(d => d.Tag == "html")?.Attr("lang") ?? "").ToLowerInvariant();
         if (lang.StartsWith("ru") || lang.StartsWith("uk") || lang.StartsWith("be")) _defaultQuotes = ["\u00AB", "\u00BB", "\u201E", "\u201C"];
         else if (lang.StartsWith("de")) _defaultQuotes = ["\u201E", "\u201C", "\u201A", "\u2018"];
         else if (lang.StartsWith("fr")) _defaultQuotes = ["\u00AB\u00A0", "\u00A0\u00BB", "\u2039", "\u203A"];
-        ComputeStyles(root, new CssStyle { Display = "block" });
-
-        var flow = new Flow(section.Blocks);
-        var ctx = new BlockCtx { IndL = 0, IndR = 0, Owner = root.Style!, Width = _contentWidth };
-        WalkChildren(root, flow, ctx);
-        Flush(flow);
-        if (section.Blocks.Count == 0) section.Blocks.Add(new Paragraph());
-
-        if (_opt.PageNumbers)
-        {
-            var st = new TextStyle { FontAscii = "Arial", FontHAnsi = "Arial", FontEastAsia = "Arial", Size = 9, Color = new Rgb(0.3, 0.3, 0.3) };
-            var p = new Paragraph { Align = "center", MarkStyle = st };
-            p.Inlines.Add(new FieldInline(FieldKind.Page, st));
-            p.Inlines.Add(new TextInline(" / ", st));
-            p.Inlines.Add(new FieldInline(FieldKind.NumPages, st));
-            section.Props.FooterDefault = new HeaderFooter { Blocks = [p] };
-        }
-        section.Props.FixedBlocks.AddRange(_fixedBlocks);
-        _doc.Sections.Add(section);
-        return _doc;
+        return root;
     }
 
     SectionProps PageSetup()
@@ -313,6 +323,13 @@ public sealed partial class HtmlReader
         if (n.Tag is "body" or "html") s.Display = "block";
 
         ApplyAll(s, parent, CollectDecls(n, null));
+        if (n.Tag == "iframe")
+        {
+            // Размер по умолчанию 300×150 px; frameborder="0" — без рамки
+            s.Width ??= "300px";
+            if (s.Height == null || s.Height.EndsWith('%')) s.Height = "150px";
+            if (n.Attr("frameborder")?.Trim().ToLowerInvariant() is "0" or "no") s.BorderTop = s.BorderBottom = s.BorderLeft = s.BorderRight = null;
+        }
 
         if (n.Tag == "a" && n.Attr("href") is { } href && IsExternalLink(href)) s.Link = href;
         if ((n.Attr("lang") ?? n.Attr("xml:lang")) is { Length: > 0 } lang) s.Lang = lang;
@@ -843,7 +860,7 @@ public sealed partial class HtmlReader
                 yield return D("font-size", px[Math.Clamp(v, 1, 7) - 1].ToString(CultureInfo.InvariantCulture) + "px");
             }
         }
-        if (n.Tag is "td" or "th" or "table" or "img" or "col" or "tr")
+        if (n.Tag is "td" or "th" or "table" or "img" or "col" or "tr" or "iframe")
         {
             if (n.Attr("width") is { } w) yield return D("width", w.EndsWith('%') ? w : w.TrimEnd('p', 'x') + "px");
             if (n.Attr("height") is { } h && !h.EndsWith('%')) yield return D("height", h.TrimEnd('p', 'x') + "px");
@@ -1427,6 +1444,12 @@ public sealed partial class HtmlReader
 
         switch (n.Tag)
         {
+            case "iframe":
+                AddBoxTable(n, s, f, b);
+                return;
+            case "frameset":
+                AddFrameset(n, f, b);
+                return;
             case "br":
                 AddInline(f, b, new BreakInline(BreakKind.Line, ToTextStyle(s)));
                 f.LastSpace = true;
@@ -1703,7 +1726,7 @@ public sealed partial class HtmlReader
         if (w != null && h == null) h = w * ih / iw;
         else if (h != null && w == null) w = h * iw / ih;
         w ??= iw; h ??= ih;
-        string key = "html-image-" + (++_imageCounter);
+        string key = _mediaPrefix + (++_imageCounter);
         _doc.Media[key] = bytes!;
         bool block = s.Display == "block" || s.MarginLeftAuto;
         if (block) { Flush(f); f.PendingMargin = Math.Max(f.PendingMargin, s.MarginTop); }
