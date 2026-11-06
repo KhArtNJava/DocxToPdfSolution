@@ -8,6 +8,7 @@ OUT="${2:-$ROOT/artifacts}"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"   # абсолютный путь: архивы создаются из временного каталога
 
 # 1. Библиотека
 dotnet build "$ROOT/src/DocxToPdf.Library/DocxToPdf.Library.csproj" -c Release -p:Version="$VER" -o "$STAGE/build" -nologo -v q
