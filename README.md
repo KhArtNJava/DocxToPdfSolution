@@ -21,10 +21,25 @@ XML office:document → плоский ODT (.fodt), MIME-заголовки → 
 Опции для HTML и MHTML (CSS `@page` имеет приоритет): `--page-size A3|A4|A5|Letter|Legal`, `--landscape`,
 `--margin <мм>`, `--page-numbers`, `--no-remote` (не загружать http(s)-ресурсы).
 
+## Библиотека
+
+Конвертер можно подключить к своему приложению на .NET 10 как библиотеку `DocxToPdf.dll`. Готовая сборка лежит
+в релизах на GitHub (архив `DocxToPdf-<версия>-lib.zip`), документация — в архиве `DocxToPdf-<версия>-docs.zip`.
+Собрать её самостоятельно можно так: `dotnet build src/DocxToPdf.Library -c Release`.
+
+```csharp
+var fonts = new DocxToPdf.Fonts.FontManager();
+int pages = DocxToPdf.Converter.Convert("report.docx", "report.pdf", fonts);
+```
+
+Подробно — в [docs/library.md](docs/library.md). Архивы релиза собирает скрипт `tools/release/release.sh [версия]`.
+
 ## Устройство
 
 | Файл | Назначение |
 |---|---|
+| `../DocxToPdf.Library/` | Проект библиотеки `DocxToPdf.dll`: те же исходники с XML-документацией |
+| `../../tools/release/` | Сборка релиза: архив библиотеки, архив документации (руководство, справочник API — `ApiDocGen`) |
 | `Docx/DocxReader.cs` | ZIP-пакет, связи (rels), тема, стили с наследованием, нумерация, настройки, разделы, колонтитулы, таблицы, рисунки |
 | `Docx/Model.cs` | Модель документа (свойства в пунктах, разрешённые стили) |
 | `Odt/OdtReader.cs` | OpenDocument Text (.odt, .ott, .fodt): стили (наследование, стили по умолчанию, автоматические стили содержимого и колонтитулов), абзацы и заголовки, списки и нумерация заголовков, страницы и колонтитулы, разделы, сноски, поля, закладки, исправления |

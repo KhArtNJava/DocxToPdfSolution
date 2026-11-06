@@ -7,10 +7,26 @@ using DocxToPdf.Pdf;
 
 namespace DocxToPdf;
 
+/// <summary>Точка входа библиотеки: конвертация документа в PDF.</summary>
 public static class Converter
 {
     /// <summary>Конвертирует DOCX-, ODT-, RTF-, HTML- или MHTML-файл в PDF (формат определяется по содержимому).</summary>
+    /// <param name="input">Путь к исходному файлу (.docx/.docm/.dotx, .odt/.ott/.fodt, .rtf, .html/.htm, .mht/.mhtml).</param>
+    /// <param name="output">Путь к создаваемому PDF.</param>
+    /// <param name="fonts">Шрифты (см. <see cref="FontManager"/>).</param>
+    /// <param name="htmlOptions">Настройки для HTML и MHTML (размер страницы, поля, номера страниц) или null.</param>
+    /// <param name="docxOptions">Настройки для DOCX, ODT и RTF (исправления, примечания) или null.</param>
+    /// <returns>Число страниц в PDF.</returns>
+    /// <exception cref="NotSupportedException">Формат файла не поддерживается (например, таблица или презентация OpenDocument).</exception>
+    /// <remarks>Метод можно вызывать из разных потоков: конвертации выполняются по очереди (общие кэши шрифтов и словарей).</remarks>
     public static int Convert(string input, string output, FontManager fonts, HtmlOptions? htmlOptions = null, DocxOptions? docxOptions = null)
+    {
+        lock (Gate) return ConvertCore(input, output, fonts, htmlOptions, docxOptions);
+    }
+
+    static readonly object Gate = new();
+
+    static int ConvertCore(string input, string output, FontManager fonts, HtmlOptions? htmlOptions, DocxOptions? docxOptions)
     {
         if (IsZip(input) && Odt.OdtReader.OtherOdfKind(input) is { } kind)
             throw new NotSupportedException($"документ OpenDocument типа «{kind}» не поддерживается (поддерживаются текстовые документы .odt/.ott/.fodt)");

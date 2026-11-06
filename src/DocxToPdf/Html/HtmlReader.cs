@@ -6,13 +6,18 @@ using DocxToPdf.Images;
 
 namespace DocxToPdf.Html;
 
-/// <summary>Настройки конвертации HTML.</summary>
+/// <summary>Настройки вывода HTML и MHTML (правила CSS <c>@page</c> документа имеют приоритет).</summary>
 public sealed class HtmlOptions
 {
-    public double PageWidth = 595.3, PageHeight = 841.9;   // A4
+    /// <summary>Размер страницы, pt (по умолчанию A4: 595,3 × 841,9).</summary>
+    public double PageWidth = 595.3, PageHeight = 841.9;
+    /// <summary>Поля страницы, pt (по умолчанию 20 мм = 56,7 pt).</summary>
     public double MarginTop = 56.7, MarginBottom = 56.7, MarginLeft = 56.7, MarginRight = 56.7;
+    /// <summary>Альбомная ориентация (ширина и высота страницы меняются местами).</summary>
     public bool Landscape;
+    /// <summary>Номера страниц внизу («1 / 5»).</summary>
     public bool PageNumbers;
+    /// <summary>Загружать картинки и стили по http(s); false — только локальные файлы и ресурсы веб-архива.</summary>
     public bool AllowRemote = true;
 }
 

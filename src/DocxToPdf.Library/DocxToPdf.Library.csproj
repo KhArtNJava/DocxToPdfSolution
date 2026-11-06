@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Библиотека конвертера: те же исходники, что и у программы docx2pdf (src/DocxToPdf),
+    собранные как DocxToPdf.dll с XML-документацией для подключения к своим приложениям.
+  -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>DocxToPdf</RootNamespace>
+    <AssemblyName>DocxToPdf</AssemblyName>
+    <Version>1.0.0</Version>
+    <Product>DocxToPdf</Product>
+    <Authors>KhArtN</Authors>
+    <Description>Конвертер DOCX, ODT, RTF, HTML и MHTML в PDF без сторонних библиотек</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Не у всех публичных типов модели есть комментарии -->
+    <NoWarn>$(NoWarn);CS1591;CS1573;CS1572;CS1574;CS1584;CS1658;CS1587</NoWarn>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../DocxToPdf/**/*.cs" Exclude="../DocxToPdf/bin/**;../DocxToPdf/obj/**" />
+    <EmbeddedResource Include="../DocxToPdf/Hyphenation/*.dic.gz" LogicalName="DocxToPdf.Hyphenation.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

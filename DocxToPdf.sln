@@ -7,6 +7,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DocxToPdf", "src\DocxToPdf\DocxToPdf.csproj", "{D3F4A7E4-4351-4712-BA86-ED32076AF818}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DocxToPdf.Library", "src\DocxToPdf.Library\DocxToPdf.Library.csproj", "{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -29,11 +31,24 @@ Global
 		{D3F4A7E4-4351-4712-BA86-ED32076AF818}.Release|x64.Build.0 = Release|Any CPU
 		{D3F4A7E4-4351-4712-BA86-ED32076AF818}.Release|x86.ActiveCfg = Release|Any CPU
 		{D3F4A7E4-4351-4712-BA86-ED32076AF818}.Release|x86.Build.0 = Release|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Debug|x64.Build.0 = Debug|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Debug|x86.Build.0 = Debug|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Release|x64.ActiveCfg = Release|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Release|x64.Build.0 = Release|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Release|x86.ActiveCfg = Release|Any CPU
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{D3F4A7E4-4351-4712-BA86-ED32076AF818} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{4D982DA0-D3CD-436E-9D77-ABFBFCE775CE} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

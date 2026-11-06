@@ -48,6 +48,12 @@ public sealed class FontManager
          "FreeSerif", "Segoe UI Emoji", "Microsoft YaHei", "SimSun", "MS Gothic", "Noto Sans CJK SC", "Noto Sans CJK JP",
          "WenQuanYi Zen Hei", "Droid Sans Fallback", "Arial", "Liberation Sans", "Times New Roman", "Liberation Serif"];
 
+    /// <summary>
+    /// Находит шрифты в системных каталогах и в дополнительных каталогах <paramref name="extraDirs"/> (TTF/OTF/TTC).
+    /// Создание дорогое (просмотр каталогов) — один экземпляр удобно использовать для многих конвертаций.
+    /// </summary>
+    /// <param name="extraDirs">Дополнительные каталоги со шрифтами или null.</param>
+    /// <exception cref="InvalidOperationException">Не найдено ни одного шрифта.</exception>
     public FontManager(IEnumerable<string>? extraDirs = null)
     {
         var dirs = new List<string>();

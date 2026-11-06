@@ -434,7 +434,7 @@ public sealed class CustomPath
     public bool Fill = true, Stroke = true;
 }
 
-/// <summary>Параметры чтения DOCX: показ исправлений и примечаний.</summary>
+/// <summary>Настройки вывода DOCX, ODT и RTF: исправления и примечания.</summary>
 public sealed class DocxOptions
 {
     /// <summary>auto (как в настройках документа; по умолчанию — с разметкой), final — итоговый вид, markup — с разметкой.</summary>
