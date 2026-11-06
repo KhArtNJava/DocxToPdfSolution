@@ -79,6 +79,8 @@ public sealed partial class HtmlReader
     readonly FontManager _fonts;
     readonly HtmlOptions _opt;
     readonly string _baseDir;
+    MhtmlArchive? _mht;                       // веб-архив MHTML: ресурсы берутся из него
+    string? _baseUrl;                         // адрес страницы в архиве (Content-Location или <base href>)
     readonly DocxDocument _doc = new() { DefaultTabStop = 36 };
     readonly StyleSheet _ua = new();
     readonly StyleSheet _author = new();
@@ -97,8 +99,30 @@ public sealed partial class HtmlReader
     public static DocxDocument Read(string path, FontManager fonts, HtmlOptions? options = null)
     {
         var bytes = File.ReadAllBytes(path);
-        string html = DecodeBytes(bytes);
-        return new HtmlReader(fonts, options ?? new HtmlOptions(), Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".").Convert(html);
+        var reader = new HtmlReader(fonts, options ?? new HtmlOptions(), Path.GetDirectoryName(Path.GetFullPath(path)) ?? ".");
+        if (MhtmlArchive.Looks(bytes))
+        {
+            var mht = MhtmlArchive.Parse(bytes);
+            if (mht.Main != null)
+            {
+                reader._mht = mht;
+                reader._baseUrl = mht.Main.Location;
+                return reader.Convert(DecodePart(mht.Main));
+            }
+        }
+        return reader.Convert(DecodeBytes(bytes));
+    }
+
+    /// <summary>Текст части MHTML: кодировка из Content-Type, иначе — как у обычного файла.</summary>
+    static string DecodePart(MhtmlArchive.Part part)
+    {
+        var b = part.Data;
+        bool bom = b.Length >= 2 && (b[0] == 0xEF && b[1] == 0xBB || b[0] == 0xFF && b[1] == 0xFE || b[0] == 0xFE && b[1] == 0xFF);
+        if (part.Charset is { Length: > 0 } cs && !bom)
+        {
+            try { return Encoding.GetEncoding(cs.Trim()).GetString(b); } catch { /* неизвестная кодировка */ }
+        }
+        return DecodeBytes(b);
     }
 
     public static DocxDocument ReadString(string html, FontManager fonts, HtmlOptions? options = null, string? baseDir = null) =>
@@ -136,6 +160,12 @@ public sealed partial class HtmlReader
     DocxDocument Convert(string html)
     {
         var root = HtmlParser.Parse(html);
+        if (_mht != null && root.Descendants().FirstOrDefault(d => d.Tag == "base" && d.Attr("href") != null) is { } baseEl)
+        {
+            string bh = baseEl.Attr("href")!.Trim();
+            if (Uri.TryCreate(bh, UriKind.Absolute, out var bu)) _baseUrl = bu.AbsoluteUri;
+            else if (_baseUrl != null && Uri.TryCreate(new Uri(_baseUrl), bh, out var rel)) _baseUrl = rel.AbsoluteUri;
+        }
 
         foreach (var st in root.Descendants().Where(d => d.Tag == "style"))
         {
@@ -362,7 +392,7 @@ public sealed partial class HtmlReader
         if (tok.Count > 1 && tok[1] == "raise") sink = 1;
 
         // Метрики основного текста (как их считает вёрстка)
-        var bodyFace = _fonts.Get(block.FontFamily, block.Bold, block.Italic).Font;
+        var bodyFace = _fonts.Get(block.FontFamily, block.Bold, block.Italic, block.Weight).Font;
         double em = bodyFace.UnitsPerEm, bs = block.FontSize;
         double asc = bodyFace.Ascent / em * bs, desc = bodyFace.Descent / em * bs, natural = asc + desc;
         double factor = block.LineHeightFactor is double lf ? lf / 1.15 : 1;
@@ -371,7 +401,7 @@ public sealed partial class HtmlReader
         double capBody = bodyFace.CapHeight / em * bs;
 
         // Размер буквицы: от высоты прописных первой строки до базовой линии строки N
-        var letterFace = _fonts.Get(ps.FontFamily, ps.Bold, ps.Italic).Font;
+        var letterFace = _fonts.Get(ps.FontFamily, ps.Bold, ps.Italic, ps.Weight).Font;
         double capRatio = Math.Max(0.3, letterFace.CapHeight / (double)letterFace.UnitsPerEm);
         double capLetter = (size - 1) * lh + capBody;
         double fsLetter = capLetter / capRatio;
@@ -435,6 +465,7 @@ public sealed partial class HtmlReader
         para.FirstLine = ts => ts with
         {
             Bold = weight ? fl.Bold : ts.Bold,
+            Weight = weight ? fl.Weight : ts.Weight,
             Italic = style ? fl.Italic : ts.Italic,
             Size = size ? (ts.Size == s.FontSize ? fl.FontSize : ts.Size * fl.FontSize / Math.Max(1, s.FontSize)) : ts.Size,
             FontAscii = family ? fl.FontFamily : ts.FontAscii,
@@ -855,6 +886,7 @@ public sealed partial class HtmlReader
             case "font-size": s.FontSize = FontSize(lv, parent.FontSize); break;
             case "font-weight":
                 s.Bold = lv switch { "bold" or "bolder" => true, "normal" or "lighter" => false, _ => int.TryParse(lv, out var w) ? w >= 600 : s.Bold };
+                s.Weight = int.TryParse(lv, out var nw) && nw is >= 1 and <= 1000 && nw != 400 && nw != 700 ? nw : 0;
                 break;
             case "font-style": s.Italic = lv is "italic" or "oblique"; break;
             case "font": ApplyFontShorthand(s, parent, v); break;
@@ -1110,13 +1142,14 @@ public sealed partial class HtmlReader
     void ApplyFontShorthand(CssStyle s, CssStyle parent, string v)
     {
         var tokens = CssValues.Tokens(v);
+        s.Weight = 0;
         int i = 0;
         for (; i < tokens.Count; i++)
         {
             string t = tokens[i].ToLowerInvariant();
             if (t is "italic" or "oblique") s.Italic = true;
-            else if (t is "bold" or "bolder") s.Bold = true;
-            else if (int.TryParse(t, out var w) && w >= 100 && w <= 900) s.Bold = w >= 600;
+            else if (t is "bold" or "bolder") { s.Bold = true; s.Weight = 0; }
+            else if (int.TryParse(t, out var w) && w >= 100 && w <= 900) { s.Bold = w >= 600; s.Weight = w is 400 or 700 ? 0 : w; }
             else if (t == "small-caps") s.SmallCaps = true;
             else if (t is "normal") { }
             else break;
@@ -1170,7 +1203,7 @@ public sealed partial class HtmlReader
     TextStyle ToTextStyle(CssStyle s) => new()
     {
         FontAscii = s.FontFamily, FontHAnsi = s.FontFamily, FontEastAsia = s.FontFamily,
-        Bold = s.Bold, Italic = s.Italic, Underline = s.Underline, Strike = s.Strike, Caps = s.Upper, SmallCaps = s.SmallCaps, LetterSpacing = s.LetterSpacing, WordSpacing = s.WordSpacing,
+        Bold = s.Bold, Weight = s.Weight, Italic = s.Italic, Underline = s.Underline, Strike = s.Strike, Caps = s.Upper, SmallCaps = s.SmallCaps, LetterSpacing = s.LetterSpacing, WordSpacing = s.WordSpacing,
         Size = Math.Max(1, s.FontSize), Color = s.Color, Background = s.TextBackground, VertAlign = s.VertAlign, Link = s.Link,
         Box = s.InlineBox,
     };
@@ -1558,6 +1591,9 @@ public sealed partial class HtmlReader
         src = src.Trim();
         try
         {
+            // Веб-архив: сначала ищем ресурс среди частей MHTML (по cid: или адресу)
+            if (_mht != null && !src.StartsWith("data:", StringComparison.OrdinalIgnoreCase) && _mht.Find(src, _baseUrl) is { } part)
+                return part.Data;
             if (src.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
             {
                 int comma = src.IndexOf(',');
@@ -1842,6 +1878,13 @@ public sealed partial class HtmlReader
                     _contentWidth = cellCtx.Width;
                     WalkChildren(cell.Node, cellFlow, cellCtx);
                     Flush(cellFlow);
+                    // Ячейка — отдельный контекст форматирования: нижнее поле последнего блока остаётся внутри неё
+                    if (cellFlow.PendingMargin > 0.01)
+                    {
+                        if (tc.Blocks.Count > 0 && tc.Blocks[^1] is Paragraph lastP) lastP.SpaceAfter = Math.Max(lastP.SpaceAfter, cellFlow.PendingMargin);
+                        else if (tc.Blocks.Count > 0)
+                            tc.Blocks.Add(new Paragraph { SpaceBefore = Math.Max(0, cellFlow.PendingMargin - 1), MarkStyle = ToTextStyle(cs) with { Size = 1 }, LineRule = "exact", LineValue = 1 });
+                    }
                     ApplyFirstLine(cell.Node, cs, tc.Blocks);
                     _contentWidth = savedWidth;
                 }
@@ -1877,7 +1920,7 @@ public sealed partial class HtmlReader
                 var st = x.Parent?.Style;
                 if (st == null || st.Hidden) return;
                 bool nowrap = st.WhiteSpace is "nowrap" or "pre";
-                var face = _fonts.Get(st.FontFamily, st.Bold, st.Italic);
+                var face = _fonts.Get(st.FontFamily, st.Bold, st.Italic, st.Weight);
                 double size = st.VertAlign != 0 ? st.FontSize * 0.65 : st.FontSize;
                 double spaceW = Width(face, " ", size);
                 string text = st.Upper ? x.Text.ToUpperInvariant() : x.Text;

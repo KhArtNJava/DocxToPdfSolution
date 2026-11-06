@@ -4,7 +4,8 @@ using System.Text;
 namespace DocxToPdf.Fonts;
 
 /// <summary>Краткие сведения о шрифте для индекса (без загрузки глифов).</summary>
-public sealed record FontFaceInfo(string Path, int Index, List<string> Families, bool Bold, bool Italic, string PostScriptName);
+public sealed record FontFaceInfo(string Path, int Index, List<string> Families, bool Bold, bool Italic, string PostScriptName,
+    Dictionary<string, double>? Coords = null);
 
 /// <summary>
 /// Минимальный парсер TrueType (glyf-контуры) с поддержкой TTC
@@ -39,7 +40,168 @@ public sealed class TrueTypeFont
     internal CffFont? Cff { get; private set; }
     public bool IsCff => Cff != null;
 
+    /// <summary>Вариативный шрифт: оси и нормализованные координаты выбранного начертания.</summary>
+    public List<VarAxis>? Axes { get; private set; }
+    double[]? _norm;
+    int _gvar;
+    bool _hvarApplied;
+    readonly Dictionary<int, byte[]> _instRecords = [];
+    short[] _instLsb = [];
+
     TrueTypeFont(byte[] data) => _data = data;
+
+    /// <summary>Запись глифа glyf (для вариативного шрифта — пересчитанная для выбранного начертания).</summary>
+    (byte[] Buf, int Off, int Len) GlyphRecord(int g)
+    {
+        if (g >= NumGlyphs || _loca.Length <= g + 1) return (_data, 0, 0);
+        if (_gvar > 0 && _norm != null && _norm.Any(c => c != 0))
+        {
+            if (!_instRecords.TryGetValue(g, out var rec)) _instRecords[g] = rec = InstanceGlyph(g);
+            return (rec, 0, rec.Length);
+        }
+        return (_data, _tables["glyf"].Offset + _loca[g], _loca[g + 1] - _loca[g]);
+    }
+
+    /// <summary>
+    /// Глиф начертания: дельты gvar применяются к точкам (простой глиф) или смещениям компонентов (составной);
+    /// по фантомным точкам уточняется ширина (если нет HVAR). Инструкции не переносятся.
+    /// </summary>
+    byte[] InstanceGlyph(int g)
+    {
+        int off = _tables["glyf"].Offset + _loca[g], len = _loca[g + 1] - _loca[g];
+        int adv = _advances[g];
+        if (len < 10)
+        {
+            // Пустой глиф: только фантомные точки
+            var dd = Variations.GlyphDeltas(_data, _gvar, g, 4, [], new double[4], new double[4], _norm!);
+            if (dd != null && !_hvarApplied) _advances[g] = (ushort)Math.Max(0, Math.Round(adv + dd.Value.Dx[1] - dd.Value.Dx[0]));
+            return [];
+        }
+        int n = S16(_data, off);
+        int xMin = S16(_data, off + 2);
+        int lsb = g < _lsbOrig.Length ? _lsbOrig[g] : xMin;
+        if (n >= 0)
+        {
+            var endPts = new int[n];
+            for (int i = 0; i < n; i++) endPts[i] = U16(_data, off + 10 + 2 * i);
+            int count = n == 0 ? 0 : endPts[^1] + 1;
+            int q = off + 10 + 2 * n;
+            q += 2 + U16(_data, q);
+            var flags = new byte[count];
+            for (int i = 0; i < count;)
+            {
+                byte f = _data[q++];
+                flags[i++] = f;
+                if ((f & 8) != 0) { int rep = _data[q++]; while (rep-- > 0 && i < count) flags[i++] = f; }
+            }
+            var xs = new double[count + 4]; var ys = new double[count + 4];
+            int v = 0;
+            for (int i = 0; i < count; i++)
+            {
+                byte f = flags[i];
+                if ((f & 2) != 0) { int dv = _data[q++]; v += (f & 16) != 0 ? dv : -dv; } else if ((f & 16) == 0) { v += S16(_data, q); q += 2; }
+                xs[i] = v;
+            }
+            v = 0;
+            for (int i = 0; i < count; i++)
+            {
+                byte f = flags[i];
+                if ((f & 4) != 0) { int dv = _data[q++]; v += (f & 32) != 0 ? dv : -dv; } else if ((f & 32) == 0) { v += S16(_data, q); q += 2; }
+                ys[i] = v;
+            }
+            xs[count] = xMin - lsb; xs[count + 1] = xMin - lsb + adv;
+            var d = Variations.GlyphDeltas(_data, _gvar, g, count + 4, endPts, xs, ys, _norm!);
+            var nx = new int[count]; var ny = new int[count];
+            for (int i = 0; i < count; i++)
+            {
+                nx[i] = (int)Math.Round(xs[i] + (d?.Dx[i] ?? 0));
+                ny[i] = (int)Math.Round(ys[i] + (d?.Dy[i] ?? 0));
+            }
+            if (d != null && !_hvarApplied) _advances[g] = (ushort)Math.Max(0, Math.Round(adv + d.Value.Dx[count + 1] - d.Value.Dx[count]));
+            // Новая запись: заголовок с габаритами, концы контуров, без инструкций, флаги и координаты словами
+            var ms = new MemoryStream();
+            void W16(int x) { ms.WriteByte((byte)(x >> 8)); ms.WriteByte((byte)x); }
+            W16(n);
+            W16(count > 0 ? nx.Min() : 0); W16(count > 0 ? ny.Min() : 0); W16(count > 0 ? nx.Max() : 0); W16(count > 0 ? ny.Max() : 0);
+            foreach (var e in endPts) W16(e);
+            W16(0);
+            for (int i = 0; i < count; i++) ms.WriteByte((byte)(flags[i] & 1));
+            int px = 0; foreach (var x in nx) { W16(x - px); px = x; }
+            int py = 0; foreach (var y in ny) { W16(y - py); py = y; }
+            while (ms.Length % 4 != 0) ms.WriteByte(0);
+            var rec = ms.ToArray();
+            if (g < _instLsb.Length && count > 0) _instLsb[g] = (short)nx.Min();
+            return rec;
+        }
+        // Составной глиф: «точки» — смещения компонентов
+        var comps = new List<(int Flags, int Glyph, int X, int Y, byte[] Tr)>();
+        int p = off + 10;
+        while (true)
+        {
+            int fl = U16(_data, p), comp = U16(_data, p + 2);
+            p += 4;
+            int ox, oy;
+            if ((fl & 1) != 0) { ox = S16(_data, p); oy = S16(_data, p + 2); p += 4; } else { ox = (sbyte)_data[p]; oy = (sbyte)_data[p + 1]; p += 2; }
+            int trLen = (fl & 0x08) != 0 ? 2 : (fl & 0x40) != 0 ? 4 : (fl & 0x80) != 0 ? 8 : 0;
+            comps.Add((fl, comp, ox, oy, _data.AsSpan(p, trLen).ToArray()));
+            p += trLen;
+            if ((fl & 0x20) == 0) break;
+        }
+        int nc = comps.Count;
+        var cx = new double[nc + 4]; var cy = new double[nc + 4];
+        for (int i = 0; i < nc; i++) { cx[i] = comps[i].X; cy[i] = comps[i].Y; }
+        cx[nc] = xMin - lsb; cx[nc + 1] = xMin - lsb + adv;
+        var cd = Variations.GlyphDeltas(_data, _gvar, g, nc + 4, Enumerable.Range(0, nc + 4).ToArray(), cx, cy, _norm!);
+        if (cd != null && !_hvarApplied) _advances[g] = (ushort)Math.Max(0, Math.Round(adv + cd.Value.Dx[nc + 1] - cd.Value.Dx[nc]));
+        var cm = new MemoryStream();
+        void C16(int x) { cm.WriteByte((byte)(x >> 8)); cm.WriteByte((byte)x); }
+        C16(-1);
+        cm.Write(_data, off + 2, 8);   // габариты — исходные
+        for (int i = 0; i < nc; i++)
+        {
+            var (fl, comp, ox, oy, tr) = comps[i];
+            bool xy = (fl & 2) != 0;
+            int nx = xy ? (int)Math.Round(ox + (cd?.Dx[i] ?? 0)) : ox, ny = xy ? (int)Math.Round(oy + (cd?.Dy[i] ?? 0)) : oy;
+            int nf = (fl | 1) & ~0x100;   // аргументы словами, без инструкций
+            C16(nf); C16(comp); C16(nx); C16(ny);
+            cm.Write(tr);
+        }
+        while (cm.Length % 4 != 0) cm.WriteByte(0);
+        return cm.ToArray();
+    }
+
+    short[] _lsbOrig = [];
+
+    /// <summary>Применяет координаты вариативного шрифта (fvar/avar, gvar, HVAR, CFF2).</summary>
+    void ApplyVariation(IReadOnlyDictionary<string, double>? coords)
+    {
+        if (!_tables.TryGetValue("fvar", out var fvar)) return;
+        Axes = Variations.ReadAxes(_data, fvar.Offset);
+        _norm = Variations.Normalize(_data, Axes, coords ?? new Dictionary<string, double>(), _tables.TryGetValue("avar", out var av) ? av.Offset : 0);
+        if (Cff != null) Cff.SetVariation(_norm);
+        if (_norm.All(c => c == 0)) return;
+        if (_tables.TryGetValue("HVAR", out var hv))
+        {
+            var deltas = Variations.HvarAdvanceDeltas(_data, hv.Offset, _norm, NumGlyphs);
+            if (deltas != null)
+            {
+                for (int g = 0; g < NumGlyphs; g++) _advances[g] = (ushort)Math.Max(0, Math.Round(_advances[g] + deltas[g]));
+                _hvarApplied = true;
+            }
+        }
+        if (_tables.TryGetValue("gvar", out var gv) && Cff == null)
+        {
+            _gvar = gv.Offset;
+            // Исходные левые поля (для фантомных точек) и ширины глифов без HVAR — по фантомным точкам
+            var hmtx = _tables["hmtx"].Offset;
+            int numH = U16(_data, _tables["hhea"].Offset + 34);
+            _lsbOrig = new short[NumGlyphs];
+            for (int g = 0; g < NumGlyphs; g++)
+                _lsbOrig[g] = g < numH ? S16(_data, hmtx + 4 * g + 2) : S16(_data, hmtx + 4 * numH + 2 * (g - numH));
+            _instLsb = (short[])_lsbOrig.Clone();
+            if (!_hvarApplied) for (int g = 0; g < NumGlyphs; g++) GlyphRecord(g);
+        }
+    }
 
     // ---------------------------------------------------------------
     //  Чтение
@@ -73,11 +235,15 @@ public sealed class TrueTypeFont
         return t;
     }
 
-    public static TrueTypeFont Load(string path, int index)
+    public static TrueTypeFont Load(string path, int index, IReadOnlyDictionary<string, double>? coords = null, string? psName = null)
     {
         var data = File.ReadAllBytes(path);
         var f = new TrueTypeFont(data);
         f.Parse(FontOffset(data, index));
+        f.ApplyVariation(coords);
+        if (psName != null) f.PostScriptName = new string(psName.Where(c => c > 32 && c < 127 && "[](){}<>/%#".IndexOf(c) < 0).ToArray());
+        if (coords != null && coords.TryGetValue("wght", out var wg)) f.IsBold = wg >= 600;
+        if (coords != null && (coords.TryGetValue("ital", out var it) && it >= 0.5 || coords.TryGetValue("slnt", out var sl) && sl != 0)) f.IsItalic = true;
         return f;
     }
 
@@ -96,8 +262,8 @@ public sealed class TrueTypeFont
             {
                 int off = FontOffset(data, i);
                 var tables = ReadDirectory(data, off);
-                // Контуры TrueType (glyf) или CFF (OpenType .otf); CFF2 (вариативные) не поддерживаются
-                if (!(tables.ContainsKey("glyf") || tables.ContainsKey("CFF ")) || !tables.ContainsKey("cmap") || !tables.ContainsKey("head")) continue;
+                // Контуры TrueType (glyf), CFF или CFF2 (вариативные OpenType)
+                if (!(tables.ContainsKey("glyf") || tables.ContainsKey("CFF ") || tables.ContainsKey("CFF2")) || !tables.ContainsKey("cmap") || !tables.ContainsKey("head")) continue;
                 var names = ReadNames(data, tables);
                 var families = new List<string>();
                 void Add(string? s) { if (!string.IsNullOrWhiteSpace(s) && !families.Contains(s, StringComparer.OrdinalIgnoreCase)) families.Add(s.Trim()); }
@@ -107,6 +273,23 @@ public sealed class TrueTypeFont
                 var (bold, italic) = ReadStyle(data, tables);
                 string ps = names.FirstOrDefault(n => n.Id == 6).Value ?? families.FirstOrDefault() ?? "Font";
                 if (families.Count > 0) result.Add(new FontFaceInfo(path, i, families, bold, italic, ps));
+                // Вариативный шрифт: именованные начертания (fvar) — отдельные варианты семейства
+                if (families.Count > 0 && tables.TryGetValue("fvar", out var fv))
+                {
+                    var axes = Variations.ReadAxes(data, fv.Item1);
+                    var allNames = ReadAllNames(data, tables);
+                    foreach (var (subId, coords, psId) in Variations.ReadInstances(data, fv.Item1))
+                    {
+                        string sub2 = allNames.GetValueOrDefault(subId) ?? "";
+                        var map = new Dictionary<string, double>();
+                        for (int k = 0; k < axes.Count && k < coords.Length; k++) map[axes[k].Tag] = coords[k];
+                        bool ib = map.TryGetValue("wght", out var wv) ? wv >= 600 : sub2.Contains("Bold", StringComparison.OrdinalIgnoreCase);
+                        bool ii = (map.TryGetValue("ital", out var iv) && iv >= 0.5) || (map.TryGetValue("slnt", out var sv) && sv != 0)
+                                  || sub2.Contains("Italic", StringComparison.OrdinalIgnoreCase) || sub2.Contains("Oblique", StringComparison.OrdinalIgnoreCase);
+                        string ips = allNames.GetValueOrDefault(psId) ?? (families[0] + "-" + sub2).Replace(" ", "");
+                        result.Add(new FontFaceInfo(path, i, families, ib, ii, ips, map));
+                    }
+                }
             }
             catch { /* повреждённый шрифт — пропускаем */ }
         }
@@ -135,6 +318,23 @@ public sealed class TrueTypeFont
             italic = (sel & 0x01) != 0 || (sel & 0x200) != 0;
         }
         return (bold, italic);
+    }
+
+    /// <summary>Все записи name (Windows Unicode / Mac Roman): номер → строка.</summary>
+    static Dictionary<int, string> ReadAllNames(byte[] d, Dictionary<string, (int, int)> tables)
+    {
+        var res = new Dictionary<int, string>();
+        if (!tables.TryGetValue("name", out var t)) return res;
+        int o = t.Item1, count = U16(d, o + 2), strOff = o + U16(d, o + 4);
+        for (int i = 0; i < count; i++)
+        {
+            int r = o + 6 + 12 * i;
+            int platform = U16(d, r), id = U16(d, r + 6), len = U16(d, r + 8), off = U16(d, r + 10);
+            if (strOff + off + len > d.Length) continue;
+            string? s = platform is 3 or 0 ? Encoding.BigEndianUnicode.GetString(d, strOff + off, len) : platform == 1 ? Encoding.Latin1.GetString(d, strOff + off, len) : null;
+            if (s != null && (!res.ContainsKey(id) || platform == 3)) res[id] = s.TrimEnd('\0');
+        }
+        return res;
     }
 
     static List<(int Id, string Value)> ReadNames(byte[] d, Dictionary<string, (int, int)> tables)
@@ -168,9 +368,10 @@ public sealed class TrueTypeFont
         foreach (var (k, v) in ReadDirectory(_data, offset)) _tables[k] = v;
         if (!_tables.ContainsKey("glyf"))
         {
-            if (!_tables.TryGetValue("CFF ", out var cff))
-                throw new NotSupportedException("Поддерживаются шрифты с контурами TrueType (glyf) или CFF");
-            Cff = new CffFont(_data, cff.Offset, cff.Length);
+            if (_tables.TryGetValue("CFF ", out var cff)) Cff = new CffFont(_data, cff.Offset, cff.Length);
+            else if (_tables.TryGetValue("CFF2", out var cff2) && _tables.TryGetValue("head", out var hd))
+                Cff = new CffFont(_data, cff2.Offset, cff2.Length, cff2: true, unitsPerEm: U16(_data, hd.Offset + 18));
+            else throw new NotSupportedException("Поддерживаются шрифты с контурами TrueType (glyf), CFF или CFF2");
         }
 
         var head = _tables["head"].Offset;
@@ -349,16 +550,15 @@ public sealed class TrueTypeFont
             foreach (var c in CompositeComponents(g)) stack.Push(c);
         }
 
-        int glyfOff = _tables["glyf"].Offset;
         using var glyf = new MemoryStream();
         var newLoca = new int[NumGlyphs + 1];
         for (int g = 0; g < NumGlyphs; g++)
         {
             newLoca[g] = (int)glyf.Length;
             if (!keep.Contains(g)) continue;
-            int len = _loca[g + 1] - _loca[g];
+            var (buf, off, len) = GlyphRecord(g);
             if (len <= 0) continue;
-            glyf.Write(_data, glyfOff + _loca[g], len);
+            glyf.Write(buf, off, len);
             while (glyf.Length % 4 != 0) glyf.WriteByte(0);
         }
         newLoca[NumGlyphs] = (int)glyf.Length;
@@ -376,6 +576,21 @@ public sealed class TrueTypeFont
         tables["loca"] = loca;
         tables["glyf"] = glyf.ToArray();
 
+        // Вариативный шрифт: hmtx начертания (ширины с учётом HVAR/gvar) — полная таблица
+        if (_norm != null && _norm.Any(c => c != 0))
+        {
+            var vh = new byte[NumGlyphs * 4];
+            for (int g = 0; g < NumGlyphs; g++)
+            {
+                if (!keep.Contains(g)) continue;
+                BinaryPrimitives.WriteUInt16BigEndian(vh.AsSpan(4 * g), _advances[g]);
+                BinaryPrimitives.WriteInt16BigEndian(vh.AsSpan(4 * g + 2), g < _instLsb.Length ? _instLsb[g] : (short)0);
+            }
+            BinaryPrimitives.WriteUInt16BigEndian(tables["hhea"].AsSpan(34), (ushort)NumGlyphs);
+            tables["hmtx"] = vh;
+            foreach (var t in new[] { "OS/2" }) if (_tables.ContainsKey(t)) tables[t] = Table(t);
+            return BuildFont(tables);
+        }
         // hmtx: обнуляем неиспользуемые метрики (лучше сжимается)
         var hmtx = Table("hmtx");
         int numH = U16(tables["hhea"], 34);
@@ -464,25 +679,24 @@ public sealed class TrueTypeFont
         List<List<(double X, double Y, bool On)>> output, int depth)
     {
         if (g >= NumGlyphs || depth > 8) return;
-        int len = _loca[g + 1] - _loca[g];
+        var (buf, p, len) = GlyphRecord(g);
         if (len < 10) return;
-        int p = _tables["glyf"].Offset + _loca[g];
-        int n = S16(_data, p);
+        int n = S16(buf, p);
         (double, double) T(double x, double y) => (a * x + c * y + dx, b * x + d * y + dy);
         if (n >= 0)
         {
             int ends = p + 10;
             var endPts = new int[n];
-            for (int i = 0; i < n; i++) endPts[i] = U16(_data, ends + 2 * i);
+            for (int i = 0; i < n; i++) endPts[i] = U16(buf, ends + 2 * i);
             int count = n == 0 ? 0 : endPts[^1] + 1;
             int q = ends + 2 * n;
-            q += 2 + U16(_data, q);   // инструкции
+            q += 2 + U16(buf, q);   // инструкции
             var flags = new byte[count];
             for (int i = 0; i < count;)
             {
-                byte f = _data[q++];
+                byte f = buf[q++];
                 flags[i++] = f;
-                if ((f & 8) != 0) { int rep = _data[q++]; while (rep-- > 0 && i < count) flags[i++] = f; }
+                if ((f & 8) != 0) { int rep = buf[q++]; while (rep-- > 0 && i < count) flags[i++] = f; }
             }
             int baseIdx = output.Count;
             for (int k = 0; k < n; k++) output.Add([]);
@@ -492,16 +706,16 @@ public sealed class TrueTypeFont
             for (int i = 0; i < count; i++)
             {
                 byte f = flags[i];
-                if ((f & 2) != 0) { int dv = _data[q++]; v += (f & 16) != 0 ? dv : -dv; }
-                else if ((f & 16) == 0) { v += S16(_data, q); q += 2; }
+                if ((f & 2) != 0) { int dv = buf[q++]; v += (f & 16) != 0 ? dv : -dv; }
+                else if ((f & 16) == 0) { v += S16(buf, q); q += 2; }
                 xs[i] = v;
             }
             v = 0;
             for (int i = 0; i < count; i++)
             {
                 byte f = flags[i];
-                if ((f & 4) != 0) { int dv = _data[q++]; v += (f & 32) != 0 ? dv : -dv; }
-                else if ((f & 32) == 0) { v += S16(_data, q); q += 2; }
+                if ((f & 4) != 0) { int dv = buf[q++]; v += (f & 32) != 0 ? dv : -dv; }
+                else if ((f & 32) == 0) { v += S16(buf, q); q += 2; }
                 var (tx, ty) = T(xs[i], v);
                 while (contour < n - 1 && i > endPts[contour]) contour++;
                 output[baseIdx + contour].Add((tx, ty, (f & 1) != 0));
@@ -512,16 +726,16 @@ public sealed class TrueTypeFont
         p += 10;
         while (true)
         {
-            int flags = U16(_data, p), comp = U16(_data, p + 2);
+            int flags = U16(buf, p), comp = U16(buf, p + 2);
             p += 4;
             double ox, oy;
-            if ((flags & 1) != 0) { ox = S16(_data, p); oy = S16(_data, p + 2); p += 4; }
-            else { ox = (sbyte)_data[p]; oy = (sbyte)_data[p + 1]; p += 2; }
+            if ((flags & 1) != 0) { ox = S16(buf, p); oy = S16(buf, p + 2); p += 4; }
+            else { ox = (sbyte)buf[p]; oy = (sbyte)buf[p + 1]; p += 2; }
             double ca = 1, cb = 0, cc = 0, cd = 1;
             static double F2(byte[] d, int o) => S16(d, o) / 16384.0;
-            if ((flags & 0x08) != 0) { ca = cd = F2(_data, p); p += 2; }
-            else if ((flags & 0x40) != 0) { ca = F2(_data, p); cd = F2(_data, p + 2); p += 4; }
-            else if ((flags & 0x80) != 0) { ca = F2(_data, p); cb = F2(_data, p + 2); cc = F2(_data, p + 4); cd = F2(_data, p + 6); p += 8; }
+            if ((flags & 0x08) != 0) { ca = cd = F2(buf, p); p += 2; }
+            else if ((flags & 0x40) != 0) { ca = F2(buf, p); cd = F2(buf, p + 2); p += 4; }
+            else if ((flags & 0x80) != 0) { ca = F2(buf, p); cb = F2(buf, p + 2); cc = F2(buf, p + 4); cd = F2(buf, p + 6); p += 8; }
             if ((flags & 2) == 0) { ox = 0; oy = 0; }   // точки-якоря не поддерживаем
             // Композиция: сначала преобразование компонента, затем внешнее
             double na = a * ca + c * cb, nb = b * ca + d * cb, nc = a * cc + c * cd, nd = b * cc + d * cd;
@@ -534,15 +748,14 @@ public sealed class TrueTypeFont
     IEnumerable<int> CompositeComponents(int g)
     {
         if (g >= NumGlyphs) yield break;
-        int len = _loca[g + 1] - _loca[g];
+        var (buf, p, len) = GlyphRecord(g);
         if (len < 10) yield break;
-        int p = _tables["glyf"].Offset + _loca[g];
-        if (S16(_data, p) >= 0) yield break;
+        if (S16(buf, p) >= 0) yield break;
         p += 10;
         while (true)
         {
-            int flags = U16(_data, p);
-            int comp = U16(_data, p + 2);
+            int flags = U16(buf, p);
+            int comp = U16(buf, p + 2);
             yield return comp;
             p += 4;
             p += (flags & 0x0001) != 0 ? 4 : 2;

@@ -465,12 +465,12 @@ public sealed class BlockLayout(LayoutContext ctx)
     static bool IsSpace(int cp) => cp is ' ' or 0x2002 or 0x2003 or 0x2009 or 0x3000;
 
     FontFace PrimaryFace(int cp, TextStyle st) =>
-        _ctx.Fonts.Get(cp < 0x80 ? st.FontAscii : IsCjk(cp) ? st.FontEastAsia : st.FontHAnsi, st.Bold, st.Italic);
+        _ctx.Fonts.Get(cp < 0x80 ? st.FontAscii : IsCjk(cp) ? st.FontEastAsia : st.FontHAnsi, st.Bold, st.Italic, st.Weight);
 
     (FontFace Face, ushort Gid, int Cp) ResolveGlyph(int cp, TextStyle st)
     {
         string family = cp < 0x80 ? st.FontAscii : IsCjk(cp) ? st.FontEastAsia : st.FontHAnsi;
-        var face = _ctx.Fonts.Get(family, st.Bold, st.Italic);
+        var face = _ctx.Fonts.Get(family, st.Bold, st.Italic, st.Weight);
         if (face.Font.TryGetGlyph(cp, out var gid)) return (face, gid, cp);
 
         // Символьные шрифты (Symbol, Wingdings) без самого шрифта
@@ -478,13 +478,13 @@ public sealed class BlockLayout(LayoutContext ctx)
         if (mapped != cp)
         {
             if (face.Font.TryGetGlyph(mapped, out gid)) return (face, gid, mapped);
-            var fbm = _ctx.Fonts.FallbackFor(mapped, family, st.Bold, st.Italic);
+            var fbm = _ctx.Fonts.FallbackFor(mapped, family, st.Bold, st.Italic, st.Weight);
             if (fbm != null && fbm.Font.TryGetGlyph(mapped, out gid)) return (fbm, gid, mapped);
             cp = mapped;
         }
         // Неразрывный пробел, если его нет в шрифте
         if (cp == 0xA0 && face.Font.TryGetGlyph(' ', out gid)) return (face, gid, cp);
-        var fb = _ctx.Fonts.FallbackFor(cp, family, st.Bold, st.Italic);
+        var fb = _ctx.Fonts.FallbackFor(cp, family, st.Bold, st.Italic, st.Weight);
         if (fb != null && fb.Font.TryGetGlyph(cp, out gid)) return (fb, gid, cp);
         return (face, 0, cp);
     }
@@ -613,7 +613,7 @@ public sealed class BlockLayout(LayoutContext ctx)
 
         Piece MakeTab(TextStyle st)
         {
-            var face = _ctx.Fonts.Get(st.FontHAnsi, st.Bold, st.Italic);
+            var face = _ctx.Fonts.Get(st.FontHAnsi, st.Bold, st.Italic, st.Weight);
             var p = new Piece { Kind = PieceKind.Tab, Style = st, Face = face, Size = st.Size, Src = src };
             SetMetrics(p, st, face);
             return p;
@@ -633,7 +633,7 @@ public sealed class BlockLayout(LayoutContext ctx)
         void AddSpacer(InlineBox box, bool start, TextStyle st)
         {
             double w = start ? box.StartWidth : box.EndWidth;
-            var face = _ctx.Fonts.Get(st.FontHAnsi, st.Bold, st.Italic);
+            var face = _ctx.Fonts.Get(st.FontHAnsi, st.Bold, st.Italic, st.Weight);
             var p = new Piece { Kind = PieceKind.Spacer, Style = st, Width = w, SpacerBox = box, SpacerStart = start, Size = st.Size };
             SetMetrics(p, st, face);
             if (start) { p.BreakBefore = breakNext; breakNext = false; }
@@ -675,7 +675,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                 case CommentInline cm:
                 {
                     // Невидимая метка места примечания (нулевой ширины)
-                    var face = _ctx.Fonts.Get(cm.Style.FontHAnsi, cm.Style.Bold, cm.Style.Italic);
+                    var face = _ctx.Fonts.Get(cm.Style.FontHAnsi, cm.Style.Bold, cm.Style.Italic, cm.Style.Weight);
                     var mp = new Piece { Kind = PieceKind.Text, Style = cm.Style, Face = face, Size = cm.Style.Size, Src = src, Comment = cm.Info };
                     SetMetrics(mp, cm.Style, face);
                     pieces.Add(mp);
@@ -715,7 +715,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                     if (h > _ctx.MaxImageHeight) { w *= _ctx.MaxImageHeight / h; h = _ctx.MaxImageHeight; }
                     // vertical-align картинки относительно текста строки
                     double fsz = img.Style.Size, iasc = h, idesc = 0;
-                    var mf = _ctx.Fonts.Get(img.Style.FontHAnsi, img.Style.Bold, img.Style.Italic).Font;
+                    var mf = _ctx.Fonts.Get(img.Style.FontHAnsi, img.Style.Bold, img.Style.Italic, img.Style.Weight).Font;
                     double fAsc = mf.Ascent / (double)mf.UnitsPerEm * fsz, fDesc = mf.Descent / (double)mf.UnitsPerEm * fsz;
                     if (img.Math != null) { idesc = img.MathDescent * h / Math.Max(0.1, img.Height); iasc = h - idesc; }
                     else switch (img.VAlign)
@@ -1046,7 +1046,7 @@ public sealed class BlockLayout(LayoutContext ctx)
         if (asc == 0 && desc == 0)
         {
             var st = raw.Pieces.FirstOrDefault()?.Style ?? p.MarkStyle;
-            var face = _ctx.Fonts.Get(st.FontHAnsi, st.Bold, st.Italic);
+            var face = _ctx.Fonts.Get(st.FontHAnsi, st.Bold, st.Italic, st.Weight);
             asc = face.Font.Ascent / (double)face.Font.UnitsPerEm * st.Size;
             desc = face.Font.Descent / (double)face.Font.UnitsPerEm * st.Size;
         }

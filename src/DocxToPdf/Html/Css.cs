@@ -119,8 +119,15 @@ public sealed class StyleSheet
     static string StripComments(string css)
     {
         var sb = new StringBuilder(css.Length);
+        char quote = '\0';
         for (int i = 0; i < css.Length; i++)
         {
+            char ch = css[i];
+            if (quote != '\0') { if (ch == quote && css[i - 1] != '\\') quote = '\0'; sb.Append(ch); continue; }
+            if (ch is '"' or '\'') { quote = ch; sb.Append(ch); continue; }
+            // Маркеры CDO/CDC («<!--», «-->») вокруг стилей в старых страницах и документах Word — игнорируются
+            if (ch == '<' && string.CompareOrdinal(css, i, "<!--", 0, 4) == 0) { i += 3; sb.Append(' '); continue; }
+            if (ch == '-' && string.CompareOrdinal(css, i, "-->", 0, 3) == 0) { i += 2; sb.Append(' '); continue; }
             if (css[i] == '/' && i + 1 < css.Length && css[i + 1] == '*')
             {
                 int end = css.IndexOf("*/", i + 2, StringComparison.Ordinal);
@@ -431,6 +438,7 @@ public sealed class CssStyle
     public string FontFamily = "Times New Roman";
     public double FontSize = 12;
     public bool Bold, Italic, Underline, Strike, Upper, Lower, SmallCaps;
+    public int Weight;                       // числовая насыщенность CSS (0 — по Bold: 400/700)
     public Rgb Color = Rgb.Black;
     public string TextAlign = "left";
     public double? LineHeightFactor;
@@ -510,7 +518,7 @@ public sealed class CssStyle
     {
         return new CssStyle
         {
-            FontFamily = FontFamily, FontSize = FontSize, Bold = Bold, Italic = Italic, Underline = Underline, Strike = Strike,
+            FontFamily = FontFamily, FontSize = FontSize, Bold = Bold, Weight = Weight, Italic = Italic, Underline = Underline, Strike = Strike,
             Upper = Upper, Lower = Lower, SmallCaps = SmallCaps, LetterSpacing = LetterSpacing, WordSpacing = WordSpacing, Color = Color, TextAlign = TextAlign, LineHeightFactor = LineHeightFactor, LineHeightPt = LineHeightPt,
             WhiteSpace = WhiteSpace, TextIndent = TextIndent, ListStyleType = ListStyleType, Link = Link, VertAlign = VertAlign,
             TextBackground = TextBackground, Hidden = Hidden, Vars = Vars, Quotes = Quotes, InlineBox = InlineBox,

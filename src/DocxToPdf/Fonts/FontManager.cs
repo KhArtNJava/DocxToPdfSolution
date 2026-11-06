@@ -10,8 +10,8 @@ public sealed record FontFace(TrueTypeFont Font, bool SynthBold, bool SynthItali
 public sealed class FontManager
 {
     readonly Dictionary<string, List<FontFaceInfo>> _index = new(StringComparer.OrdinalIgnoreCase);
-    readonly Dictionary<(string, int), TrueTypeFont?> _loaded = new();
-    readonly Dictionary<(string, bool, bool), FontFace> _faceCache = new();
+    readonly Dictionary<(string, int, string), TrueTypeFont?> _loaded = new();
+    readonly Dictionary<(string, bool, bool, int), FontFace> _faceCache = new();
 
     static readonly Dictionary<string, string[]> Substitutes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -92,23 +92,44 @@ public sealed class FontManager
 
     TrueTypeFont? LoadFace(FontFaceInfo info)
     {
-        var key = (info.Path, info.Index);
+        var key = (info.Path, info.Index, info.Coords != null ? info.PostScriptName : "");
         if (_loaded.TryGetValue(key, out var f)) return f;
-        try { f = TrueTypeFont.Load(info.Path, info.Index); }
+        try { f = TrueTypeFont.Load(info.Path, info.Index, info.Coords, info.Coords != null ? info.PostScriptName : null); }
         catch { f = null; }
         _loaded[key] = f;
         return f;
     }
 
-    FontFace? TryFamily(string family, bool bold, bool italic)
+    static double WeightOf(FontFaceInfo f) => f.Coords != null && f.Coords.TryGetValue("wght", out var w) ? w : f.Bold ? 700 : 400;
+
+    FontFace? TryFamily(string family, bool bold, bool italic, int weight = 0)
     {
         if (!_index.TryGetValue(family, out var faces) || faces.Count == 0) return null;
-        // Точное совпадение, затем совпадение по жирности, затем любое
+        double target = weight > 0 ? weight : bold ? 700 : 400;
+        if (weight > 0) bold = weight >= 600;
+        // Точное совпадение, затем совпадение по жирности, затем любое;
+        // среди именованных экземпляров вариативного шрифта — ближайший по оси wght
         var ordered = faces
             .OrderByDescending(f => (f.Bold == bold ? 2 : 0) + (f.Italic == italic ? 1 : 0))
+            .ThenBy(f => Math.Abs(WeightOf(f) - target))
+            .ThenBy(f => f.Coords != null ? 0 : 1)
             .ThenBy(f => f.PostScriptName.Length);
-        foreach (var info in ordered)
+        foreach (var info0 in ordered)
         {
+            var info = info0;
+            // Вариативный шрифт с осью wght: произвольная насыщенность задаётся координатой оси
+            if (info.Coords != null && info.Coords.ContainsKey("wght") && Math.Abs(WeightOf(info) - target) > 0.5)
+            {
+                var font0 = LoadFace(info);
+                if (font0?.Axes?.FirstOrDefault(a => a.Tag == "wght") is { } ax && target >= ax.Min && target <= ax.Max)
+                {
+                    var coords = new Dictionary<string, double>(info.Coords) { ["wght"] = target };
+                    string ps = info.PostScriptName;
+                    int dash = ps.IndexOf('-');
+                    ps = (dash > 0 ? ps[..dash] : ps) + "-W" + (int)Math.Round(target) + (italic && info.Italic ? "Italic" : "");
+                    info = info with { Coords = coords, PostScriptName = ps, Bold = target >= 600 };
+                }
+            }
             var font = LoadFace(info);
             if (font == null) continue;
             return new FontFace(font, bold && !info.Bold, italic && !info.Italic);
@@ -131,38 +152,38 @@ public sealed class FontManager
         _index.ContainsKey(family) || (Substitutes.TryGetValue(family, out var subs) && subs.Any(_index.ContainsKey));
 
     /// <summary>Возвращает начертание для гарнитуры (с подбором замены).</summary>
-    public FontFace Get(string family, bool bold, bool italic)
+    public FontFace Get(string family, bool bold, bool italic, int weight = 0)
     {
-        var key = (family, bold, italic);
+        var key = (family, bold, italic, weight);
         if (_faceCache.TryGetValue(key, out var cached)) return cached;
 
-        FontFace? face = TryFamily(family, bold, italic);
+        FontFace? face = TryFamily(family, bold, italic, weight);
         if (face == null && Substitutes.TryGetValue(family, out var subs))
-            foreach (var s in subs) if ((face = TryFamily(s, bold, italic)) != null) break;
+            foreach (var s in subs) if ((face = TryFamily(s, bold, italic, weight)) != null) break;
         if (face == null)
         {
             var chain = LooksMono(family) ? MonoFallbacks : LooksSerif(family) ? SerifFallbacks : SansFallbacks;
-            foreach (var s in chain.Concat(SansFallbacks)) if ((face = TryFamily(s, bold, italic)) != null) break;
+            foreach (var s in chain.Concat(SansFallbacks)) if ((face = TryFamily(s, bold, italic, weight)) != null) break;
         }
         if (face == null)
-            foreach (var fam in _index.Keys.OrderBy(k => k)) if ((face = TryFamily(fam, bold, italic)) != null) break;
+            foreach (var fam in _index.Keys.OrderBy(k => k)) if ((face = TryFamily(fam, bold, italic, weight)) != null) break;
 
         _faceCache[key] = face ?? throw new InvalidOperationException("Не удалось загрузить ни один шрифт");
         return face;
     }
 
-    readonly Dictionary<(int, string, bool, bool), FontFace?> _glyphFallbackCache = new();
+    readonly Dictionary<(int, string, bool, bool, int), FontFace?> _glyphFallbackCache = new();
 
     /// <summary>
     /// Ищет шрифт, содержащий символ: сначала замены исходной гарнитуры,
     /// затем шрифты того же типа (антиква/гротеск/моноширинный), затем любые запасные.
     /// </summary>
-    public FontFace? FallbackFor(int codepoint, string family, bool bold, bool italic)
+    public FontFace? FallbackFor(int codepoint, string family, bool bold, bool italic, int weight = 0)
     {
-        var key = (codepoint, family, bold, italic);
+        var key = (codepoint, family, bold, italic, weight);
         if (_glyphFallbackCache.TryGetValue(key, out var r)) return r;
         r = null;
-        var primary = Get(family, bold, italic);
+        var primary = Get(family, bold, italic, weight);
         bool serif = LooksSerif(family) || primary.Font.IsSerif || LooksSerif(primary.Font.Family);
         var chain = new List<string>();
         if (Substitutes.TryGetValue(family, out var subs)) chain.AddRange(subs);
@@ -170,7 +191,7 @@ public sealed class FontManager
         chain.AddRange(GlyphFallbacks);
         foreach (var fam in chain.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            var f = TryFamily(fam, bold, italic);
+            var f = TryFamily(fam, bold, italic, weight);
             if (f != null && f.Font.TryGetGlyph(codepoint, out _)) { r = f; break; }
         }
         _glyphFallbackCache[key] = r;

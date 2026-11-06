@@ -30,37 +30,59 @@ sealed class CffFont
         public (int S, int E)? LocalSubrsIndex;
         public List<(int S, int E)> LocalSubrs = [];
         public double DefaultWidthX, NominalWidthX;
+        public int VsIndex;                       // набор регионов по умолчанию (CFF2)
     }
 
-    public CffFont(byte[] data, int offset, int length)
+    readonly bool _cff2;                             // таблица CFF2 (вариативные контуры)
+    readonly Variations.ItemStore? _store;           // VariationStore (CFF2)
+    readonly bool _hasMatrix;
+
+    public CffFont(byte[] data, int offset, int length, bool cff2 = false, int unitsPerEm = 1000)
     {
         _d = data;
         _start = offset;
         _end = Math.Min(data.Length, offset + length);
+        _cff2 = cff2;
         int hdrSize = data[offset + 2];
         int p = offset + hdrSize;
-        var names = ReadIndex(ref p);
-        var topDicts = ReadIndex(ref p);
-        ReadIndex(ref p);                           // строки (в подмножестве не нужны)
-        int gsStart = p;
-        _globalSubrs = ReadIndex(ref p);
-        _globalSubrsIndex = (gsStart, p);
-        if (topDicts.Count == 0) throw new InvalidDataException("CFF без Top DICT");
-        _top = ParseDict(topDicts[0].S, topDicts[0].E);
+        if (cff2)
+        {
+            // CFF2: Top DICT не в INDEX (длина в заголовке), строк и имён нет
+            int topLen = U16(offset + 3);
+            _top = ParseDict(p, p + topLen);
+            p += topLen;
+            int gsStart = p;
+            _globalSubrs = ReadIndex(ref p);
+            _globalSubrsIndex = (gsStart, p);
+            if (Find(_top, 24) is { Operands.Count: >= 1 } vs && vs.Operands[0] > 0)
+                _store = new Variations.ItemStore(_d, _start + (int)vs.Operands[0] + 2);
+        }
+        else
+        {
+            var names = ReadIndex(ref p);
+            var topDicts = ReadIndex(ref p);
+            ReadIndex(ref p);                           // строки (в подмножестве не нужны)
+            int gsStart = p;
+            _globalSubrs = ReadIndex(ref p);
+            _globalSubrsIndex = (gsStart, p);
+            if (topDicts.Count == 0) throw new InvalidDataException("CFF без Top DICT");
+            _top = ParseDict(topDicts[0].S, topDicts[0].E);
+        }
 
         int csOff = (int)Op(_top, 17, 0);
         if (csOff <= 0) throw new InvalidDataException("CFF без CharStrings");
         int q = _start + csOff;
         _charStrings = ReadIndex(ref q);
-        Scale = Find(_top, 1207) is { Operands.Count: >= 1 } fm && fm.Operands[0] > 0 ? fm.Operands[0] : 0.001;
+        _hasMatrix = Find(_top, 1207) is { Operands.Count: >= 1 } fm0 && fm0.Operands[0] > 0;
+        Scale = _hasMatrix ? Find(_top, 1207)!.Operands[0] : cff2 ? 1.0 / Math.Max(1, unitsPerEm) : 0.001;
 
-        if (Find(_top, 1230) != null)
+        if (Find(_top, 1230) != null || cff2 && Find(_top, 1236) != null)
         {
-            // CID-шрифт: массив Font DICT и выбор FD для каждого глифа
+            // CID-шрифт (или CFF2): массив Font DICT и выбор FD для каждого глифа
             int fdArr = _start + (int)Op(_top, 1236, 0);
             foreach (var (s, e) in ReadIndex(ref fdArr))
                 _fds.Add(LoadFontDict(ParseDict(s, e)));
-            _fdSelect = ReadFdSelect(_start + (int)Op(_top, 1237, 0), _charStrings.Count);
+            if (Find(_top, 1237) != null) _fdSelect = ReadFdSelect(_start + (int)Op(_top, 1237, 0), _charStrings.Count);
         }
         else
         {
@@ -71,6 +93,9 @@ sealed class CffFont
         }
         if (_fds.Count == 0) _fds.Add(new FontDict());
     }
+
+    /// <summary>Нормализованные координаты осей для смешения (blend) контуров CFF2.</summary>
+    public void SetVariation(double[] norm) => _store?.SetCoords(norm);
 
     FontDict LoadFontDict(List<Entry> dict)
     {
@@ -83,6 +108,7 @@ sealed class CffFont
                 fd.Private = ParseDict(off, off + size);
                 fd.DefaultWidthX = Op(fd.Private, 20, 0);
                 fd.NominalWidthX = Op(fd.Private, 21, 0);
+                fd.VsIndex = (int)Op(fd.Private, 22, 0);
                 if (Find(fd.Private, 19) is { Operands.Count: >= 1 } sub)
                 {
                     int ls = off + (int)sub.Operands[0], le = ls;
@@ -112,18 +138,30 @@ sealed class CffFont
                 for (int g = first; g < next && g < nGlyphs; g++) r[g] = (byte)fd;
             }
         }
+        else if (format == 4)
+        {
+            int n = (int)U32(p + 1);
+            for (int i = 0; i < n; i++)
+            {
+                int o = p + 5 + i * 6;
+                int first = (int)U32(o), fd = U16(o + 4), next = (int)U32(o + 6);
+                for (int g = first; g < next && g < nGlyphs; g++) r[g] = (byte)fd;
+            }
+        }
         return r;
     }
 
+    uint U32(int o) => BinaryPrimitives.ReadUInt32BigEndian(_d.AsSpan(o));
     int U16(int o) => BinaryPrimitives.ReadUInt16BigEndian(_d.AsSpan(o));
 
     List<(int S, int E)> ReadIndex(ref int p)
     {
         var list = new List<(int, int)>();
-        int count = U16(p);
-        if (count == 0) { p += 2; return list; }
-        int offSize = _d[p + 2];
-        int offBase = p + 3;
+        int cw = _cff2 ? 4 : 2;
+        int count = _cff2 ? (int)U32(p) : U16(p);
+        if (count == 0) { p += cw; return list; }
+        int offSize = _d[p + cw];
+        int offBase = p + cw + 1;
         int dataStart = offBase + (count + 1) * offSize - 1;
         int Off(int i)
         {
@@ -144,11 +182,22 @@ sealed class CffFont
         while (p < end)
         {
             int b0 = _d[p];
-            if (b0 <= 21)
+            if (b0 <= 27)
             {
                 int op = b0;
                 p++;
                 if (b0 == 12) { op = 1200 + _d[p]; p++; }
+                if (op == 23 && ops.Count > 0)
+                {
+                    // blend в DICT (CFF2): оставляем базовые значения, дельты отбрасываем
+                    int n = (int)ops[^1];
+                    ops.RemoveAt(ops.Count - 1);
+                    int vsi = list.LastOrDefault(e => e.Op == 22) is { Operands.Count: > 0 } vx ? (int)vx.Operands[0] : 0;
+                    int baseStart = ops.Count - n * (1 + (_store?.RegionCount(vsi) ?? 0));
+                    if (baseStart < 0) baseStart = Math.Max(0, ops.Count - n);
+                    if (n > 0) { var b = ops.GetRange(baseStart, n); ops.RemoveRange(baseStart, ops.Count - baseStart); ops.AddRange(b); }
+                    continue;
+                }
                 // Исходные байты операндов (без оператора)
                 int opLen = op >= 1200 ? 2 : 1;
                 list.Add(new Entry(op, ops, _d.AsSpan(rawStart, p - opLen - rawStart).ToArray()));
@@ -199,6 +248,26 @@ sealed class CffFont
     static void Int5(MemoryStream m, int v) { m.WriteByte(29); m.WriteByte((byte)(v >> 24)); m.WriteByte((byte)(v >> 16)); m.WriteByte((byte)(v >> 8)); m.WriteByte((byte)v); }
     static void Operator(MemoryStream m, int op) { if (op >= 1200) { m.WriteByte(12); m.WriteByte((byte)(op - 1200)); } else m.WriteByte((byte)op); }
 
+    /// <summary>Вещественное число DICT (оператор 30, полубайты).</summary>
+    static void Real(MemoryStream m, double v)
+    {
+        string t = v.ToString("0.##########E+0", CultureInfo.InvariantCulture);
+        if (v == 0) t = "0";
+        var nibs = new List<int>();
+        for (int i = 0; i < t.Length; i++)
+        {
+            char c = t[i];
+            if (c is >= '0' and <= '9') nibs.Add(c - '0');
+            else if (c == '.') nibs.Add(10);
+            else if (c == '-' && i == 0) nibs.Add(14);
+            else if (c == 'E') { if (t[i + 1] == '-') { nibs.Add(12); i++; } else { nibs.Add(11); if (t[i + 1] == '+') i++; } }
+        }
+        nibs.Add(15);
+        if (nibs.Count % 2 == 1) nibs.Add(15);
+        m.WriteByte(30);
+        for (int i = 0; i < nibs.Count; i += 2) m.WriteByte((byte)(nibs[i] << 4 | nibs[i + 1]));
+    }
+
     static byte[] Index(IReadOnlyList<byte[]> items)
     {
         var m = new MemoryStream();
@@ -225,8 +294,9 @@ sealed class CffFont
         var list = glyphs.ToList();
         int cidCount = list[^1] + 1;
 
-        var charStrings = Index(list.Select(g => Bytes(_charStrings[g])).ToList());
-        var gsubrs = Bytes(_globalSubrsIndex);
+        // CFF2 переводится в обычный CFF: контуры смешиваются при текущих координатах осей
+        var charStrings = Index(list.Select(g => _cff2 ? StaticCharString(g) : Bytes(_charStrings[g])).ToList());
+        var gsubrs = _cff2 ? new byte[] { 0, 0 } : Bytes(_globalSubrsIndex);
         var strings = Index([Encoding.ASCII.GetBytes("Adobe"), Encoding.ASCII.GetBytes("Identity")]);
         var nameIdx = Index([Encoding.ASCII.GetBytes(fontName)]);
 
@@ -243,8 +313,9 @@ sealed class CffFont
         var privates = new List<(byte[] Dict, byte[] Subrs)>();
         foreach (var fd in _fds)
         {
-            var subrs = fd.LocalSubrsIndex is { } li ? Bytes(li) : null;
             var pm = new MemoryStream();
+            if (_cff2) { privates.Add(([139, 20, 139, 21], [])); continue; }   // defaultWidthX 0, nominalWidthX 0
+            var subrs = fd.LocalSubrsIndex is { } li ? Bytes(li) : null;
             foreach (var e in fd.Private.Where(e => e.Op != 19)) { pm.Write(e.Raw); Operator(pm, e.Op); }
             int dictLen = (int)pm.Length + (subrs != null ? 6 : 0);
             if (subrs != null) { Int5(pm, dictLen); Operator(pm, 19); }
@@ -258,6 +329,10 @@ sealed class CffFont
             Int5(m, 391); Int5(m, 392); Int5(m, 0); Operator(m, 1230);          // ROS: Adobe-Identity-0
             foreach (var e in _top.Where(e => e.Op is 5 or 1207))   // FontBBox, FontMatrix
             { m.Write(e.Raw); Operator(m, e.Op); }
+            if (!_hasMatrix && _cff2)
+            {   // В CFF2 матрица по умолчанию задаётся unitsPerEm; в CFF — явно
+                Real(m, Scale); Real(m, 0); Real(m, 0); Real(m, Scale); Real(m, 0); Real(m, 0); Operator(m, 1207);
+            }
             Int5(m, cidCount); Operator(m, 1234);                                // CIDCount
             Int5(m, charsetOff); Operator(m, 15);
             Int5(m, csOff); Operator(m, 17);
@@ -314,33 +389,44 @@ sealed class CffFont
     /// <summary>Контур глифа (операторы пути PDF) в единицах 1/Scale (обычно = единицы шрифта).</summary>
     public string GlyphPath(int gid, double unitsPerEm)
     {
-        if (gid < 0 || gid >= _charStrings.Count) return "";
-        var fd = _fds[FdOf(gid)];
         double k = Scale * unitsPerEm;
         var sb = new StringBuilder();
         string N(double v) => Math.Round(v * k, 1).ToString("0.#", CultureInfo.InvariantCulture);
+        bool open = false;
+        Outline(gid,
+            (x, y) => { if (open) sb.Append("h "); sb.Append(N(x)).Append(' ').Append(N(y)).Append(" m "); open = true; },
+            (x, y) => sb.Append(N(x)).Append(' ').Append(N(y)).Append(" l "),
+            (x1, y1, x2, y2, x, y) => sb.Append($"{N(x1)} {N(y1)} {N(x2)} {N(y2)} {N(x)} {N(y)} c "));
+        if (open) sb.Append("h ");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Обход контура глифа (абсолютные координаты в единицах шрифта): интерпретатор Type 2
+    /// и CFF2 charstrings (blend/vsindex смешиваются по текущим координатам вариативного шрифта).
+    /// </summary>
+    void Outline(int gid, Action<double, double> moveTo, Action<double, double> lineTo,
+        Action<double, double, double, double, double, double> curveTo)
+    {
+        if (gid < 0 || gid >= _charStrings.Count) return;
+        var fd = _fds[FdOf(gid)];
         var stack = new List<double>();
         double x = 0, y = 0;
         int nStems = 0;
-        bool widthDone = false, open = false;
+        bool widthDone = _cff2;
         var trans = new double[32];
         int depth = 0;
+        int vsIndex = fd.VsIndex;
 
-        void Move(double dx, double dy)
-        {
-            if (open) sb.Append("h ");
-            x += dx; y += dy;
-            sb.Append(N(x)).Append(' ').Append(N(y)).Append(" m ");
-            open = true;
-        }
-        void Line(double dx, double dy) { x += dx; y += dy; sb.Append(N(x)).Append(' ').Append(N(y)).Append(" l "); }
+        void Move(double dx, double dy) { x += dx; y += dy; moveTo(x, y); }
+        void Line(double dx, double dy) { x += dx; y += dy; lineTo(x, y); }
         void Curve(double dx1, double dy1, double dx2, double dy2, double dx3, double dy3)
         {
             double x1 = x + dx1, y1 = y + dy1, x2 = x1 + dx2, y2 = y1 + dy2;
             x = x2 + dx3; y = y2 + dy3;
-            sb.Append($"{N(x1)} {N(y1)} {N(x2)} {N(y2)} {N(x)} {N(y)} c ");
+            curveTo(x1, y1, x2, y2, x, y);
         }
-        // Первая очищающая стек команда может нести ширину глифа
+        // Первая очищающая стек команда может нести ширину глифа (в CFF2 ширины нет)
         void Width(bool hasWidth) { if (!widthDone && hasWidth && stack.Count > 0) stack.RemoveAt(0); widthDone = true; }
 
         bool Run(int s, int e)
@@ -443,10 +529,30 @@ sealed class CffFont
                         break;
                     }
                     case 11: depth--; return true;   // return
+                    case 15 when _cff2:              // vsindex
+                        if (stack.Count > 0) vsIndex = (int)stack[^1];
+                        stack.Clear();
+                        break;
+                    case 16 when _cff2:              // blend: n базовых значений + n·k дельт, затем n
+                    {
+                        if (stack.Count == 0) break;
+                        int n = (int)stack[^1];
+                        stack.RemoveAt(stack.Count - 1);
+                        var sc = _store?.RegionScalars(vsIndex) ?? [];
+                        int k = _store?.RegionCount(vsIndex) ?? 0;
+                        int b = stack.Count - n * (k + 1);
+                        if (n < 0 || b < 0) { stack.Clear(); break; }
+                        for (int v = 0; v < n; v++)
+                        {
+                            double sum = stack[b + v];
+                            for (int r = 0; r < k; r++) sum += stack[b + n + v * k + r] * (r < sc.Length ? sc[r] : 0);
+                            stack[b + v] = sum;
+                        }
+                        stack.RemoveRange(b + n, n * k);
+                        break;
+                    }
                     case 14:   // endchar
                         Width(stack.Count is 1 or 5);
-                        if (open) sb.Append("h ");
-                        open = false;
                         depth--;
                         return false;
                     case 12:
@@ -496,7 +602,30 @@ sealed class CffFont
 
         var (cs, ce) = _charStrings[gid];
         Run(cs, ce);
-        if (open) sb.Append("h ");
-        return sb.ToString();
+    }
+
+    // ================================================================
+    //  CFF2 → Type 2 (CFF): контур при текущих координатах осей без подпрограмм и подсказок
+    // ================================================================
+
+    static void Num(MemoryStream m, int v)
+    {
+        if (v is >= -107 and <= 107) m.WriteByte((byte)(v + 139));
+        else if (v is >= 108 and <= 1131) { v -= 108; m.WriteByte((byte)((v >> 8) + 247)); m.WriteByte((byte)v); }
+        else if (v is >= -1131 and <= -108) { v = -v - 108; m.WriteByte((byte)((v >> 8) + 251)); m.WriteByte((byte)v); }
+        else { v = Math.Clamp(v, short.MinValue, short.MaxValue); m.WriteByte(28); m.WriteByte((byte)(v >> 8)); m.WriteByte((byte)v); }
+    }
+
+    byte[] StaticCharString(int gid)
+    {
+        var m = new MemoryStream();
+        int cx = 0, cy = 0;
+        void Pt(double x, double y) { int ix = (int)Math.Round(x), iy = (int)Math.Round(y); Num(m, ix - cx); Num(m, iy - cy); cx = ix; cy = iy; }
+        Outline(gid,
+            (x, y) => { Pt(x, y); m.WriteByte(21); },
+            (x, y) => { Pt(x, y); m.WriteByte(5); },
+            (x1, y1, x2, y2, x, y) => { Pt(x1, y1); Pt(x2, y2); Pt(x, y); m.WriteByte(8); });
+        m.WriteByte(14);
+        return m.ToArray();
     }
 }

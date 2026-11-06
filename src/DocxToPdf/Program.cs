@@ -9,7 +9,7 @@ namespace DocxToPdf;
 
 public static class Converter
 {
-    /// <summary>Конвертирует DOCX- или HTML-файл в PDF (формат определяется по содержимому).</summary>
+    /// <summary>Конвертирует DOCX-, HTML- или MHTML-файл в PDF (формат определяется по содержимому).</summary>
     public static int Convert(string input, string output, FontManager fonts, HtmlOptions? htmlOptions = null, DocxOptions? docxOptions = null)
     {
         var doc = IsZip(input) ? DocxReader.Read(input, docxOptions) : HtmlReader.Read(input, fonts, htmlOptions);
@@ -108,10 +108,10 @@ public static class Program
     static void PrintUsage()
     {
         Console.WriteLine("""
-            docx2pdf — конвертер DOCX и HTML в PDF без сторонних библиотек
+            docx2pdf — конвертер DOCX, HTML и MHTML в PDF без сторонних библиотек
 
             Использование:
-              docx2pdf <файл.docx|файл.html> [ещё ...] [-o <выход.pdf | каталог>] [опции]
+              docx2pdf <файл.docx|файл.html|файл.mht> [ещё ...] [-o <выход.pdf | каталог>] [опции]
 
             Опции:
               -o, --output     Выходной PDF (или каталог для нескольких файлов).
@@ -124,7 +124,7 @@ public static class Program
               --comments <auto|balloons|end|none>   Примечания: выноски на правом поле (если поле ≥ 2,5 см),
                                список в конце документа или не выводить.
 
-            Только для HTML (CSS @page имеет приоритет):
+            Только для HTML и MHTML (CSS @page имеет приоритет):
               --page-size <A3|A4|A5|Letter|Legal>   Размер страницы (по умолчанию A4).
               --landscape      Альбомная ориентация.
               --margin <мм>    Поля страницы в миллиметрах (по умолчанию 20).

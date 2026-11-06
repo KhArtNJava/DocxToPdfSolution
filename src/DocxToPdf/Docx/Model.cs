@@ -243,6 +243,8 @@ public sealed record TextStyle
     public string FontHAnsi { get; init; } = "Times New Roman";
     public string FontEastAsia { get; init; } = "Times New Roman";
     public bool Bold { get; init; }
+    /// <summary>Числовая насыщенность (CSS font-weight); 0 — по Bold (400/700). Для вариативных шрифтов задаёт ось wght.</summary>
+    public int Weight { get; init; }
     public bool Italic { get; init; }
     public bool Underline { get; init; }
     public bool DoubleUnderline { get; init; }

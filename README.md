@@ -1,4 +1,4 @@
-# docx2pdf — конвертер DOCX и HTML → PDF на чистом C# (.NET 10)
+# docx2pdf — конвертер DOCX, HTML и MHTML → PDF на чистом C# (.NET 10)
 
 Без сторонних библиотек: используется только BCL (`System.IO.Compression`, `System.Xml.Linq`).
 Весь код (чтение DOCX, разбор TrueType, вёрстка, генерация PDF) написан с нуля.
@@ -10,11 +10,12 @@ dotnet build -c Release
 dotnet bin/Release/net10.0/docx2pdf.dll document.docx -o document.pdf
 dotnet bin/Release/net10.0/docx2pdf.dll *.docx -o out_dir/ --fonts ~/my-fonts
 dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
+dotnet bin/Release/net10.0/docx2pdf.dll saved-page.mhtml -o page.pdf
 ```
 
-Формат входного файла определяется по содержимому (ZIP → DOCX, иначе HTML).
+Формат входного файла определяется по содержимому (ZIP → DOCX, MIME-заголовки → веб-архив MHTML, иначе HTML).
 
-Опции для HTML (CSS `@page` имеет приоритет): `--page-size A3|A4|A5|Letter|Legal`, `--landscape`,
+Опции для HTML и MHTML (CSS `@page` имеет приоритет): `--page-size A3|A4|A5|Letter|Legal`, `--landscape`,
 `--margin <мм>`, `--page-numbers`, `--no-remote` (не загружать http(s)-ресурсы).
 
 ## Устройство
@@ -24,7 +25,8 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 | `Docx/DocxReader.cs` | ZIP-пакет, связи (rels), тема, стили с наследованием, нумерация, настройки, разделы, колонтитулы, таблицы, рисунки |
 | `Docx/Model.cs` | Модель документа (свойства в пунктах, разрешённые стили) |
 | `Fonts/TrueTypeFont.cs` | Парсер TTF/OTF/TTC (cmap 4/12, hmtx, OS/2, post, name) и сабсеттинг glyf/loca |
-| `Fonts/Cff.cs` | Контуры CFF (OpenType .otf): разбор, подмножество в CID-форме для PDF (CIDFontType0C), интерпретатор Type 2 charstrings для вывода текста кривыми |
+| `Fonts/Cff.cs` | Контуры CFF и CFF2 (OpenType .otf): разбор, смешение blend/vsindex вариативных CFF2, подмножество в CID-форме для PDF (CIDFontType0C), интерпретатор Type 2 charstrings для вывода текста кривыми |
+| `Fonts/Variations.cs` | Вариативные шрифты OpenType: оси и именованные экземпляры (fvar), нормализация (avar), ItemVariationStore, ширины HVAR, дельты контуров gvar (упакованные точки и дельты, интерполяция IUP, фантомные точки) |
 | `Fonts/FontManager.cs` | Поиск системных шрифтов (Windows/Linux/macOS), замены (Calibri→Carlito и т.п.), запасные шрифты для отсутствующих символов, Symbol/Wingdings |
 | `Images/ImageDecoder.cs` | JPEG (как есть, DCTDecode), PNG (все типы, Adam7, прозрачность), GIF (LZW), BMP (1–32 бит) |
 | `Images/Tiff.cs` | TIFF: без сжатия, LZW (с предиктором), Deflate, PackBits, JPEG (полосы склеиваются без перекодирования), CCITT RLE/G3/G4; RGB(A), серый, палитра, CMYK, YCbCr; полосы и плитки |
@@ -34,6 +36,7 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 | `Html/HtmlParser.cs` | Терпимый к ошибкам HTML-парсер (неявное закрытие p/li/td/tr…, сущности, raw-text теги) |
 | `Html/Css.cs` | CSS: правила, селекторы и псевдоклассы, специфичность, @page, @media print, длины, цвета, `calc()`, `var()` |
 | `Html/HtmlLayoutModes.cs` | float, position (relative/absolute/fixed), flexbox, grid |
+| `Html/Mhtml.cs` | Веб-архивы MHTML (.mht/.mhtml, RFC 2557): разбор MIME (multipart/related, вложенные multipart, base64, quoted-printable, RFC 2047), поиск ресурсов по Content-Location и cid: |
 | `Html/HtmlReader.cs` | Каскад стилей (UA-стили → атрибуты → CSS → style=""), перевод HTML в модель документа: абзацы, списки, таблицы, изображения |
 | `Pdf/PdfDocument.cs` | Запись PDF 1.7: Type0/CIDFontType2 + Identity-H, ToUnicode, FlateDecode, изображения с SMask, ссылки |
 
@@ -109,6 +112,11 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 - **Grid**: `grid-template-areas` и `grid-area: имя`, именованные линии (`[a b]`, `имя-start`/`имя-end`, `имя N`), курсор авторазмещения как в CSS; `align-content` (start, end, center, space-between/around/evenly, stretch) в сетке и во flex с переносом; `place-content`
 - **Таблицы справа налево** (`w:bidiVisual`): колонки зеркально
 - **Strict OOXML** (ISO/IEC 29500 Strict, пространства имён purl.oclc.org)
+- **Вариативные шрифты OpenType** (TrueType с gvar и CFF2): именованные экземпляры (Regular, Medium, Bold…) становятся
+  начертаниями гарнитуры, полужирный выбирается по оси wght; в HTML числовой `font-weight` (100–900, в т.ч. 450, 550)
+  задаёт координату оси напрямую. Шрифт встраивается уже в выбранном экземпляре: для TrueType глифы пересчитываются с
+  дельтами gvar (вместе с составными глифами и фантомными точками, ширины — по HVAR или фантомным точкам), CFF2 переводится
+  в обычный CID-шрифт CFF с контурами, смешанными по координатам осей
 - **Эффекты шрифта** emboss (приподнятый), imprint (утопленный), shadow (тень)
 - **Вертикальный текст в ячейках** (`textDirection` btLr / tbRl)
 - **Рамки абзацев** со всех сторон, `between`, объединение соседних абзацев с одинаковой рамкой (общая рамка и заливка)
@@ -125,6 +133,12 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
 
 ## HTML: поддерживается
 
+- **Веб-архивы MHTML** (`.mht`, `.mhtml`): «веб-страница, один файл» из Chromium/Edge (в т.ч. стили `cid:…@mhtml.blink`),
+  Word и Internet Explorer (`file:///…/имя_files/…`, windows-1251 в quoted-printable, VML-картинки через запасной `<img>`),
+  письма multipart/related с картинками `cid:` (вложенные multipart/alternative). Основная часть — по параметру `start`,
+  иначе первая text/html; кодировка — из Content-Type части или `<meta charset>`; ссылки (относительные, абсолютные,
+  корневые, с `%XX`, с учётом `<base href>`) разрешаются относительно Content-Location страницы и ищутся среди частей
+  архива, затем — рядом с файлом. Ресурсы архива используются и при `--no-remote`
 - Кодировки: UTF-8/16 (BOM), `<meta charset>` (в т.ч. windows-1251, koi8-r)
 - CSS из `<style>`, `<link rel=stylesheet>` (локальные файлы), атрибута `style`; `!important`
 - Шрифт (family/size/weight/style, сокращение `font`), цвет, фон, `text-decoration`, `text-align` (включая justify),
@@ -209,11 +223,12 @@ dotnet bin/Release/net10.0/docx2pdf.dll page.html -o page.pdf --page-numbers
   bidi — UAX #9 без алгоритма парных скобок (N0); диаграммы — без трёхмерного поворота (rotX/rotY), объёмный вид — косоугольный
 - EMF+ (GDI+) без GDI-дубля не разбирается (в «двойных» EMF выводится GDI-часть); в метафайлах не поддерживаются растровые операции (ROP) кроме копирования, кисти-узоры выводятся серой заливкой; TIFF: старый JPEG (сжатие 6) и JPEG в плитках не поддерживаются
 - Нет кернинга, автопереносов и сложного шейпинга индийских письменностей
-- Вариативные шрифты OpenType с таблицей CFF2 не поддерживаются (TrueType-вариативные выводятся в начертании по умолчанию)
+- Вариативные шрифты: поддерживаются оси и экземпляры fvar/avar, контуры gvar и CFF2, ширины HVAR; оси, кроме wght (ширина wdth,
+  оптический размер opsz и т.п.), остаются в значениях по умолчанию или именованного экземпляра; MVAR (вертикальные метрики) не применяется
 - 3D: пересекающиеся плоскости сцены не разрезаются (порядок — по центру плоскости, как алгоритм художника);
   для блоков вне flex/grid точка схода перспективы — центр самого элемента;
   `backface-visibility: hidden` скрывает обратную сторону по стандарту (Chromium при печати её показывает)
-- HTML: нет JavaScript, SVG; рамка с разными сторонами (цвет/толщина) при скруглении рисуется прямыми отрезками; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
+- HTML: нет JavaScript, SVG; MHTML: содержимое фреймов (`<iframe>`, части `frame-…`) не выводится; рамка с разными сторонами (цвет/толщина) при скруглении рисуется прямыми отрезками; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
   преобразования); ссылки внутри преобразованного блока кликабельны по исходной (неповёрнутой) области;
   динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
 - float: если первый неразрываемый элемент группы (например, картинка) не помещается, группа целиком переходит на следующую страницу; группа со сносками не разрывается
