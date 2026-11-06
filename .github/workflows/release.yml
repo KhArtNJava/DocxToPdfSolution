@@ -1,0 +1,78 @@
+# Релиз: сборка библиотеки и документации, публикация на GitHub.
+# Запуск: вкладка Actions → «Релиз» → Run workflow (указать версию) или пуш тега v<версия>.
+name: Релиз
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Версия (например, 1.0.0)"
+        required: true
+        default: "1.0.0"
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Pandoc и zip
+        run: sudo apt-get update -q && sudo apt-get install -y -q pandoc zip
+
+      - name: Версия
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then v="${GITHUB_REF_NAME#v}"; else v="${{ inputs.version }}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Сборка архивов
+        run: tools/release/release.sh "${{ steps.ver.outputs.version }}" artifacts
+
+      - name: Описание релиза
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          cat > artifacts/notes.md <<NOTES
+          Конвертер **DOCX, ODT, RTF, HTML и MHTML → PDF** для .NET 10 без сторонних зависимостей.
+
+          ### Файлы
+
+          - **DocxToPdf-$v-lib.zip** — скомпилированная библиотека: \`DocxToPdf.dll\` (AnyCPU, net10.0), XML-документация
+            для IntelliSense, отладочные символы \`.pdb\`, \`deps.json\`, лицензии встроенных словарей переносов.
+          - **DocxToPdf-$v-docs.zip** — документация (откройте \`index.html\`): руководство по подключению, справочник API,
+            возможности и ограничения по форматам, описание тестовых документов, сравнение с эталонами. Каждая страница — HTML и Markdown.
+
+          ### Быстрый старт
+
+          \`\`\`csharp
+          using DocxToPdf;
+          using DocxToPdf.Fonts;
+
+          var fonts = new FontManager();   // системные шрифты; один экземпляр на приложение
+          int pages = Converter.Convert("report.docx", "report.pdf", fonts);
+          \`\`\`
+
+          Подключение: \`<Reference Include="DocxToPdf"><HintPath>lib/DocxToPdf.dll</HintPath></Reference>\`. Нужен рантайм .NET 10.
+          NOTES
+          sed -i 's/^          //' artifacts/notes.md
+
+      - name: Публикация
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          files="artifacts/DocxToPdf-$v-lib.zip artifacts/DocxToPdf-$v-docs.zip"
+          if gh release view "v$v" >/dev/null 2>&1; then
+            gh release upload "v$v" $files --clobber
+            gh release edit "v$v" --notes-file artifacts/notes.md
+          else
+            gh release create "v$v" $files --target "$GITHUB_SHA" --title "DocxToPdf $v" --notes-file artifacts/notes.md
+          fi

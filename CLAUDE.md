@@ -14,5 +14,6 @@
 - Картинки сравнения с эталоном — в `docs/compare`, не в корне.
 - Библиотека — `src/DocxToPdf.Library` (те же исходники, `DocxToPdf.dll`); руководство — `docs/library.md`.
   Релиз: `tools/release/release.sh <версия>` → архивы `DocxToPdf-<версия>-lib.zip` и `-docs.zip`, тег `v<версия>`.
+  Публикует релиз workflow `.github/workflows/release.yml` (из облачной сессии создавать релизы и теги нельзя).
 - Перед коммитом: сборка без предупреждений, сравнение вывода с прежней сборкой (регрессия),
   сверка с эталоном (Chromium для HTML, LibreOffice для DOCX/ODT/RTF).

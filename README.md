@@ -32,7 +32,8 @@ var fonts = new DocxToPdf.Fonts.FontManager();
 int pages = DocxToPdf.Converter.Convert("report.docx", "report.pdf", fonts);
 ```
 
-Подробно — в [docs/library.md](docs/library.md). Архивы релиза собирает скрипт `tools/release/release.sh [версия]`.
+Подробно — в [docs/library.md](docs/library.md). Архивы релиза собирает скрипт `tools/release/release.sh [версия]`;
+релиз на GitHub публикует workflow `.github/workflows/release.yml` (Actions → «Релиз» → Run workflow или пуш тега `v<версия>`).
 
 ## Устройство
 
