@@ -150,6 +150,12 @@ public sealed partial class HtmlReader
             // фон с внутренними отступами должен заливать и отступы
             || (s.Background != null && (s.PaddingLeft > 0 || s.PaddingRight > 0 || s.PaddingTop > 0 || s.PaddingBottom > 0)));
 
+    static bool HasBoxDecoration(CssStyle s) =>
+        s.Background != null || s.BorderLeft?.ToBorderDef() != null || s.BorderRight?.ToBorderDef() != null
+        || s.BorderTop?.ToBorderDef() != null || s.BorderBottom?.ToBorderDef() != null
+        || s.PaddingLeft > 0 || s.PaddingRight > 0 || s.PaddingTop > 0 || s.PaddingBottom > 0
+        || (s.Height != null && !s.Height.EndsWith('%') && CssValues.Length(s.Height, s.FontSize) is > 0);
+
     /// <summary>Таблица из одной ячейки, изображающая рамку элемента (фон, рамки, padding, height).</summary>
     Table MakeBoxTable(Node n, CssStyle s, double width)
     {
@@ -746,6 +752,111 @@ public sealed partial class HtmlReader
         public required CssStyle Style;
         public int Row, Col, RowSpan, ColSpan;
         public double Min, Pref;
+        public int? ExplicitCol;
+        /// <summary>Элемент подсетки (subgrid), перенесённый в дорожки родителя: стиль подсетки и края её области.</summary>
+        public CssStyle? Sub;
+        public bool EdgeT, EdgeB, EdgeL, EdgeR;
+    }
+
+    static bool HasOwnBox(CssStyle st) =>
+        st.Background != null || st.BorderTop?.ToBorderDef() != null || st.BorderBottom?.ToBorderDef() != null
+        || st.BorderLeft?.ToBorderDef() != null || st.BorderRight?.ToBorderDef() != null;
+
+    static bool SubEdgePadding(GridItem g) =>
+        (g.EdgeL && g.Sub!.PaddingLeft > 0) || (g.EdgeR && g.Sub!.PaddingRight > 0)
+        || (g.EdgeT && g.Sub!.PaddingTop > 0) || (g.EdgeB && g.Sub!.PaddingBottom > 0);
+
+    /// <summary>Края области подсетки на ячейке её элемента: рамка подсетки и её внутренние отступы.</summary>
+    static void SubEdges(TableCell cell, GridItem g, bool top, bool bottom, bool margins = true)
+    {
+        var sub = g.Sub!;
+        cell.Borders ??= new CellBorders();
+        cell.Margins ??= new Margins { Top = 0, Bottom = 0, Left = 0, Right = 0 };
+        double W(CssBorder? b) => b?.ToBorderDef()?.Width ?? 0;
+        if (g.EdgeL)
+        {
+            if (sub.BorderLeft?.ToBorderDef() is { } bl) cell.Borders.Left = bl;
+            if (margins) cell.Margins.Left = (cell.Margins.Left ?? 0) + sub.PaddingLeft + W(sub.BorderLeft);
+        }
+        if (g.EdgeR)
+        {
+            if (sub.BorderRight?.ToBorderDef() is { } br) cell.Borders.Right = br;
+            if (margins) cell.Margins.Right = (cell.Margins.Right ?? 0) + sub.PaddingRight + W(sub.BorderRight);
+        }
+        if (g.EdgeT && top)
+        {
+            if (sub.BorderTop?.ToBorderDef() is { } bt) cell.Borders.Top = bt;
+            if (margins) cell.Margins.Top = (cell.Margins.Top ?? 0) + sub.PaddingTop + W(sub.BorderTop);
+        }
+        if (g.EdgeB)
+        {
+            if (bottom && sub.BorderBottom?.ToBorderDef() is { } bb) cell.Borders.Bottom = bb;
+            if (margins) cell.Margins.Bottom = (cell.Margins.Bottom ?? 0) + sub.PaddingBottom + W(sub.BorderBottom);
+        }
+    }
+
+    /// <summary>Подсетка только по колонкам: дорожки, заданные родителем (ширины, промежуток).</summary>
+    readonly Dictionary<Node, (List<double> Widths, double Gap)> _subgridColumns = [];
+
+    /// <summary>Элементы подсетки (без absolute/fixed и display: none), в порядке order.</summary>
+    static List<Node> SubgridItems(Node n) => n.Children
+        .Where(c => c.IsText ? c.Text.Trim().Length > 0 : c.IsElement && c.Style?.Display != "none" && c.Style!.Position is not ("absolute" or "fixed"))
+        .OrderBy(x => x.IsText ? 0 : x.Style!.Order).ToList();
+
+    /// <summary>
+    /// Авторазмещение элементов сетки (CSS Grid, «grid item placement algorithm»): по строкам (row) или по столбцам (column),
+    /// плотное (dense — каждый раз с начала сетки) или разреженное (курсор движется только вперёд).
+    /// cols — число колонок (при row может вырасти из-за явных позиций), rows — число явных строк (ограничивает column).
+    /// </summary>
+    static List<(int Row, int Col)> AutoPlace(List<(int? R0, int RSpan, int? C0, int CSpan)> specs, ref int cols, int rows, bool column, bool dense)
+    {
+        int bound = column ? Math.Max(1, rows) : Math.Max(1, cols);
+        var occ = new HashSet<(int, int)>();
+        var res = new List<(int, int)>();
+        int curMaj = 0, curMin = 0;
+        foreach (var sp in specs)
+        {
+            // Основная ось — строки (row) или колонки (column); поперечная ограничена bound
+            int? maj0 = column ? sp.C0 : sp.R0, min0 = column ? sp.R0 : sp.C0;
+            int majSpan = Math.Max(1, column ? sp.CSpan : sp.RSpan), minSpan = Math.Max(1, column ? sp.RSpan : sp.CSpan);
+            if (min0 != null && min0 + minSpan > bound) bound = min0.Value + minSpan;
+            if (minSpan > bound) bound = minSpan;
+            bool Free(int a, int b)
+            {
+                if (a < 0 || b < 0 || b + minSpan > bound) return false;
+                for (int x = a; x < a + majSpan; x++)
+                    for (int y = b; y < b + minSpan; y++)
+                        if (occ.Contains((x, y))) return false;
+                return true;
+            }
+            int maj, mi;
+            if (maj0 != null && min0 != null) { maj = maj0.Value; mi = min0.Value; }
+            else if (maj0 != null)
+            {
+                maj = maj0.Value; mi = 0;
+                while (!Free(maj, mi) && mi + minSpan < bound) mi++;
+                if (!Free(maj, mi)) mi = 0;
+            }
+            else if (min0 != null)
+            {
+                mi = min0.Value;
+                if (dense) maj = 0;
+                else { if (mi < curMin) curMaj++; maj = curMaj; }
+                while (!Free(maj, mi)) maj++;
+                if (!dense) { curMaj = maj; curMin = mi + minSpan; if (curMin >= bound) { curMin = 0; curMaj++; } }
+            }
+            else
+            {
+                if (dense) { maj = 0; mi = 0; } else { maj = curMaj; mi = curMin; }
+                while (!Free(maj, mi)) { mi++; if (mi + minSpan > bound) { mi = 0; maj++; } }
+                if (!dense) { curMaj = maj; curMin = mi + minSpan; if (curMin >= bound) { curMin = 0; curMaj++; } }
+            }
+            for (int x = maj; x < maj + majSpan; x++)
+                for (int y = mi; y < mi + minSpan; y++) occ.Add((x, y));
+            res.Add(column ? (mi, maj) : (maj, mi));
+        }
+        if (!column) cols = bound;
+        return res;
     }
 
     void AddGrid(Node n, CssStyle s, Flow f, BlockCtx b)
@@ -781,6 +892,14 @@ public sealed partial class HtmlReader
             areaRows = rowsStr.Count;
         }
         int cols = Math.Max(1, Math.Max(tracks.Count, areaCols));
+        // Подсетка по колонкам (subgrid): дорожки и промежуток заданы родительской сеткой
+        if (_subgridColumns.Remove(n, out var forced))
+        {
+            tracks = forced.Widths.Select(w => new Track { Kind = "fixed", Value = w }).ToList();
+            colGap = forced.Gap;
+            cols = Math.Max(1, tracks.Count);
+            autoFit = false;
+        }
 
         // Именованная линия: явное имя из шаблона дорожек, неявные «область-start/-end» или имя области
         int? NamedLine(string v, bool col, bool isEnd)
@@ -811,51 +930,93 @@ public sealed partial class HtmlReader
             return (null, Math.Max(1, pspan));
         }
 
-        // Размещение элементов (row-major авторазмещение)
-        var occupied = new HashSet<(int, int)>();
-        var gitems = new List<GridItem>();
-        int curR = 0, curC = 0;
+        // Размещение элементов: авторазмещение по строкам или столбцам (grid-auto-flow), sparse или dense
+        var rowTpl = ParseTracks(s.GridTemplateRows == "masonry" ? null : s.GridTemplateRows, 700, rowGap, fs, out _, out _);
+        int explicitRows = Math.Max(rowTpl.Count, areaRows);
+        bool colFlow = s.GridFlowColumn && !s.Masonry;
+        var specs = new List<(int? R0, int RSpan, int? C0, int CSpan)>();
         foreach (var it in items)
         {
             var st = it.IsText ? s : it.Style!;
             var (cs0, cspan) = it.IsText ? (null, 1) : Place(st.GridColumnStart, st.GridColumnEnd, true, cols);
-            var (rs0, rspan) = it.IsText ? (null, 1) : Place(st.GridRowStart, st.GridRowEnd, false, Math.Max(1000, areaRows));
-            if (cs0 != null && cs0 + cspan > cols) { cols = cs0.Value + cspan; }
-            cspan = Math.Min(cspan, Math.Max(cols, cspan));
-            if (cspan > cols) cols = cspan;
-            bool Free(int r, int c)
-            {
-                if (c + cspan > cols) return false;
-                for (int rr = r; rr < r + rspan; rr++)
-                    for (int cc = c; cc < c + cspan; cc++)
-                        if (occupied.Contains((rr, cc))) return false;
-                return true;
-            }
-            int row, col;
-            if (cs0 != null && rs0 != null) { row = rs0.Value; col = cs0.Value; }
-            else if (rs0 != null) { row = rs0.Value; col = 0; while (!Free(row, col) && col < cols) col++; if (col >= cols) col = 0; }
-            else if (cs0 != null)
-            {
-                // Явная колонка: курсор авторазмещения движется только вперёд (sparse) — левее курсора → следующая строка
-                col = cs0.Value;
-                if (col < curC) curR++;
-                row = curR;
-                while (!Free(row, col)) row++;
-                curR = row; curC = col + cspan;
-                if (curC >= cols) { curC = 0; curR++; }
-            }
-            else
-            {
-                row = curR; col = curC;
-                while (!Free(row, col)) { col++; if (col + cspan > cols) { col = 0; row++; } }
-                curR = row; curC = col + cspan;
-                if (curC >= cols) { curC = 0; curR++; }
-            }
-            for (int rr = row; rr < row + rspan; rr++)
-                for (int cc = col; cc < col + cspan; cc++) occupied.Add((rr, cc));
-            var (mn, pf) = MeasureItem(it, st, avail);
-            gitems.Add(new GridItem { Node = it, Style = st, Row = row, Col = col, RowSpan = rspan, ColSpan = cspan, Min = mn, Pref = pf });
+            var (rs0, rspan) = it.IsText || s.Masonry ? (null, 1) : Place(st.GridRowStart, st.GridRowEnd, false, explicitRows);
+            specs.Add((rs0, rspan, cs0, cspan));
         }
+        var placed = AutoPlace(specs, ref cols, explicitRows, colFlow, s.GridFlowDense);
+        var gitems = new List<GridItem>();
+        for (int k = 0; k < items.Count; k++)
+        {
+            var it = items[k];
+            var st = it.IsText ? s : it.Style!;
+            var (mn, pf) = MeasureItem(it, st, avail);
+            gitems.Add(new GridItem
+            {
+                Node = it, Style = st, Row = placed[k].Row, Col = placed[k].Col, RowSpan = Math.Max(1, specs[k].RSpan), ColSpan = Math.Max(1, specs[k].CSpan),
+                Min = mn, Pref = pf, ExplicitCol = specs[k].C0,
+            });
+        }
+        cols = Math.Max(cols, gitems.Max(g => g.Col + g.ColSpan));
+
+        // Подсетки (subgrid): по строкам — дети переносятся в дорожки родителя (строки выравниваются между соседями);
+        // только по колонкам — вложенная сетка получает ширины колонок родителя
+        var subAreas = new List<(int R0, int C0, int R1, int C1, CssStyle St)>();
+        var subColItems = new List<(GridItem G, List<(int Col, double Min, double Pref)> Kids)>();
+        for (int gi = 0; gi < gitems.Count; gi++)
+        {
+            var g = gitems[gi];
+            if (g.Node.IsText || g.Style.Display != "grid" || g.Style.Masonry) continue;
+            bool sc = g.Style.GridTemplateColumns?.Trim().StartsWith("subgrid") == true;
+            bool sr = g.Style.GridTemplateRows?.Trim().StartsWith("subgrid") == true;
+            if (!sc && !sr) continue;
+            var sub = g.Style;
+            var kids = SubgridItems(g.Node);
+            int lc = sc ? g.ColSpan : 1;
+            var lspecs = new List<(int? R0, int RSpan, int? C0, int CSpan)>();
+            foreach (var k in kids)
+            {
+                var kst = k.IsText ? sub : k.Style!;
+                var (c0, cspan) = k.IsText || !sc ? (null, 1) : ParsePlacement(kst.GridColumnStart, kst.GridColumnEnd, lc);
+                var (r0, rspan) = k.IsText ? (null, 1) : ParsePlacement(kst.GridRowStart, kst.GridRowEnd, sr ? g.RowSpan : 0);
+                lspecs.Add((r0, rspan, c0, Math.Min(cspan, lc)));
+            }
+            int lcols = lc;
+            var lpos = AutoPlace(lspecs, ref lcols, sr ? g.RowSpan : 0, sub.GridFlowColumn && sr, sub.GridFlowDense);
+            double padL = sub.PaddingLeft + (sub.BorderLeft?.ToBorderDef()?.Width ?? 0), padR = sub.PaddingRight + (sub.BorderRight?.ToBorderDef()?.Width ?? 0);
+            if (!sr)
+            {
+                // Только колонки: вклад детей в ширины колонок родителя
+                var contrib = new List<(int, double, double)>();
+                for (int k = 0; k < kids.Count; k++)
+                {
+                    if (lspecs[k].CSpan != 1 || lpos[k].Col >= lc) continue;
+                    var kst = kids[k].IsText ? sub : kids[k].Style!;
+                    var (mn, pf) = MeasureItem(kids[k], kst, avail);
+                    double ex = (lpos[k].Col == 0 ? padL : 0) + (lpos[k].Col == lc - 1 ? padR : 0);
+                    contrib.Add((g.Col + lpos[k].Col, mn + ex, pf + ex));
+                }
+                subColItems.Add((g, contrib));
+                continue;
+            }
+            gitems.RemoveAt(gi--);
+            subAreas.Add((g.Row, g.Col, g.Row + g.RowSpan, g.Col + g.ColSpan, sub));
+            for (int k = 0; k < kids.Count; k++)
+            {
+                var kst = kids[k].IsText ? sub : kids[k].Style!;
+                int r = g.Row + Math.Min(lpos[k].Row, g.RowSpan - 1);
+                int rs = Math.Max(1, Math.Min(lspecs[k].RSpan, g.Row + g.RowSpan - r));
+                int c = sc ? g.Col + Math.Min(lpos[k].Col, g.ColSpan - 1) : g.Col;
+                int cs = sc ? Math.Max(1, Math.Min(lspecs[k].CSpan, g.Col + g.ColSpan - c)) : g.ColSpan;
+                var ng = new GridItem { Node = kids[k], Style = kst, Row = r, Col = c, RowSpan = rs, ColSpan = cs, Sub = sub };
+                ng.EdgeL = c == g.Col; ng.EdgeR = c + cs == g.Col + g.ColSpan;
+                ng.EdgeT = r == g.Row; ng.EdgeB = r + rs == g.Row + g.RowSpan;
+                var (mn, pf) = MeasureItem(kids[k], kst, avail);
+                double ex = (ng.EdgeL ? padL : 0) + (ng.EdgeR ? padR : 0);
+                ng.Min = mn + ex; ng.Pref = pf + ex;
+                gitems.Add(ng);
+            }
+        }
+        if (gitems.Count == 0) { EndBox(n, s, f, startIdx); return; }
+
         int rows = Math.Max(gitems.Max(g => g.Row + g.RowSpan), areaRows);
 
         // auto-fit: пустые дорожки схлопываются
@@ -864,7 +1025,18 @@ public sealed partial class HtmlReader
             int usedCols = gitems.Max(g => g.Col + g.ColSpan);
             if (usedCols < cols) cols = usedCols;
         }
-        while (tracks.Count < cols) tracks.Add(new Track { Kind = tracks.Count > 0 && s.GridTemplateColumns != null ? "auto" : "fr", Value = 1 });
+        // Неявные колонки: grid-auto-columns (по кругу), иначе auto (при отсутствии шаблона — равные доли)
+        var autoCols = ParseTracks(s.GridAutoColumns, avail, colGap, fs, out _, out _);
+        int explicitCols = tracks.Count;
+        while (tracks.Count < cols)
+        {
+            if (autoCols.Count > 0)
+            {
+                var p = autoCols[(tracks.Count - explicitCols) % autoCols.Count];
+                tracks.Add(new Track { Kind = p.Kind, Value = p.Value, MinFixed = p.MinFixed, MaxFixed = p.MaxFixed });
+            }
+            else tracks.Add(new Track { Kind = tracks.Count > 0 && s.GridTemplateColumns != null ? "auto" : "fr", Value = 1 });
+        }
         if (tracks.Count > cols) tracks.RemoveRange(cols, tracks.Count - cols);
 
         // Размеры дорожек
@@ -873,9 +1045,16 @@ public sealed partial class HtmlReader
         var cPref = new double[cols];
         foreach (var g in gitems.Where(g => g.ColSpan == 1))
         {
-            cMin[g.Col] = Math.Max(cMin[g.Col], g.Min);
-            cPref[g.Col] = Math.Max(cPref[g.Col], g.Pref);
+            // Каменная кладка: элемент может оказаться в любой колонке
+            for (int c = s.Masonry ? 0 : g.Col; c <= (s.Masonry ? cols - 1 : g.Col); c++)
+            {
+                cMin[c] = Math.Max(cMin[c], g.Min);
+                cPref[c] = Math.Max(cPref[c], g.Pref);
+            }
         }
+        foreach (var (_, kids) in subColItems)
+            foreach (var (c, mn, pf) in kids)
+                if (c < cols) { cMin[c] = Math.Max(cMin[c], mn); cPref[c] = Math.Max(cPref[c], pf); }
         double fixedSum = 0;
         foreach (var (t, i) in tracks.Select((t, i) => (t, i)))
         {
@@ -925,7 +1104,9 @@ public sealed partial class HtmlReader
         }
 
         // Высоты строк из grid-template-rows
-        var rowTracks = ParseTracks(s.GridTemplateRows, 700, rowGap, fs, out _, out _);
+        var rowTracks = rowTpl;
+        var autoRows = ParseTracks(s.GridAutoRows, 700, rowGap, fs, out _, out _);
+        Track? RowTrack(int r) => r < rowTracks.Count ? rowTracks[r] : autoRows.Count > 0 ? autoRows[(r - rowTracks.Count) % autoRows.Count] : null;
 
         // Высота контейнера (для align-content): область содержимого
         double? contH = s.Height == null || s.Height.EndsWith('%') ? null : CssValues.Length(s.Height, fs);
@@ -938,11 +1119,77 @@ public sealed partial class HtmlReader
         var widths = new List<double>();
         for (int c = 0; c < cols; c++) { widths.Add(Math.Max(0.5, tracks[c].Size)); if (gc == 2 && c < cols - 1) widths.Add(colGap); }
 
+        // Подсетки по колонкам: ширины колонок родителя (крайние — за вычетом рамки и отступов подсетки)
+        foreach (var (g, _) in subColItems)
+        {
+            var sw = new List<double>();
+            for (int c = g.Col; c < g.Col + g.ColSpan && c < cols; c++) sw.Add(Math.Max(0.5, tracks[c].Size));
+            if (sw.Count == 0) continue;
+            sw[0] -= g.Style.PaddingLeft + (g.Style.BorderLeft?.ToBorderDef()?.Width ?? 0);
+            sw[^1] -= g.Style.PaddingRight + (g.Style.BorderRight?.ToBorderDef()?.Width ?? 0);
+            for (int i = 0; i < sw.Count; i++) sw[i] = Math.Max(0.5, sw[i]);
+            _subgridColumns[g.Node] = (sw, colGap);
+        }
+
+        if (s.Masonry)
+        {
+            // Каменная кладка: строки таблицы строятся при вёрстке по фактическим высотам элементов
+            var mb = new MasonryBlock
+            {
+                Grid = widths, Indent = inner.IndL, Borders = new CellBorders(),
+                CellMargins = new Margins { Top = 0, Bottom = 0, Left = 0, Right = 0 },
+                Columns = cols, GapCols = gc, RowGap = rowGap,
+                SpaceBefore = f.PendingMargin, PageBreakBefore = f.PendingBreak, Clear = f.PendingClear,
+            };
+            f.PendingMargin = 0; f.PendingBreak = false; f.PendingClear = null;
+            double ColX(int c) => widths.Take(c * gc).Sum();
+            double SpanW(int c, int k) => widths.Skip(c * gc).Take((k - 1) * gc + 1).Sum();
+            foreach (var g in gitems)
+            {
+                int k = Math.Min(g.ColSpan, cols);
+                // Ячейка для каждого возможного начала (ширины колонок могут различаться)
+                var byStart = new TableCell[cols - k + 1];
+                var made = new Dictionary<long, TableCell>();
+                for (int c = 0; c + k <= cols; c++)
+                {
+                    double w = SpanW(c, k);
+                    long key = (long)Math.Round(w * 100);
+                    if (!made.TryGetValue(key, out var cell))
+                        made[key] = cell = ItemCell(g.Node, g.Style, s, w, 1, ColX(c), avail);
+                    byStart[c] = cell;
+                }
+                mb.Items.Add((byStart, k, g.ExplicitCol is int ec ? Math.Clamp(ec, 0, cols - k) : null, g.Node.IsText ? 0 : BoxHeight(g.Style) ?? 0));
+            }
+            f.Target.Add(mb);
+            EndBox(n, s, f, startIdx);
+            return;
+        }
+
         var at = new Dictionary<(int, int), GridItem>();
         foreach (var g in gitems)
             for (int r = g.Row * gr; r <= (g.Row + g.RowSpan - 1) * gr; r++)
                 for (int c = g.Col * gc; c <= (g.Col + g.ColSpan - 1) * gc; c++)
                     at[(r, c)] = g;
+
+        // Пустые ячейки и промежутки внутри области подсетки — её фон и рамка
+        TableCell AreaSpacer(int mr, int mc)
+        {
+            var cell = SpacerCell(s);
+            for (int i = subAreas.Count - 1; i >= 0; i--)
+            {
+                var a = subAreas[i];
+                int r0 = a.R0 * gr, r1 = (a.R1 - 1) * gr, c0 = a.C0 * gc, c1 = (a.C1 - 1) * gc;
+                if (mr < r0 || mr > r1 || mc < c0 || mc > c1) continue;
+                cell.Shading = a.St.Background;
+                cell.Borders = new CellBorders
+                {
+                    Left = mc == c0 ? a.St.BorderLeft?.ToBorderDef() : null, Right = mc == c1 ? a.St.BorderRight?.ToBorderDef() : null,
+                    Top = mr == r0 ? a.St.BorderTop?.ToBorderDef() : null, Bottom = mr == r1 ? a.St.BorderBottom?.ToBorderDef() : null,
+                };
+                break;
+            }
+            return cell;
+        }
 
         var table = NewLayoutTable(inner, widths);
         table.SpaceBefore = f.PendingMargin;
@@ -960,8 +1207,23 @@ public sealed partial class HtmlReader
         {
             bool gapRow = gr == 2 && mr % 2 == 1;
             var row = new TableRow();
-            if (gapRow) { row.Height = rowGap; row.HeightRule = "exact"; row.Role = 1; row.AutoHeight = false; }
-            else if (mr / gr < rowTracks.Count && rowTracks[mr / gr].Kind == "fixed") { row.Height = rowTracks[mr / gr].Value; row.AutoHeight = false; }
+            if (gapRow)
+            {
+                row.Height = rowGap; row.HeightRule = "exact"; row.Role = 1; row.AutoHeight = false;
+                // Промежуток внутри подсеток по всей ширине: у подсеток свой row-gap (элементы заходят в промежуток родителя)
+                int above = mr / gr;
+                double? own = null;
+                bool covered = cols > 0;
+                for (int c = 0; c < cols && covered; c++)
+                {
+                    var a = subAreas.LastOrDefault(x => x.R0 <= above && above + 1 < x.R1 && x.C0 <= c && c < x.C1);
+                    if (a.St == null) { covered = false; break; }
+                    double g2 = a.St.RowGap != null && a.St.RowGap != "normal" ? CssValues.Length(a.St.RowGap, a.St.FontSize, avail) ?? rowGap : rowGap;
+                    own = Math.Max(own ?? 0, g2);
+                }
+                if (covered && own != null) row.Height = Math.Min(rowGap, own.Value);
+            }
+            else if (RowTrack(mr / gr) is { Kind: "fixed" } rt) { row.Height = rt.Value; row.AutoHeight = false; }
             int mc = 0;
             while (mc < mCols)
             {
@@ -970,32 +1232,46 @@ public sealed partial class HtmlReader
                     int span = (g.Col + g.ColSpan - 1) * gc - g.Col * gc + 1;
                     double w = widths.Skip(mc).Take(span).Sum();
                     TableCell cell;
+                    var cont = g.Sub ?? s;
+                    bool lastRow = mr == (g.Row + g.RowSpan - 1) * gr;
                     if (mr == g.Row * gr)
                     {
-                        cell = ItemCell(g.Node, g.Style, s, w, span, widths.Take(mc).Sum(), avail);
+                        if (g.Sub != null && !g.Node.IsText && HasOwnBox(g.Style) && SubEdgePadding(g))
+                        {
+                            // Элемент со своим фоном/рамкой у края подсетки с отступами: отступ подсетки — снаружи рамки элемента
+                            cell = SpacerCell(g.Sub, span);
+                            cell.VAlign = VAlignFor(g.Sub, g.Style);
+                            SubEdges(cell, g, top: true, bottom: g.RowSpan == 1);
+                            cell.Blocks = [MakeBoxTable(g.Node, g.Style, Math.Max(5, w - (cell.Margins?.Left ?? 0) - (cell.Margins?.Right ?? 0)))];
+                        }
+                        else
+                        {
+                            cell = ItemCell(g.Node, g.Style, cont, w, span, widths.Take(mc).Sum(), avail);
+                            if (g.Sub != null) SubEdges(cell, g, top: true, bottom: g.RowSpan == 1);
+                        }
                         if (g.RowSpan > 1) cell.VMerge = VMerge.Restart;
                     }
                     else
                     {
                         cell = SpacerCell(s, span);
                         cell.VMerge = VMerge.Continue;
-                        cell.Shading = g.Node.IsText ? s.Background : g.Style.Background ?? s.Background;
+                        cell.Shading = g.Node.IsText ? cont.Background : g.Style.Background ?? cont.Background;
                         if (!g.Node.IsText)
                         {
-                            bool lastRow = mr == (g.Row + g.RowSpan - 1) * gr;
                             cell.Borders = new CellBorders
                             {
                                 Left = g.Style.BorderLeft?.ToBorderDef(), Right = g.Style.BorderRight?.ToBorderDef(),
                                 Bottom = lastRow ? g.Style.BorderBottom?.ToBorderDef() : null,
                             };
                         }
+                        if (g.Sub != null) SubEdges(cell, g, top: false, bottom: lastRow, margins: false);
                     }
                     row.Cells.Add(cell);
                     mc += span;
                 }
                 else
                 {
-                    row.Cells.Add(SpacerCell(s));
+                    row.Cells.Add(AreaSpacer(mr, mc));
                     mc++;
                 }
             }

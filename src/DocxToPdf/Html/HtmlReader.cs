@@ -946,6 +946,7 @@ public sealed partial class HtmlReader
                         s.ListStyleType = t;
                 break;
             case "display":
+                s.MasonryDisplay = lv is "grid-lanes" or "inline-grid-lanes" or "masonry" or "inline-masonry";
                 s.Display = lv switch
                 {
                     "none" => "none",
@@ -953,6 +954,7 @@ public sealed partial class HtmlReader
                     "list-item" => "list-item",
                     "flex" or "inline-flex" => "flex",
                     "grid" or "inline-grid" => "grid",
+                    "grid-lanes" or "inline-grid-lanes" or "masonry" or "inline-masonry" => "grid",
                     "table" or "inline-table" => "table",
                     "table-row" or "table-cell" or "table-row-group" or "table-header-group" or "table-footer-group" or "table-caption" => lv,
                     _ => "block"
@@ -1066,7 +1068,16 @@ public sealed partial class HtmlReader
             case "row-gap" or "grid-row-gap": s.RowGap = lv; break;
             case "column-gap" or "grid-column-gap": s.ColumnGap = lv; break;
             case "grid-template-columns": s.GridTemplateColumns = lv; break;
-            case "grid-template-rows": s.GridTemplateRows = lv; break;
+            case "grid-template-rows": s.GridTemplateRows = lv; s.MasonryRows = lv == "masonry"; break;
+            case "grid-auto-flow":
+            {
+                var t = CssValues.Tokens(lv);
+                s.GridFlowColumn = t.Contains("column");
+                s.GridFlowDense = t.Contains("dense");
+                break;
+            }
+            case "grid-auto-columns": s.GridAutoColumns = lv; break;
+            case "grid-auto-rows": s.GridAutoRows = lv; break;
             case "grid-column": (s.GridColumnStart, s.GridColumnEnd) = SplitSlash(lv); break;
             case "grid-row": (s.GridRowStart, s.GridRowEnd) = SplitSlash(lv); break;
             case "grid-column-start": s.GridColumnStart = lv; break;
@@ -1428,6 +1439,9 @@ public sealed partial class HtmlReader
                 AddHr(s, f, b);
                 return;
         }
+        // flex/grid с фоном, рамкой, отступами или высотой — рамка-ячейка: фон и рамка рисуются одним
+        // прямоугольником (в т.ч. под промежутками строк и при распределении align-content)
+        if (s.Display is "flex" or "grid" && n.Tag is not ("html" or "body") && HasBoxDecoration(s)) { AddBoxTable(n, s, f, b); return; }
         switch (s.Display)
         {
             case "table": AddTable(n, s, f, b); return;

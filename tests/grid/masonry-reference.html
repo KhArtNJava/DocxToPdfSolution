@@ -1,0 +1,51 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+@page{size:A4;margin:12mm} body{font:12px Arial,sans-serif;margin:0}
+h2{font-size:13px;margin:10px 0 4px}
+.i{background:#90caf9;border:1px solid #1565c0;padding:3px}
+.flex{display:flex;flex-wrap:wrap;gap:6px 8px;background:#fff3e0;border:2px solid #ef6c00;padding:6px;height:110px;border-radius:8px}
+.flex .i{width:120px}
+.g{display:grid;gap:4px;background:#f1f8e9;padding:4px}
+.g .i{background:#a5d6a7;border-color:#2e7d32}
+.w2{grid-column:span 2;background:#ffcc80!important}
+.h2{grid-row:span 2;background:#ce93d8!important}
+.card-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px 10px}
+.card{display:grid;grid-row:span 3;grid-template-rows:subgrid;background:#e3f2fd;border:1px solid #1e88e5;padding:6px;gap:0}
+.card h3{margin:0;font-size:13px;background:#bbdefb}
+.card p{margin:0}
+.card footer{color:#555;font-size:11px;border-top:1px solid #90caf9}
+.sub-par{display:grid;grid-template-columns:80px 1fr 60px 1fr;gap:4px;background:#fafafa;border:1px solid #bbb}
+.sub{grid-column:1/-1;display:grid;grid-template-columns:subgrid;background:#fff9c4}
+.m{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:masonry;gap:6px;background:#eceff1;padding:4px}
+.m div{background:#b0bec5;border:1px solid #455a64;padding:4px}
+</style></head><body>
+<h2>flex-wrap + align-content: space-between (фон и рамка целиком)</h2>
+<div class="flex" style="align-content:space-between"><div class="i">1</div><div class="i">2</div><div class="i">3</div><div class="i">4</div><div class="i">5</div><div class="i">6 длинный текст</div><div class="i">7</div></div>
+<h2>align-content: center</h2>
+<div class="flex" style="align-content:center;height:90px"><div class="i">A</div><div class="i">B</div><div class="i">C</div><div class="i">D</div><div class="i">E</div><div class="i">F</div></div>
+<h2>grid-auto-flow: column (3 строки)</h2>
+<div class="g" style="grid-template-rows:repeat(3,auto);grid-auto-flow:column;grid-auto-columns:1fr">
+<div class="i">1</div><div class="i">2</div><div class="i">3</div><div class="i">4</div><div class="i h2">5 (2 строки)</div><div class="i">6</div><div class="i">7</div><div class="i">8</div></div>
+<h2>grid-auto-flow: column, grid-auto-columns: 90px</h2>
+<div class="g" style="grid-template-rows:auto auto;grid-auto-flow:column;grid-auto-columns:90px">
+<div class="i">a</div><div class="i">b</div><div class="i">c</div><div class="i">d</div><div class="i">e</div></div>
+<h2>grid-auto-flow: row (sparse) и row dense</h2>
+<div class="g" style="grid-template-columns:repeat(4,1fr)">
+<div class="i">1</div><div class="i w2">2 (2 кол.)</div><div class="i w2">3 (2 кол.)</div><div class="i">4</div><div class="i">5</div><div class="i w2">6 (2 кол.)</div><div class="i">7</div></div>
+<div style="height:6px"></div>
+<div class="g" style="grid-template-columns:repeat(4,1fr);grid-auto-flow:row dense">
+<div class="i">1</div><div class="i w2">2 (2 кол.)</div><div class="i w2">3 (2 кол.)</div><div class="i">4</div><div class="i">5</div><div class="i w2">6 (2 кол.)</div><div class="i">7</div></div>
+<h2>grid-template-rows: subgrid (карточки)</h2>
+<div class="card-grid">
+<div class="card"><h3>Короткий</h3><p>Текст.</p><footer>Подвал 1</footer></div>
+<div class="card"><h3>Длинный заголовок карточки в две строки</h3><p>Описание подлиннее, оно занимает несколько строк текста в карточке.</p><footer>Подвал 2</footer></div>
+<div class="card"><h3>Третья</h3><p>Средний текст здесь.</p><footer>Подвал 3</footer></div>
+</div>
+<h2>grid-template-columns: subgrid</h2>
+<div class="sub-par">
+<div class="i">Имя</div><div class="i">Значение</div><div class="i">Ед.</div><div class="i">Примечание</div>
+<div class="sub"><div class="i">Длина</div><div class="i">12,5</div><div class="i">м</div><div class="i">выровнено по родителю</div></div>
+<div class="sub"><div class="i">Масса очень большая</div><div class="i">7</div><div class="i">кг</div><div class="i">—</div></div>
+</div>
+<h2>masonry</h2>
+<div class="m" style="display:flex;gap:6px;align-items:flex-start"><div style="flex:1;display:flex;flex-direction:column;gap:6px;background:none;border:0;padding:0"><div style="height:40px">1</div><div style="height:45px">6</div><div style="height:50px">10</div></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;background:none;border:0;padding:0"><div style="height:70px">2</div><div style="height:25px">8</div></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;background:none;border:0;padding:0"><div style="height:30px">3</div><div style="height:30px">5</div><div style="height:35px">9</div></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;background:none;border:0;padding:0"><div style="height:55px">4</div><div style="height:60px">7</div></div></div>
+</body></html>

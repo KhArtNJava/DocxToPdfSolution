@@ -606,7 +606,7 @@ public sealed class TableRow
     public List<TableCell> Cells = [];
 }
 
-public sealed class Table : Block
+public class Table : Block
 {
     public List<double> Grid = [];
     public CellBorders Borders = new();
@@ -739,6 +739,18 @@ public sealed class TransformBlock : Block
     public List<Block> Blocks = [];
     public double BoxX, BoxWidth;        // рамка элемента относительно колонки
     public required TransformResolver Resolve;
+}
+
+/// <summary>
+/// Сетка «каменная кладка» (masonry / grid-lanes): элемент ставится в колонку с наименьшей занятой высотой.
+/// Высоты элементов известны только при вёрстке, поэтому строки таблицы строятся в BlockLayout.
+/// </summary>
+public sealed class MasonryBlock : Table
+{
+    public int Columns, GapCols = 1;
+    public double RowGap;
+    /// <summary>Ячейка элемента для каждого возможного начала (ширины колонок могут различаться), размах, явная колонка, высота из CSS.</summary>
+    public List<(TableCell[] ByStart, int Span, int? Col, double MinHeight)> Items = [];
 }
 
 /// <summary>Строки flex-контейнера с переносом и заданной высотой: распределение по высоте (align-content).</summary>

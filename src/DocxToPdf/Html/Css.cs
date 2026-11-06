@@ -495,6 +495,13 @@ public sealed class CssStyle
     /// <summary>align-content: распределение строк сетки / строк flex-контейнера по высоте контейнера.</summary>
     public string AlignContent = "normal";
     public string? GridColumnStart, GridColumnEnd, GridRowStart, GridRowEnd;
+    /// <summary>grid-auto-flow: row | column, с признаком dense.</summary>
+    public bool GridFlowColumn, GridFlowDense;
+    /// <summary>grid-auto-columns / grid-auto-rows: размеры неявных дорожек.</summary>
+    public string? GridAutoColumns, GridAutoRows;
+    /// <summary>Раскладка «каменная кладка» (grid-template-rows: masonry или display: grid-lanes).</summary>
+    public bool Masonry => MasonryRows || MasonryDisplay;
+    public bool MasonryRows, MasonryDisplay;
 
     // Скругление углов (TL, TR, BR, BL — исходные значения, % — от ширины)
     // rx TL, TR, BR, BL, затем ry TL, TR, BR, BL

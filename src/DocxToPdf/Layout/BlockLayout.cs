@@ -185,6 +185,7 @@ public sealed class BlockLayout(LayoutContext ctx)
             fragsAtStart = group == null ? frags.Count : -1;
             groupTouched = false;
             var block = blocks[bi];
+            if (block is MasonryBlock mb) BuildMasonry(mb);
             curBlock = bi;
             curInGroup = false;
             if (tailBlock != bi) tailOf = null;
@@ -1433,6 +1434,96 @@ public sealed class BlockLayout(LayoutContext ctx)
     // =================================================================
     //  Таблица
     // =================================================================
+
+    /// <summary>
+    /// Каменная кладка: высоты элементов — по фактической вёрстке; каждый элемент встаёт в самую короткую колонку
+    /// (при равенстве — левую), затем по границам элементов строится таблица с объединёнными по вертикали ячейками.
+    /// </summary>
+    void BuildMasonry(MasonryBlock mb)
+    {
+        mb.Rows.Clear();
+        int n = Math.Max(1, mb.Columns), gc = Math.Max(1, mb.GapCols);
+        double SpanW(int c, int k) { double w = 0; for (int i = c * gc; i <= (c + k - 1) * gc && i < mb.Grid.Count; i++) w += mb.Grid[i]; return w; }
+        var run = new double[n];
+        var placed = new List<(TableCell Cell, int C, int K, double Top, double Bottom)>();
+        foreach (var (byStart, span, col, minH) in mb.Items)
+        {
+            int k = Math.Clamp(span, 1, n);
+            int c = 0;
+            if (col is int ec) c = Math.Clamp(ec, 0, n - k);
+            else
+            {
+                double best = double.MaxValue;
+                for (int i = 0; i + k <= n; i++)
+                {
+                    double m = 0;
+                    for (int j = i; j < i + k; j++) m = Math.Max(m, run[j]);
+                    if (m < best - 0.01) { best = m; c = i; }
+                }
+            }
+            double top = 0;
+            for (int j = c; j < c + k; j++) top = Math.Max(top, run[j]);
+            var cell = byStart[Math.Min(c, byStart.Length - 1)];
+            double w = SpanW(c, k);
+            cell.GridSpan = 1; cell.VMerge = VMerge.None;
+            var mt = new Table { Grid = [w], Borders = new CellBorders(), CellMargins = new Margins { Top = 0, Bottom = 0, Left = 0, Right = 0 } };
+            var mrow = new TableRow();
+            mrow.Cells.Add(cell);
+            mt.Rows.Add(mrow);
+            double h = Math.Max(Math.Max(0.5, minH), LayoutTable(mt, w).Sum(fr => fr.Height));
+            placed.Add((cell, c, k, top, top + h));
+            for (int j = c; j < c + k; j++) run[j] = top + h + mb.RowGap;
+        }
+        if (placed.Count == 0) return;
+        // Границы строк — верх и низ каждого элемента
+        var ys = new List<double>();
+        foreach (var y in placed.SelectMany(p => new[] { p.Top, p.Bottom }).OrderBy(y => y))
+            if (ys.Count == 0 || y - ys[^1] > 0.05) ys.Add(y);
+        int Idx(double y)
+        {
+            int best = 0;
+            for (int i = 1; i < ys.Count; i++) if (Math.Abs(ys[i] - y) < Math.Abs(ys[best] - y)) best = i;
+            return best;
+        }
+        var spans = placed.Select(p => (p.Cell, p.C, p.K, R0: Idx(p.Top), R1: Idx(p.Bottom))).ToList();
+        int mcols = mb.Grid.Count;
+        for (int ri = 0; ri + 1 < ys.Count; ri++)
+        {
+            var row = new TableRow { Height = ys[ri + 1] - ys[ri] };
+            int mc = 0;
+            while (mc < mcols)
+            {
+                int pi = spans.FindIndex(p => p.C * gc == mc && p.R0 <= ri && ri < p.R1);
+                if (pi >= 0)
+                {
+                    var p = spans[pi];
+                    int ms = (p.K - 1) * gc + 1;
+                    if (p.R0 == ri)
+                    {
+                        p.Cell.GridSpan = ms;
+                        p.Cell.VMerge = p.R1 - p.R0 > 1 ? VMerge.Restart : VMerge.None;
+                        row.Cells.Add(p.Cell);
+                    }
+                    else
+                    {
+                        row.Cells.Add(new TableCell
+                        {
+                            GridSpan = ms, VMerge = VMerge.Continue, Shading = p.Cell.Shading, Radius = p.Cell.Radius,
+                            Borders = new CellBorders { Left = p.Cell.Borders?.Left, Right = p.Cell.Borders?.Right, Bottom = ri + 1 == p.R1 ? p.Cell.Borders?.Bottom : null },
+                            Margins = new Margins { Top = 0, Bottom = 0, Left = 0, Right = 0 },
+                        });
+                    }
+                    mc += ms;
+                }
+                else
+                {
+                    row.Cells.Add(new TableCell { Borders = new CellBorders(), Margins = new Margins { Top = 0, Bottom = 0, Left = 0, Right = 0 } });
+                    mc++;
+                }
+            }
+            mb.Rows.Add(row);
+        }
+    }
 
     public List<Frag> LayoutTable(Table t, double avail)
     {
