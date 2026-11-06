@@ -91,6 +91,12 @@ public static class Program
             string target = output == null
                 ? Path.ChangeExtension(input, ".pdf")
                 : Directory.Exists(output) ? Path.Combine(output, Path.GetFileNameWithoutExtension(input) + ".pdf") : output;
+            if (string.Equals(Path.GetFullPath(input), Path.GetFullPath(target), StringComparison.Ordinal))
+            {
+                failed++;
+                Console.Error.WriteLine($"{input}: ошибка: выходной файл совпадает с входным");
+                continue;
+            }
             var sw = Stopwatch.StartNew();
             try
             {

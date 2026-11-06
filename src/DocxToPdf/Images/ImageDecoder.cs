@@ -31,6 +31,8 @@ public static class ImageDecoder
             if (Tiff.IsTiff(d)) return Tiff.Decode(d);
             if (DocxToPdf.Pdf.Metafile.Size(d) is { } ms)
                 return new PdfImageData { Width = Math.Max(1, (int)Math.Round(ms.W / 0.75)), Height = Math.Max(1, (int)Math.Round(ms.H / 0.75)), Metafile = true };
+            if (DocxToPdf.Pdf.Svg.IsSvg(d) && DocxToPdf.Pdf.Svg.Size(d) is { } ss)
+                return new PdfImageData { Width = Math.Max(1, (int)Math.Round(ss.W / 0.75)), Height = Math.Max(1, (int)Math.Round(ss.H / 0.75)), Metafile = true };
         }
         catch { /* битое изображение */ }
         return null;

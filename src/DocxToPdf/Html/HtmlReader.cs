@@ -167,6 +167,22 @@ public sealed partial class HtmlReader
             else if (_baseUrl != null && Uri.TryCreate(new Uri(_baseUrl), bh, out var rel)) _baseUrl = rel.AbsoluteUri;
         }
 
+        // CSS документа действует и внутри встроенных SVG (в т.ч. стили из других SVG страницы, как в браузерах)
+        var svgCss = new StringBuilder();
+        foreach (var d in root.Descendants())
+        {
+            if (d.Tag == "style") svgCss.Append(string.Concat(d.Children.Where(c => c.IsText).Select(c => c.Text))).Append('\n');
+            else if (d.Tag == "img" && d.Attr("data-tag") == "svg" && d.Attr("src") is { } isrc && isrc.IndexOf(',') is int ic and > 0)
+            {
+                try
+                {
+                    string raw = Encoding.UTF8.GetString(System.Convert.FromBase64String(isrc[(ic + 1)..]));
+                    foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(raw, @"<style[^>]*>(.*?)</style>", System.Text.RegularExpressions.RegexOptions.Singleline | System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                        svgCss.Append(m.Groups[1].Value).Append('\n');
+                }
+                catch { }
+            }
+        }
         foreach (var st in root.Descendants().Where(d => d.Tag == "style"))
         {
             string media = (st.Attr("media") ?? "all").ToLowerInvariant();
@@ -179,8 +195,9 @@ public sealed partial class HtmlReader
             string media = (link.Attr("media") ?? "all").ToLowerInvariant();
             if (!(media.Contains("all") || media.Contains("print"))) continue;
             var css = LoadResource(link.Attr("href"));
-            if (css != null) _author.Parse(DecodeBytes(css));
+            if (css != null) { _author.Parse(DecodeBytes(css)); svgCss.Insert(0, DecodeBytes(css) + "\n"); }
         }
+        _svgCss = svgCss.ToString();
         _doc.Title = root.Descendants().FirstOrDefault(d => d.Tag == "title")?.Children.FirstOrDefault()?.Text.Trim();
 
         var section = new Section { Props = PageSetup() };
@@ -1600,8 +1617,29 @@ public sealed partial class HtmlReader
     //  Изображения
     // =================================================================
 
+    string _svgCss = "";
+    readonly Dictionary<string, byte[]> _inlineSvg = new(StringComparer.Ordinal);
+
     byte[]? LoadResource(string? src)
     {
+        // Встроенный SVG: с CSS документа в начале (тот же массив для одного и того же src)
+        if (src != null && src.StartsWith("data:image/svg+xml;inline;base64,", StringComparison.Ordinal))
+        {
+            if (_inlineSvg.TryGetValue(src, out var ready)) return ready;
+            try
+            {
+                string raw = Encoding.UTF8.GetString(System.Convert.FromBase64String(src[(src.IndexOf(',') + 1)..]));
+                if (_svgCss.Trim().Length > 0)
+                {
+                    int s0 = raw.IndexOf("<svg", StringComparison.OrdinalIgnoreCase);
+                    int gt = s0 >= 0 ? raw.IndexOf('>', s0) : -1;
+                    if (gt > 0 && raw[gt - 1] != '/')
+                        raw = raw[..(gt + 1)] + "<style><![CDATA[" + _svgCss.Replace("]]>", "") + "]]></style>" + raw[(gt + 1)..];
+                }
+                return _inlineSvg[src] = Encoding.UTF8.GetBytes(raw);
+            }
+            catch { return null; }
+        }
         if (string.IsNullOrWhiteSpace(src)) return null;
         src = src.Trim();
         try

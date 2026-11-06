@@ -351,7 +351,7 @@ public sealed partial class OdtReader
                 // Несколько вариантов (SVG + PNG): первый, который удаётся показать
                 var bytes = ImageBytes(c);
                 if (bytes == null) continue;
-                bool meta = Metafile.IsMetafile(bytes);
+                bool meta = Metafile.IsMetafile(bytes) || DocxToPdf.Pdf.Svg.IsSvg(bytes);
                 if (!meta && ImageDecoder.Decode(bytes) == null) continue;
                 string name = "odt-img-" + (_doc.Media.Count + 1);
                 _doc.Media[name] = bytes;
@@ -401,7 +401,7 @@ public sealed partial class OdtReader
         {
             var bytes = ImageBytes(c);
             if (bytes == null) continue;
-            if (!Metafile.IsMetafile(bytes) && ImageDecoder.Decode(bytes) == null) continue;
+            if (!Metafile.IsMetafile(bytes) && !DocxToPdf.Pdf.Svg.IsSvg(bytes) && ImageDecoder.Decode(bytes) == null) continue;
             string name = "odt-img-" + (_doc.Media.Count + 1);
             _doc.Media[name] = bytes;
             return new ImageInline(name, Math.Max(1, w), Math.Max(1, h), style) { FrameW = Math.Max(1, w), FrameH = Math.Max(1, h) };

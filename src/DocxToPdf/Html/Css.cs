@@ -66,7 +66,7 @@ public sealed class Selector
     static bool MatchCompound(Node n, CompoundSelector c)
     {
         if (c.Unsupported || !n.IsElement || n.IsPseudo) return false;
-        if (c.Tag != null && c.Tag != "*" && c.Tag != n.Tag) return false;
+        if (c.Tag != null && c.Tag != "*" && c.Tag != n.Tag && !(c.Tag == "svg" && n.Attr("data-tag") == "svg")) return false;
         if (c.Id != null && n.Attr("id") != c.Id) return false;
         if (c.Classes.Count > 0)
         {

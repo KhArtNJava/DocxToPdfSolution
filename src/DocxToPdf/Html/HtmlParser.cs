@@ -169,6 +169,7 @@ public static class HtmlParser
 
             // Открывающий тег
             AddText(Entities.Decode(text.ToString())); text.Clear();
+            int tagStart = pos;
             int p = pos + 1;
             int ns = p;
             while (p < n && !char.IsWhiteSpace(html[p]) && html[p] is not ('>' or '/')) p++;
@@ -219,6 +220,37 @@ public static class HtmlParser
                     foreach (var (k, v) in node.Attrs) existing.Attrs.TryAdd(k, v);
                     continue;
                 }
+            }
+
+            if (tag == "svg")
+            {
+                // Встроенный SVG: разметка целиком (до парного </svg>) становится картинкой data:image/svg+xml
+                int end = p;
+                if (!selfClose)
+                {
+                    int depth = 1, q = p;
+                    while (depth > 0)
+                    {
+                        int o = html.IndexOf("<svg", q, StringComparison.OrdinalIgnoreCase);
+                        int c2 = html.IndexOf("</svg", q, StringComparison.OrdinalIgnoreCase);
+                        if (c2 < 0) { end = n; break; }
+                        if (o >= 0 && o < c2 && o + 4 < n && (char.IsWhiteSpace(html[o + 4]) || html[o + 4] is '>' or '/')) { depth++; q = o + 4; continue; }
+                        depth--;
+                        int gt2 = html.IndexOf('>', c2);
+                        q = end = gt2 < 0 ? n : gt2 + 1;
+                    }
+                }
+                string raw = html[tagStart..end];
+                if (selfClose) raw = raw.TrimEnd().TrimEnd('>').TrimEnd('/') + "/>";
+                node.Tag = "img";
+                node.Attrs["data-tag"] = "svg";
+                node.Attrs["src"] = "data:image/svg+xml;inline;base64," + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(raw));
+                // Без размеров, но с viewBox: во всю ширину контейнера (как в браузерах)
+                if (!node.Attrs.ContainsKey("width") && !node.Attrs.ContainsKey("height") && node.Attrs.ContainsKey("viewbox")) node.Attrs["width"] = "100%";
+                CloseImplied("img");
+                Append(node);
+                pos = end;
+                continue;
             }
 
             CloseImplied(tag);

@@ -41,6 +41,7 @@ XML office:document → плоский ODT (.fodt), MIME-заголовки → 
 | `Images/ImageDecoder.cs` | JPEG (как есть, DCTDecode), PNG (все типы, Adam7, прозрачность), GIF (LZW), BMP (1–32 бит) |
 | `Images/Tiff.cs` | TIFF: без сжатия, LZW (с предиктором), Deflate, PackBits, JPEG (полосы склеиваются без перекодирования), CCITT RLE/G3/G4; RGB(A), серый, палитра, CMYK, YCbCr; полосы и плитки |
 | `Pdf/Metafile.cs` | Векторный вывод EMF и WMF (с заголовком Placeable и без): контуры, кривые, дуги, текст, растры, обрезка, мировые преобразования |
+| `Pdf/Svg.cs` | Векторный вывод SVG (встроенный `<svg>` в HTML, `<img src=…svg>`, svgz, картинки SVG в DOCX/ODT): фигуры, контуры, CSS, градиенты, узоры, маркеры, обрезка, `<use>`, текст |
 | `Layout/BlockLayout.cs` | Разбиение на строки, табуляция, выравнивание, межстрочный интервал, таблицы |
 | `Layout/Paginator.cs` | Разбивка на страницы, keepNext, висячие строки, разрыв строк таблиц, повтор шапки, колонтитулы |
 | `Html/HtmlParser.cs` | Терпимый к ошибкам HTML-парсер (неявное закрытие p/li/td/tr…, сущности, raw-text теги) |
@@ -340,6 +341,33 @@ XML office:document → плоский ODT (.fodt), MIME-заголовки → 
   при переносе фрагмента на другую строку левая рамка рисуется только у начала, правая — только у конца, как в браузерах.
   Элементы flex/grid, float и absolute становятся блочными (CSS blockification)
 
+## SVG (HTML, DOCX, ODT)
+
+SVG выводится в PDF векторно (без растеризации), как в браузерах:
+
+- **Источники**: встроенный `<svg>` в HTML (размер — из атрибутов `width`/`height`, CSS или `viewBox`; без размеров —
+  во всю ширину), `<img src="…svg">`, `data:image/svg+xml` (base64 и URL-кодирование), сжатый `.svgz`, картинки SVG
+  в ODT (`draw:image`) и DOCX (векторный оригинал `asvg:svgBlip` Office 2016+ вместо растровой копии)
+- **Фигуры**: `rect` (со скруглением), `circle`, `ellipse`, `line`, `polyline`, `polygon`, `path` — весь синтаксис
+  контуров (относительные команды, гладкие кривые, квадратичные, дуги `A`)
+- **Стили**: атрибуты оформления, `<style>` (селекторы тегов/классов/id, потомки и дочерние, специфичность),
+  `style=""`, наследование, `currentColor`; CSS документа HTML применяется и к встроенным SVG; цвета — именованные,
+  `#rgb[a]`, `#rrggbb[aa]`, `rgb()/rgba()/hsl()`; `opacity`, `fill-opacity`, `stroke-opacity`, `fill-rule`,
+  `stroke-width`, `stroke-linecap/linejoin/miterlimit`, `stroke-dasharray/dashoffset`, `display`/`visibility`
+- **Системы координат**: `transform` (matrix, translate, scale, rotate с центром, skewX/Y), `viewBox` и
+  `preserveAspectRatio` (meet/slice, все выравнивания), вложенные `<svg>`, единицы (px, pt, mm, cm, in, em, %)
+- **Повторное использование**: `<defs>`, `<use>` (в т.ч. `<symbol>` с viewBox), `<switch>`
+- **Заливки**: линейные и радиальные градиенты (`gradientUnits`, `gradientTransform`, фокус `fx/fy`, наследование
+  через `href`, прозрачность остановок), узоры `<pattern>` (`patternUnits`, `patternContentUnits`,
+  `viewBox`, `patternTransform`)
+- **Обрезка** `clipPath` (userSpaceOnUse/objectBoundingBox, `clip-rule`), **маркеры** (`marker-start/mid/end`,
+  `orient="auto"`/`auto-start-reverse`, `markerUnits`)
+- **Текст**: `text`, `tspan`, `textPath`; списки `x/y/dx/dy`, `text-anchor`, `dominant-baseline`, `baseline-shift`
+  (верхний/нижний индекс), `letter-spacing`, `word-spacing`, `text-decoration`, обводка текста; шрифты — системные
+  (serif/sans-serif/monospace → Times New Roman/Arial/Courier New), текст остаётся выделяемым
+- **Картинки** внутри SVG: `<image>` с `data:` (растр или вложенный SVG)
+- Не поддерживаются: фильтры (`filter`), маски (`mask`), `spreadMethod` reflect/repeat, внешние ссылки в `<image>`/`<use>`, анимация, скрипты, `foreignObject`
+
 ## Ограничения
 
 - DOCX: обтекание объекта идёт с одной (более широкой) стороны, а не с обеих; объект с обтеканием, привязанный к странице/полям,
@@ -361,7 +389,7 @@ XML office:document → плоский ODT (.fodt), MIME-заголовки → 
 - RTF: фигуры-кривые (`pVertices`) — прямоугольником, группы фигур — по запасному результату `\shprslt`;
   формулы Word (`\mmath`) не разбираются (выводится замещающая картинка, если она есть); сетка строк документа не читается;
   примечания (`\annotation`) не выводятся; \pict в форматах Mac PICT и DDB (`\wbitmap`) не поддерживаются
-- HTML: нет JavaScript, SVG; MHTML: содержимое фреймов (`<iframe>`, части `frame-…`) не выводится; рамка с разными сторонами (цвет/толщина) при скруглении рисуется прямыми отрезками; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
+- HTML: нет JavaScript; SVG — без фильтров (`filter`) и масок (`mask`); MHTML: содержимое фреймов (`<iframe>`, части `frame-…`) не выводится; рамка с разными сторонами (цвет/толщина) при скруглении рисуется прямыми отрезками; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
   преобразования); ссылки внутри преобразованного блока кликабельны по исходной (неповёрнутой) области;
   динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
 - flex/grid-контейнеры строятся на основе таблиц: `grid-auto-flow: dense`/`column`, `subgrid` и `masonry` не поддерживаются; при `align-content` во flex фон контейнера рисуется по строкам

@@ -190,7 +190,7 @@ public sealed class PdfDocument
             if (c.GStates.Count > 0)
             {
                 res.Append(" /ExtGState <<");
-                foreach (var (name, a) in c.GStates) res.Append($" /{name} << /ca {F(a)} /CA {F(a)} >>");
+                foreach (var (name, a, sa) in c.GStates) res.Append($" /{name} << /ca {F(a)} /CA {F(sa)} >>");
                 res.Append(" >>");
             }
             res.Append(" >>");
@@ -367,7 +367,7 @@ public sealed class PdfCanvas
     internal readonly List<PdfFont> Fonts = [];
     internal readonly List<PdfImage> Images = [];
     /// <summary>Графические состояния прозрачности страницы: имя → непрозрачность.</summary>
-    internal readonly List<(string Name, double Alpha)> GStates = [];
+    internal readonly List<(string Name, double Alpha, double StrokeAlpha)> GStates = [];
 
     /// <summary>Шейдинги страницы: имя → словарь.</summary>
     internal readonly List<(string Name, string Dict)> Shadings = [];
@@ -401,13 +401,41 @@ public sealed class PdfCanvas
     }
 
     /// <summary>Имя ExtGState с заданной непрозрачностью (для «/GSn gs»).</summary>
-    string GState(double alpha)
+    string GState(double alpha) => GState(alpha, alpha);
+
+    /// <summary>Имя ExtGState с отдельной непрозрачностью заливки (ca) и обводки (CA).</summary>
+    public string GState(double fill, double stroke)
     {
-        alpha = Math.Round(Math.Clamp(alpha, 0, 1), 3);
-        foreach (var (n, a) in GStates) if (a == alpha) return n;
+        fill = Math.Round(Math.Clamp(fill, 0, 1), 3);
+        stroke = Math.Round(Math.Clamp(stroke, 0, 1), 3);
+        foreach (var (n, a, sa) in GStates) if (a == fill && sa == stroke) return n;
         string name = "GS" + (GStates.Count + 1);
-        GStates.Add((name, alpha));
+        GStates.Add((name, fill, stroke));
         return name;
+    }
+
+    // ---------------- Низкоуровневый вывод (для SVG) ----------------
+
+    /// <summary>Операторы содержимого как есть (координаты уже в системе PDF).</summary>
+    public void RawOps(string ops)
+    {
+        if (Collecting > 0 || SkipGraphics) return;
+        _sb.Append(ops);
+    }
+
+    /// <summary>Координата y страницы (ось вниз) → система PDF.</summary>
+    public double PdfY(double y) => Y(y);
+
+    public static string Num(double v) => F(v);
+
+    /// <summary>Шейдинг градиента: линейный (x1 y1 x2 y2) или радиальный (fx fy 0 cx cy r); точки — в системе «y вниз».</summary>
+    public string GradientShading(List<(double Pos, Rgb Color)> stops, bool radial, double[] c)
+    {
+        string fn = GradientFunction(stops);
+        string coords = radial
+            ? $"/ShadingType 3 /Coords [{F(c[0])} {F(Y(c[1]))} 0 {F(c[2])} {F(Y(c[3]))} {F(c[4])}]"
+            : $"/ShadingType 2 /Coords [{F(c[0])} {F(Y(c[1]))} {F(c[2])} {F(Y(c[3]))}]";
+        return Shading($"<< {coords} /ColorSpace /DeviceRGB /Function {fn} /Extend [true true] >>");
     }
     internal readonly List<PdfLink> Links = [];
 
@@ -773,16 +801,18 @@ public sealed class PdfCanvas
         double cropL, double cropT, double cropR, double cropB, double rotation, bool flipH, bool flipV, double opacity = 1, bool gray = false)
     {
         if (Collecting > 0 || SkipGraphics) return;
-        if (Metafile.IsMetafile(bytes))
+        bool svg = Svg.IsSvg(bytes);
+        if (svg || Metafile.IsMetafile(bytes))
         {
-            // Метафайл с поворотом/отражением/обрезкой: преобразование вокруг центра, обрезка по видимой части
+            // Метафайл/SVG с поворотом/отражением/обрезкой: преобразование вокруг центра, обрезка по видимой части
             double ra = rotation * Math.PI / 180, fx = flipH ? -1 : 1, fy = flipV ? -1 : 1;
             BeginTransform(cx, cy, Math.Cos(ra) * fx, Math.Sin(ra) * fx, -Math.Sin(ra) * fy, Math.Cos(ra) * fy, 0, 0);
             if (opacity < 0.999) _sb.Append($"/{GState(opacity)} gs\n");
             var vis = NewPath(); vis.Rect(cx - w / 2, cy - h / 2, w, h);
             BeginClip(vis, false);
             double fullW = w / (1 - cropL - cropR), fullH = h / (1 - cropT - cropB);
-            Metafile.Render(this, bytes, cx - w / 2 - cropL * fullW, cy - h / 2 - cropT * fullH, fullW, fullH);
+            if (svg) Svg.Render(this, bytes, cx - w / 2 - cropL * fullW, cy - h / 2 - cropT * fullH, fullW, fullH);
+            else Metafile.Render(this, bytes, cx - w / 2 - cropL * fullW, cy - h / 2 - cropT * fullH, fullW, fullH);
             EndClip();
             EndTransform();
             return;
@@ -1009,12 +1039,14 @@ public sealed class PdfCanvas
 
     public void Image(string key, byte[] bytes, double x, double y, double w, double h, double opacity = 1, bool gray = false)
     {
-        if (Metafile.IsMetafile(bytes))
+        bool isSvg = Svg.IsSvg(bytes);
+        if (isSvg || Metafile.IsMetafile(bytes))
         {
-            // EMF/WMF — векторный вывод
+            // EMF/WMF/SVG — векторный вывод
             if (Collecting > 0 || SkipGraphics) return;
             if (opacity < 0.999) _sb.Append($"q /{GState(opacity)} gs\n");
-            Metafile.Render(this, bytes, x, y, w, h);
+            if (isSvg) Svg.Render(this, bytes, x, y, w, h);
+            else Metafile.Render(this, bytes, x, y, w, h);
             if (opacity < 0.999) _sb.Append("Q\n");
             return;
         }

@@ -362,6 +362,15 @@ public sealed partial class DocxReader
             var blip = obj.Descendants(A + "blip").FirstOrDefault();
             string? rid = (string?)blip?.Attribute(R + "embed") ?? (string?)blip?.Attribute(R + "link");
             if (rid == null) return null;
+            // Векторный оригинал (Office 2016+): asvg:svgBlip в a:extLst; растровая копия — запасной вариант
+            if (blip!.Element(A + "grayscl") == null
+                && blip.Descendants(XNamespace.Get("http://schemas.microsoft.com/office/drawing/2016/SVG/main") + "svgBlip").FirstOrDefault() is { } svgBlip
+                && (string?)svgBlip.Attribute(R + "embed") is { } svgRid)
+            {
+                var vt = new List<Inline>();
+                AddImage(svgRid, w, h, st, style, vt);
+                if (vt.Count == 1 && vt[0] is ImageInline vi && _doc.Media.TryGetValue(vi.PartName, out var vb) && DocxToPdf.Pdf.Svg.IsSvg(vb)) rid = svgRid;
+            }
             var tmp = new List<Inline>();
             AddImage(rid, w, h, st, style, tmp);
             if (tmp.Count == 0) return null;
