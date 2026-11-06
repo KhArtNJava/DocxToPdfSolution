@@ -44,6 +44,8 @@ XML office:document → плоский ODT (.fodt), MIME-заголовки → 
 | `Pdf/Metafile.cs` | Векторный вывод EMF и WMF (с заголовком Placeable и без): контуры, кривые, дуги, текст, растры, обрезка, мировые преобразования |
 | `Pdf/Pict.cs` | Mac PICT (QuickDraw, версии 1 и 2) → SVG: фигуры, линии, текст, растры BitsRect/PackBitsRect/DirectBitsRect (1–32 бит, PackBits), JPEG в QuickTime |
 | `Pdf/Svg.cs` | Векторный вывод SVG (встроенный `<svg>` в HTML, `<img src=…svg>`, svgz, картинки SVG в DOCX/ODT): фигуры, контуры, CSS, градиенты, узоры, маркеры, обрезка, `<use>`, текст |
+| `Pdf/SvgFilters.cs` | SVG: маски (мягкая маска PDF) и фильтры — растр элемента, примитивы `fe*`, CSS-функции фильтра |
+| `Pdf/Raster.cs` | Растеризатор операторов содержимого PDF (контуры со сглаживанием, обводка, обрезка, градиенты, картинки, формы, мягкие маски) — для фильтров |
 | `Layout/BlockLayout.cs` | Разбиение на строки, табуляция, выравнивание, межстрочный интервал, таблицы |
 | `Layout/Paginator.cs` | Разбивка на страницы, keepNext, висячие строки, разрыв строк таблиц, повтор шапки, колонтитулы |
 | `Html/HtmlParser.cs` | Терпимый к ошибкам HTML-парсер (неявное закрытие p/li/td/tr…, сущности, raw-text теги) |
@@ -382,7 +384,7 @@ XML office:document → плоский ODT (.fodt), MIME-заголовки → 
 
 ## SVG (HTML, DOCX, ODT)
 
-SVG выводится в PDF векторно (без растеризации), как в браузерах:
+SVG выводится в PDF векторно, как в браузерах (растром — только результат фильтров):
 
 - **Источники**: встроенный `<svg>` в HTML (размер — из атрибутов `width`/`height`, CSS или `viewBox`; без размеров —
   во всю ширину), `<img src="…svg">`, `data:image/svg+xml` (base64 и URL-кодирование), сжатый `.svgz`, картинки SVG
@@ -397,7 +399,7 @@ SVG выводится в PDF векторно (без растеризации)
   `preserveAspectRatio` (meet/slice, все выравнивания), вложенные `<svg>`, единицы (px, pt, mm, cm, in, em, %)
 - **Повторное использование**: `<defs>`, `<use>` (в т.ч. `<symbol>` с viewBox), `<switch>`
 - **Заливки**: линейные и радиальные градиенты (`gradientUnits`, `gradientTransform`, фокус `fx/fy`, наследование
-  через `href`, прозрачность остановок), узоры `<pattern>` (`patternUnits`, `patternContentUnits`,
+  через `href`, переменная прозрачность остановок — мягкой маской), узоры `<pattern>` (`patternUnits`, `patternContentUnits`,
   `viewBox`, `patternTransform`)
 - **Обрезка** `clipPath` (userSpaceOnUse/objectBoundingBox, `clip-rule`), **маркеры** (`marker-start/mid/end`,
   `orient="auto"`/`auto-start-reverse`, `markerUnits`)
@@ -405,7 +407,20 @@ SVG выводится в PDF векторно (без растеризации)
   (верхний/нижний индекс), `letter-spacing`, `word-spacing`, `text-decoration`, обводка текста; шрифты — системные
   (serif/sans-serif/monospace → Times New Roman/Arial/Courier New), текст остаётся выделяемым
 - **Картинки** внутри SVG: `<image>` с `data:` (растр или вложенный SVG)
-- Не поддерживаются: фильтры (`filter`), маски (`mask`), `spreadMethod` reflect/repeat, внешние ссылки в `<image>`/`<use>`, анимация, скрипты, `foreignObject`
+- **Маски** `mask` — векторно, мягкой маской PDF (SMask): по яркости и `mask-type: alpha`, `maskUnits`,
+  `maskContentUnits`, область маски (x/y/width/height), содержимое любого вида (градиенты, узоры, картинки, текст),
+  вложенные маски; сочетаются с `clip-path`, `opacity` и фильтрами
+- **Фильтры** `filter` (`url(#…)` и CSS-функции `blur()`, `drop-shadow()`, `grayscale()`, `sepia()`, `saturate()`,
+  `hue-rotate()`, `invert()`, `opacity()`, `brightness()`, `contrast()`, цепочки): элемент рисуется в растр (~150 dpi
+  итогового размера, встроенный растеризатор контуров, обводок, градиентов, картинок и текста), к нему применяются
+  примитивы, результат встраивается картинкой с альфа-каналом. Примитивы: `feGaussianBlur`, `feOffset`, `feFlood`,
+  `feColorMatrix` (matrix/saturate/hueRotate/luminanceToAlpha), `feComponentTransfer` (table/discrete/linear/gamma),
+  `feComposite` (все операторы, arithmetic), `feMerge`, `feBlend` (все режимы, в т.ч. hue/saturation/color/luminosity),
+  `feDropShadow`, `feMorphology`, `feTile`, `feImage` (картинка `data:` или элемент), `feTurbulence` (алгоритм спецификации,
+  `stitchTiles`), `feConvolveMatrix`, `feDisplacementMap`, `feDiffuseLighting`/`feSpecularLighting` (источники distant,
+  point, spot); входы `SourceGraphic`/`SourceAlpha`/`result`, область фильтра и подобласти примитивов (`filterUnits`,
+  `primitiveUnits`), `color-interpolation-filters` (linearRGB/sRGB), наследование через `href`
+- Не поддерживаются: `BackgroundImage` в фильтрах (прозрачный вход), `spreadMethod` reflect/repeat, внешние ссылки в `<image>`/`<use>`, анимация, скрипты, `foreignObject`
 
 ## Ограничения
 
@@ -425,7 +440,7 @@ SVG выводится в PDF векторно (без растеризации)
   как радиальный, штриховки и заливка картинкой — сплошным цветом; Fontwork — обычный текст по размеру фигуры; встроенные
   объекты, кроме формул и диаграмм (OLE, таблицы Calc), — замещающим изображением; текст абзаца, к которому привязан объект
   «без обтекания» со смещением вниз, выводится под объектом, а не над ним; примечания (`office:annotation`) не выводятся
-- HTML: нет JavaScript; SVG — без фильтров (`filter`) и масок (`mask`); содержимое фрейма — только первая страница области фрейма (без прокрутки и разрыва между страницами); рамка с разными сторонами (цвет/толщина) при скруглении рисуется прямыми отрезками; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
+- HTML: нет JavaScript; фильтры SVG выводятся растром (~150 dpi), вход `BackgroundImage` — прозрачный; содержимое фрейма — только первая страница области фрейма (без прокрутки и разрыва между страницами); рамка с разными сторонами (цвет/толщина) при скруглении рисуется прямыми отрезками; элемент с `transform` не разрывается между страницами (выше страницы — выводится без
   преобразования); ссылки внутри преобразованного блока кликабельны по исходной (неповёрнутой) области;
   динамические псевдоклассы (`:hover`, `:focus`) в печати не срабатывают
 

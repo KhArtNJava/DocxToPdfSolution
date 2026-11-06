@@ -14,9 +14,9 @@ namespace DocxToPdf.Pdf;
 /// преобразования, viewBox и preserveAspectRatio, заливка и обводка (пунктир, концы, стыки), прозрачность,
 /// градиенты (линейный, радиальный, objectBoundingBox, gradientTransform, наследование href), узоры (pattern),
 /// обрезка (clipPath), маркеры, текст (text/tspan/textPath, text-anchor, базовая линия, межбуквенный интервал),
-/// встроенные картинки, стили (атрибуты, &lt;style&gt; с селекторами, style="").
+/// встроенные картинки, стили (атрибуты, &lt;style&gt; с селекторами, style=""), маски (mask) и фильтры (filter, см. SvgFilters.cs).
 /// </summary>
-public static class Svg
+public static partial class Svg
 {
     static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -256,6 +256,7 @@ public static class Svg
         "font-weight", "font-style", "text-anchor", "dominant-baseline", "alignment-baseline", "baseline-shift", "color", "stop-color",
         "stop-opacity", "clip-path", "clip-rule", "marker-start", "marker-mid", "marker-end", "marker", "letter-spacing", "word-spacing",
         "text-decoration", "overflow", "font", "transform", "vector-effect", "paint-order", "font-variant", "white-space", "mask",
+        "filter", "mask-type", "flood-color", "flood-opacity", "lighting-color", "color-interpolation-filters",
     ];
 
     static readonly HashSet<string> Inherited =
@@ -263,7 +264,7 @@ public static class Svg
         "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity", "stroke-linecap", "stroke-linejoin",
         "stroke-miterlimit", "stroke-dasharray", "stroke-dashoffset", "visibility", "font-family", "font-size", "font-weight",
         "font-style", "text-anchor", "color", "clip-rule", "marker-start", "marker-mid", "marker-end", "letter-spacing",
-        "word-spacing", "dominant-baseline", "font-variant", "white-space", "paint-order",
+        "word-spacing", "dominant-baseline", "font-variant", "white-space", "paint-order", "color-interpolation-filters",
     ];
 
     /// <summary>Заданные свойства элемента: атрибуты оформления → правила &lt;style&gt; → style="".</summary>
@@ -714,6 +715,8 @@ public static class Svg
         public double Alpha = 1;
         public int Depth;
         public FontManager? Fonts;
+        /// <summary>Масштаб единицы пользователя в pt (для разрешения растра фильтров).</summary>
+        public double Scale = 1;
     }
 
     public static void Render(PdfCanvas c, byte[] d, double x, double y, double w, double h)
@@ -726,7 +729,7 @@ public static class Svg
         double vw = vb?.W ?? AbsLength(Attr(root, "width")) ?? w / 0.75, vh = vb?.H ?? AbsLength(Attr(root, "height")) ?? h / 0.75;
         // Без viewBox: собственные размеры рисунка растягиваются на рамку
         var m = vb != null ? ViewMatrix(vb.Value, x, y, w, h, Attr(root, "preserveAspectRatio")) : new M(w / vw, 0, 0, h / vh, x, y);
-        var ctx = new Ctx { C = c, Doc = doc, VW = vw, VH = vh, Fonts = c.FontProvider };
+        var ctx = new Ctx { C = c, Doc = doc, VW = vw, VH = vh, Fonts = c.FontProvider, Scale = m.Scale };
         var clip = c.NewPath(); clip.Rect(x, y, w, h);
         c.BeginClip(clip, false);
         c.BeginTransform(0, 0, m.A, m.B, m.C, m.D, m.E, m.F);
@@ -776,7 +779,32 @@ public static class Svg
         double savedAlpha = ctx.Alpha;
         ctx.Alpha *= op;
         ctx.Depth++;
-        // Обрезка clip-path
+        double savedScale = ctx.Scale;
+        ctx.Scale *= m.Scale;
+        try
+        {
+            // Маска: содержимое — группа под мягкой маской (SMask)
+            if (st.Get("mask") is { Length: > 0 } mv && mv != "none" && Ref(ctx.Doc, mv) is { } maskEl && maskEl.Name.LocalName == "mask" && ctx.Depth < 30)
+            {
+                var (maskForm, alphaMask) = MaskForm(maskEl, e, st, ctx);
+                string content = c.CaptureForm(() => ClipAndBody(e, st, ctx), unbounded: true);
+                c.RawOps($"q /{c.SoftMaskGState(maskForm, alphaMask)} gs /{content} Do Q\n");
+            }
+            else ClipAndBody(e, st, ctx);
+        }
+        finally
+        {
+            ctx.Depth--;
+            ctx.Alpha = savedAlpha;
+            ctx.Scale = savedScale;
+            if (tr) c.EndTransform();
+        }
+    }
+
+    /// <summary>Обрезка clip-path, затем фильтр или само содержимое элемента.</summary>
+    static void ClipAndBody(XElement e, Style st, Ctx ctx)
+    {
+        var c = ctx.C;
         bool clipped = false;
         if (st.Get("clip-path") is { Length: > 0 } cp && cp != "none" && Ref(ctx.Doc, cp) is { } clipEl && clipEl.Name.LocalName == "clipPath")
         {
@@ -799,30 +827,34 @@ public static class Svg
         }
         try
         {
-            switch (tag)
-            {
-                case "g" or "a": RenderChildren(e, st, ctx); break;
-                case "svg": NestedSvg(e, st, ctx, null, null); break;
-                case "use": Use(e, st, ctx); break;
-                case "image": Image(e, st, ctx); break;
-                case "text": Text(e, st, ctx); break;
-                default:
-                    if (st.Get("visibility") is "hidden" or "collapse") break;
-                    var geo = ShapeGeo(e, st, ctx);
-                    if (geo != null)
-                    {
-                        Paint(geo, st, ctx, e);
-                        Markers(e, geo, st, ctx);
-                    }
-                    break;
-            }
+            if (st.Get("filter") is { Length: > 0 } fv && fv != "none") FilterElement(e, st, ctx, fv);
+            else Body(e, st, ctx);
         }
         finally
         {
-            ctx.Depth--;
-            ctx.Alpha = savedAlpha;
             if (clipped) c.EndClip();
-            if (tr) c.EndTransform();
+        }
+    }
+
+    /// <summary>Содержимое элемента: группа, вложенный svg, use, картинка, текст или фигура.</summary>
+    static void Body(XElement e, Style st, Ctx ctx)
+    {
+        switch (e.Name.LocalName)
+        {
+            case "g" or "a": RenderChildren(e, st, ctx); break;
+            case "svg": NestedSvg(e, st, ctx, null, null); break;
+            case "use": Use(e, st, ctx); break;
+            case "image": Image(e, st, ctx); break;
+            case "text": Text(e, st, ctx); break;
+            default:
+                if (st.Get("visibility") is "hidden" or "collapse") break;
+                var geo = ShapeGeo(e, st, ctx);
+                if (geo != null)
+                {
+                    Paint(geo, st, ctx, e);
+                    Markers(e, geo, st, ctx);
+                }
+                break;
         }
     }
 
@@ -1056,11 +1088,24 @@ public static class Svg
             coords = [fx, fy, cx, cy, r];
         }
         else coords = [L("x1", "0%", rw), L("y1", "0%", rh), L("x2", "100%", rw), L("y2", "0%", rh)];
-        // Прозрачность точек — средняя (мягкая маска не строится)
-        double a = alpha * stops.Average(s => s.Alpha);
-        if (a <= 0.001) return;
+        // Разная прозрачность точек — мягкая маска из градиента непрозрачности (серый = альфа)
+        bool varying = stops.Max(s => s.Alpha) - stops.Min(s => s.Alpha) > 0.001;
+        double a = varying ? alpha : alpha * stops[0].Alpha;
+        if (a <= 0.001 || stops.All(s => s.Alpha <= 0.001)) return;
         string sh = c.GradientShading(stops.Select(s => (s.Pos, s.Color)).ToList(), radial, coords);
-        c.RawOps("q " + (a < 0.999 ? "/" + c.GState(a, a) + " gs " : "") + vp.Ops + (evenOdd ? "W* n\n" : "W n\n"));
+        string mask = "";
+        if (varying)
+        {
+            string ash = c.GradientShading(stops.Select(s => (s.Pos, new Rgb(s.Alpha, s.Alpha, s.Alpha))).ToList(), radial, coords);
+            string form = c.CaptureForm(() =>
+            {
+                c.BeginTransform(0, 0, gm.A, gm.B, gm.C, gm.D, gm.E, gm.F);
+                c.RawOps($"/{ash} sh\n");
+                c.EndTransform();
+            }, unbounded: true);
+            mask = "/" + c.SoftMaskGState(form, false) + " gs ";
+        }
+        c.RawOps("q " + mask + (a < 0.999 ? "/" + c.GState(a, a) + " gs " : "") + vp.Ops + (evenOdd ? "W* n\n" : "W n\n"));
         c.BeginTransform(0, 0, gm.A, gm.B, gm.C, gm.D, gm.E, gm.F);
         c.RawOps($"/{sh} sh\n");
         c.EndTransform();
@@ -1189,8 +1234,11 @@ public static class Svg
             }
             else mt = mt.Mul(new M(1, 0, 0, 1, -refX, -refY));
             ctx.C.BeginTransform(0, 0, mt.A, mt.B, mt.C, mt.D, mt.E, mt.F);
+            double msc = ctx.Scale;
+            ctx.Scale *= mt.Scale;
             // Стиль маркера наследуется от самого маркера, не от фигуры
             RenderChildren(marker, Compute(ctx.Doc, marker, new Style()), ctx);
+            ctx.Scale = msc;
             ctx.C.EndTransform();
         }
     }
@@ -1214,10 +1262,11 @@ public static class Svg
             bool clip = Attr(target, "overflow") is not ("visible" or "auto") && sst.Get("overflow") is not ("visible" or "auto");
             if (clip) { var cp = ctx.C.NewPath(); cp.Rect(0, 0, w, h); ctx.C.BeginClip(cp, false); }
             ctx.C.BeginTransform(0, 0, vm.A, vm.B, vm.C, vm.D, vm.E, vm.F);
-            double vw = ctx.VW, vh = ctx.VH;
+            double vw = ctx.VW, vh = ctx.VH, sc = ctx.Scale;
             if (vb != null) { ctx.VW = vb.Value.W; ctx.VH = vb.Value.H; }
+            ctx.Scale *= vm.Scale;
             RenderChildren(target, sst, ctx);
-            ctx.VW = vw; ctx.VH = vh;
+            ctx.VW = vw; ctx.VH = vh; ctx.Scale = sc;
             ctx.C.EndTransform();
             if (clip) ctx.C.EndClip();
             ctx.C.EndTransform();
@@ -1244,10 +1293,10 @@ public static class Svg
         bool clip = st.Get("overflow") is not ("visible" or "auto");
         if (clip) { var cp = ctx.C.NewPath(); cp.Rect(x, y, w, h); ctx.C.BeginClip(cp, false); }
         ctx.C.BeginTransform(0, 0, vm.A, vm.B, vm.C, vm.D, vm.E, vm.F);
-        double vw = ctx.VW, vh = ctx.VH;
-        ctx.VW = vb?.W ?? w; ctx.VH = vb?.H ?? h;
+        double vw = ctx.VW, vh = ctx.VH, sc = ctx.Scale;
+        ctx.VW = vb?.W ?? w; ctx.VH = vb?.H ?? h; ctx.Scale *= vm.Scale;
         RenderChildren(e, st, ctx);
-        ctx.VW = vw; ctx.VH = vh;
+        ctx.VW = vw; ctx.VH = vh; ctx.Scale = sc;
         ctx.C.EndTransform();
         if (clip) ctx.C.EndClip();
     }

@@ -72,6 +72,13 @@ public sealed class PdfDocument
         return img;
     }
 
+    internal PdfImage AddImage(string key, PdfImageData data)
+    {
+        var img = new PdfImage(data, "Im" + (_images.Count + 1));
+        _images[key] = img;
+        return img;
+    }
+
     /// <summary>Оттенки серого (a:grayscl): RGB → яркость. JPEG (DCT) не перекодируется и остаётся цветным.</summary>
     static PdfImageData ToGray(PdfImageData d)
     {
@@ -187,10 +194,16 @@ public sealed class PdfDocument
                 foreach (var (name, dict) in c.Shadings) res.Append($" /{name} {dict}");
                 res.Append(" >>");
             }
-            if (c.GStates.Count > 0)
+            if (c.GStates.Count > 0 || c.SoftMasks.Count > 0)
             {
                 res.Append(" /ExtGState <<");
                 foreach (var (name, a, sa) in c.GStates) res.Append($" /{name} << /ca {F(a)} /CA {F(sa)} >>");
+                foreach (var (name, form, alpha) in c.SoftMasks)
+                {
+                    int fi = c.Forms.FindIndex(f => f.Name == form);
+                    if (fi < 0) continue;
+                    res.Append($" /{name} << /SMask << /Type /Mask /S /{(alpha ? "Alpha" : "Luminosity")} /G {formIds[fi]} 0 R >> >>");
+                }
                 res.Append(" >>");
             }
             res.Append(" >>");
@@ -198,7 +211,9 @@ public sealed class PdfDocument
             w.Obj(resId, res.ToString());
             for (int fi = 0; fi < c.Forms.Count; fi++)
                 w.Stream(formIds[fi],
-                    $"/Type /XObject /Subtype /Form /BBox [0 0 {F(page.Width)} {F(page.Height)}] /Group << /S /Transparency /I true >> /Resources {resId} 0 R",
+                    c.Forms[fi].Unbounded
+                        ? $"/Type /XObject /Subtype /Form /BBox [-100000 -100000 100000 100000] /Group << /S /Transparency /I true /CS /DeviceRGB >> /Resources {resId} 0 R"
+                        : $"/Type /XObject /Subtype /Form /BBox [0 0 {F(page.Width)} {F(page.Height)}] /Group << /S /Transparency /I true >> /Resources {resId} 0 R",
                     Encoding.ASCII.GetBytes(c.Forms[fi].Content));
 
             var annots = new List<int>();
@@ -339,13 +354,22 @@ public sealed class PdfCanvas
     readonly double _pageHeight;
     StringBuilder _sb = new();
     /// <summary>Формы (Form XObject) страницы: содержимое, нарисованное один раз и используемое многократно.</summary>
-    internal readonly List<(string Name, string Content)> Forms = [];
+    internal readonly List<(string Name, string Content, bool Unbounded)> Forms = [];
+    /// <summary>Мягкие маски (SMask) страницы: имя ExtGState → форма-маска, яркость или альфа.</summary>
+    internal readonly List<(string Name, string Form, bool Alpha)> SoftMasks = [];
+    /// <summary>Растровые картинки, построенные при вёрстке (фильтры SVG).</summary>
+    int _rasterCounter;
 
     /// <summary>
     /// Записывает рисование в отдельную форму (прозрачностная группа) и возвращает её имя для DoForm.
     /// Ссылки внутри формы не создаются.
     /// </summary>
-    public string CaptureForm(Action draw)
+    public string CaptureForm(Action draw) => CaptureForm(draw, false);
+
+    /// <summary>
+    /// Форма с неограниченной рамкой (для масок и групп SVG: содержимое может быть в любых координатах).
+    /// </summary>
+    public string CaptureForm(Action draw, bool unbounded)
     {
         var saved = _sb;
         _sb = new StringBuilder();
@@ -355,9 +379,48 @@ public sealed class PdfCanvas
         string content = _sb.ToString();
         _sb = saved;
         string name = "Fm" + (Forms.Count + 1);
-        Forms.Add((name, content));
+        Forms.Add((name, content, unbounded));
         return name;
     }
+
+    /// <summary>Содержимое, нарисованное draw, — строкой операторов (без вывода на страницу; текст — контурами).</summary>
+    public string CaptureOps(Action draw)
+    {
+        var saved = _sb;
+        _sb = new StringBuilder();
+        SuppressLinks++; TextAsPaths++;
+        try { draw(); }
+        finally { SuppressLinks--; TextAsPaths--; }
+        string content = _sb.ToString();
+        _sb = saved;
+        return content;
+    }
+
+    /// <summary>ExtGState с мягкой маской: форма-маска по яркости (luminosity) или по альфа-каналу.</summary>
+    public string SoftMaskGState(string form, bool alpha)
+    {
+        foreach (var (n, f, a) in SoftMasks) if (f == form && a == alpha) return n;
+        string name = "SM" + (SoftMasks.Count + 1);
+        SoftMasks.Add((name, form, alpha));
+        return name;
+    }
+
+    /// <summary>Растровая картинка (RGB + альфа) в рамке (x, y, w, h) страницы (y вниз).</summary>
+    public void RasterImage(PdfImageData data, double x, double y, double w, double h)
+    {
+        if (Collecting > 0 || SkipGraphics) return;
+        var img = _doc.AddImage("raster#" + GetHashCode() + "#" + (++_rasterCounter), data);
+        if (!Images.Contains(img)) Images.Add(img);
+        _sb.Append($"q {F(w)} 0 0 {F(h)} {F(x)} {F(Y(y + h))} cm /{img.Name} Do Q\n");
+    }
+
+    // ---- Ресурсы страницы по имени (для растеризации записанных операторов) ----
+    internal PdfImageData? ImageByName(string name) => Images.FirstOrDefault(i => i.Name == name)?.Data;
+    internal string? FormByName(string name) { foreach (var f in Forms) if (f.Name == name) return f.Content; return null; }
+    internal (double Fill, double Stroke)? AlphaByName(string name) { foreach (var (n, a, sa) in GStates) if (n == name) return (a, sa); return null; }
+    internal (string Form, bool Alpha)? SoftMaskByName(string name) { foreach (var (n, f, a) in SoftMasks) if (n == name) return (f, a); return null; }
+    internal string? ShadingByName(string name) { foreach (var (n, d) in Shadings) if (n == name) return d; return null; }
+    internal double PageHeight => _pageHeight;
 
     public void DoForm(string name)
     {
