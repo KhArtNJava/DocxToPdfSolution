@@ -127,6 +127,8 @@ public sealed partial class RtfReader
         public bool Revised, Deleted;
         public int RevAuthor;
         public int Codepage;                          // \cpg у шрифта (0 — по документу)
+        public int Kerning;                           // \kerning, полупункты (0 — нет)
+        public int Lang;                              // \lang (LCID)
         public CharProps Clone() => (CharProps)MemberwiseClone();
     }
 
@@ -147,6 +149,7 @@ public sealed partial class RtfReader
         public int Shading = -1, ShadePct, ShadeFore;
         public int OutlineLevel = -1;
         public int SbAuto, SaAuto;
+        public bool NoHyph;
         public ParaProps Clone()
         {
             var p = (ParaProps)MemberwiseClone();
@@ -178,7 +181,21 @@ public sealed partial class RtfReader
     readonly Dictionary<int, int> _styleBase = [];
     readonly Dictionary<int, string> _styleNames = [];
     readonly List<string> _revAuthors = [];
-    int _docCodepage = 1252, _defFont;
+    int _docCodepage = 1252, _defFont, _defLang;
+    bool _hyphAuto, _hyphNoCaps;
+    double _hyphZone = 18;
+    int _hyphConsec;
+
+    /// <summary>Код языка Windows (LCID) → BCP 47 для словаря переносов.</summary>
+    static string? LcidName(int lcid) => lcid switch
+    {
+        1049 => "ru-RU", 1058 => "uk-UA", 1059 => "be-BY", 1026 => "bg-BG", 1033 => "en-US", 2057 => "en-GB", 3081 => "en-AU",
+        4105 => "en-CA", 1031 => "de-DE", 3079 => "de-AT", 2055 => "de-CH", 1036 => "fr-FR", 2060 => "fr-BE", 3084 => "fr-CA",
+        1034 or 3082 => "es-ES", 2058 => "es-MX", 1040 => "it-IT", 1045 => "pl-PL", 2070 => "pt-PT", 1046 => "pt-BR",
+        1043 => "nl-NL", 1029 => "cs-CZ", 1051 => "sk-SK", 1053 => "sv-SE", 1030 => "da-DK", 1044 => "nb-NO", 2068 => "nn-NO",
+        1038 => "hu-HU", 1032 => "el-GR", 1050 => "hr-HR", 1060 => "sl-SI", 1063 => "lt-LT", 1062 => "lv-LV", 1061 => "et-EE",
+        1048 => "ro-RO", 2074 or 3098 => "sr", _ => null,
+    };
     CharProps _defChar = new();
     ParaProps _defPara = new();
 
@@ -463,6 +480,9 @@ public sealed partial class RtfReader
             ShadowColor = c.Shadow || c.Emboss || c.Imprint ? new Rgb(0.55, 0.55, 0.55) : null,
             ShadowOffset = c.Imprint ? -0.04 : c.Emboss ? 0.04 : c.Shadow ? 0.06 : 0,
             Link = _link,
+            Kerning = c.Kerning > 0 && c.Size >= c.Kerning,
+            Hyphens = _hyphAuto ? 2 : 1,
+            Lang = LcidName(c.Lang > 0 ? c.Lang : _defLang),
         };
         if (c.Emboss || c.Imprint) ts = ts with { Color = new Rgb(0.93, 0.93, 0.93) };
         if (_markup && (c.Revised || c.Deleted))
@@ -494,6 +514,10 @@ public sealed partial class RtfReader
             BorderTop = Vis(p.BTop), BorderBottom = Vis(p.BBottom), BorderLeft = Vis(p.BLeft), BorderRight = Vis(p.BRight), BorderBetween = Vis(p.BBetween),
             MarkStyle = Style(markChar),
         };
+        para.NoHyphenation = p.NoHyph;
+        para.HyphenZone = _hyphZone;
+        para.HyphenLimit = _hyphConsec;
+        para.HyphenNoCaps = _hyphNoCaps;
         if (p.Rtl && para.Align == "left") para.Align = "right";
         else if (p.Rtl && para.Align == "right") para.Align = "left";
         if (p.Sl != 0)
@@ -558,7 +582,7 @@ public sealed partial class RtfReader
         {
             case '~': AddText(" ", st); break;
             case '_': AddText("‑", st); break;
-            case '-': break;                          // мягкий перенос
+            case '-': AddText("\u00AD", st); break;  // мягкий перенос
             case '|': break;
             case ':': break;
             case '\t': EmitBytes([(byte)'\t'], st); break;
@@ -579,7 +603,14 @@ public sealed partial class RtfReader
             case "pca": _docCodepage = 850; break;
             case "ansicpg": if (v > 0) _docCodepage = v; break;
             case "deff": _defFont = v; if (c.Font < 0) c.Font = v; _defChar.Font = v; break;
-            case "deflang": break;
+            case "deflang": _defLang = v; break;
+            case "lang": c.Lang = v; break;
+            case "kerning": c.Kerning = v; break;
+            case "hyphauto": _hyphAuto = on; break;
+            case "hyphhotz": _hyphZone = Tw(v); break;
+            case "hyphconsec": _hyphConsec = v; break;
+            case "hyphcaps": _hyphNoCaps = !on; break;
+            case "hyphpar": p.NoHyph = !on; break;
             case "deftab": if (v > 0) _doc.DefaultTabStop = Tw(v); break;
             case "paperw": _docSect.PageWidth = _sect.PageWidth = Tw(v); break;
             case "paperh": _docSect.PageHeight = _sect.PageHeight = Tw(v); break;

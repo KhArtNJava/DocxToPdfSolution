@@ -11,4 +11,9 @@
     <AssemblyName>docx2pdf</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Словари переносов (шаблоны Лианга из словарей LibreOffice, см. Hyphenation/licenses) -->
+    <EmbeddedResource Include="Hyphenation/*.dic.gz" LogicalName="DocxToPdf.Hyphenation.%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>

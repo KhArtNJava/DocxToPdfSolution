@@ -439,6 +439,10 @@ public sealed class CssStyle
     public double FontSize = 12;
     public bool Bold, Italic, Underline, Strike, Upper, Lower, SmallCaps;
     public int Weight;                       // числовая насыщенность CSS (0 — по Bold: 400/700)
+    public bool Kerning = true;              // font-kerning (как в Chromium — включён)
+    public int Hyphens = 1;                  // hyphens: 0 none, 1 manual, 2 auto
+    public string? Lang;                     // атрибут lang
+    public (int Word, int Before, int After) HyphenLimitChars = (5, 2, 2);
     public Rgb Color = Rgb.Black;
     public string TextAlign = "left";
     public double? LineHeightFactor;
@@ -518,7 +522,7 @@ public sealed class CssStyle
     {
         return new CssStyle
         {
-            FontFamily = FontFamily, FontSize = FontSize, Bold = Bold, Weight = Weight, Italic = Italic, Underline = Underline, Strike = Strike,
+            FontFamily = FontFamily, FontSize = FontSize, Bold = Bold, Weight = Weight, Kerning = Kerning, Hyphens = Hyphens, Lang = Lang, HyphenLimitChars = HyphenLimitChars, Italic = Italic, Underline = Underline, Strike = Strike,
             Upper = Upper, Lower = Lower, SmallCaps = SmallCaps, LetterSpacing = LetterSpacing, WordSpacing = WordSpacing, Color = Color, TextAlign = TextAlign, LineHeightFactor = LineHeightFactor, LineHeightPt = LineHeightPt,
             WhiteSpace = WhiteSpace, TextIndent = TextIndent, ListStyleType = ListStyleType, Link = Link, VertAlign = VertAlign,
             TextBackground = TextBackground, Hidden = Hidden, Vars = Vars, Quotes = Quotes, InlineBox = InlineBox,

@@ -925,6 +925,15 @@ public sealed partial class OdtReader
             if (pad > 0) { para.BorderLeft = new BorderDef { Val = "nil", Width = 0, Space = pad }; para.BorderRight = new BorderDef { Val = "nil", Width = 0, Space = Padding(pp, "right") }; }
         }
         para.SnapToGrid = pp.GetValueOrDefault("style:snap-to-layout-grid") != "false";
+        // Параметры переносов (свойства текста абзаца и абзаца LibreOffice)
+        if (int.TryParse(tp.GetValueOrDefault("fo:hyphenation-remain-char-count"), out var hrc)) para.HyphenMinLeft = hrc;
+        if (int.TryParse(tp.GetValueOrDefault("fo:hyphenation-push-char-count"), out var hpc)) para.HyphenMinRight = hpc;
+        if (int.TryParse(pp.GetValueOrDefault("fo:hyphenation-ladder-count"), out var hlc)) para.HyphenLimit = hlc;
+        if (int.TryParse(tp.GetValueOrDefault("loext:hyphenation-word-char-count") ?? pp.GetValueOrDefault("loext:hyphenation-word-char-count"), out var hmw) && hmw > 0) para.HyphenMinWord = hmw;
+        if ((tp.GetValueOrDefault("loext:hyphenation-no-caps") ?? pp.GetValueOrDefault("loext:hyphenation-no-caps")) == "true") para.HyphenNoCaps = true;
+        // Зона переноса LibreOffice: число без единиц — в твипах, «no-limit» — без зоны
+        string? hzs = tp.GetValueOrDefault("loext:hyphenation-zone") ?? pp.GetValueOrDefault("loext:hyphenation-zone");
+        if (hzs != null) para.HyphenZone = int.TryParse(hzs, out var hzt) ? hzt / 20.0 : Length(hzs) ?? 0;
         if (pp.GetValueOrDefault("text:number-lines") == "false") para.SuppressLineNumbers = true;
 
         // Метка списка / номер заголовка
@@ -1626,6 +1635,10 @@ public sealed partial class OdtReader
             Link = link,
             Emphasis = emph,
             RunBorder = runBorder,
+            Kerning = p.GetValueOrDefault("style:letter-kerning") == "true",
+            Hyphens = p.GetValueOrDefault("fo:hyphenate") == "true" ? 2 : 1,
+            Lang = p.TryGetValue("fo:language", out var lng) && lng is not ("zxx" or "none")
+                ? lng + (p.TryGetValue("fo:country", out var cty) && cty != "none" ? "-" + cty : "") : null,
         };
     }
 }

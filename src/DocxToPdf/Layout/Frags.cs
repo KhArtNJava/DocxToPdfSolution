@@ -47,6 +47,8 @@ public sealed class Piece
     public List<ushort> Gids = [];
     public List<string> Texts = [];
     public List<double> Adv = [];
+    /// <summary>Мягкие переносы: перед глифом с этим индексом допускается перенос с дефисом.</summary>
+    public List<int>? Soft;
     /// <summary>Добавка после каждого глифа (распределённое выравнивание jc="distribute").</summary>
     public double GlyphExtra;
     public double Width;
@@ -188,9 +190,14 @@ public sealed class LineFrag : Frag
                     || q.Field != null || q.Style.HScale != p.Style.HScale || q.Style.Outline != p.Style.Outline || q.Style.ShadowColor != p.Style.ShadowColor)
                     break;
                 gids.AddRange(q.Gids); texts.AddRange(q.Texts);
-                double ls = q.Kind == PieceKind.Text ? q.Style.LetterSpacing : q.Style.WordSpacing;
-                for (int g = 0; g < q.Gids.Count; g++) extra.Add(ls + q.GlyphExtra);
-                if (ls != 0 || q.GlyphExtra != 0) anyExtra = true;
+                // Добавка к естественной ширине глифа: разрядка, интервал между словами, кернинг (всё уже в Adv)
+                double natK = q.Size * q.Style.HScale;
+                for (int g = 0; g < q.Gids.Count; g++)
+                {
+                    double e = (g < q.Adv.Count ? q.Adv[g] - q.Face!.Font.Advance(q.Gids[g]) * natK : 0) + q.GlyphExtra;
+                    if (Math.Abs(e) < 1e-6) e = 0; else anyExtra = true;
+                    extra.Add(e);
+                }
                 // Зазор до следующего куска (выравнивание по ширине)
                 double gap = m + 1 < Pieces.Count ? Pieces[m + 1].X - (q.X + q.Width + q.GlyphExtra * q.Gids.Count) : 0;
                 if (Math.Abs(gap) > 0.001) { extra[^1] += gap; anyExtra = true; }

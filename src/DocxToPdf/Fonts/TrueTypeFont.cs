@@ -530,6 +530,16 @@ public sealed class TrueTypeFont
     /// <summary>Ширина глифа в долях em.</summary>
     public double Advance(ushort gid) => gid < _advances.Length ? _advances[gid] / (double)UnitsPerEm : 0;
 
+    KerningData? _kerning;
+
+    /// <summary>Парный кернинг (GPOS kern или таблица kern) в долях кегля: поправка к ширине левого глифа.</summary>
+    public double Kerning(ushort left, ushort right)
+    {
+        _kerning ??= new KerningData(_data, _tables);
+        if (!_kerning.Any) return 0;
+        return _kerning.Get(left, right) / (double)UnitsPerEm;
+    }
+
     // ---------------------------------------------------------------
     //  Подмножество
     // ---------------------------------------------------------------

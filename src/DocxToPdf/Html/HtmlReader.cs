@@ -298,6 +298,7 @@ public sealed partial class HtmlReader
         ApplyAll(s, parent, CollectDecls(n, null));
 
         if (n.Tag == "a" && n.Attr("href") is { } href && IsExternalLink(href)) s.Link = href;
+        if ((n.Attr("lang") ?? n.Attr("xml:lang")) is { Length: > 0 } lang) s.Lang = lang;
         Blockify(s, parent);
         FixTextBackground(s);
         SetupInlineBox(s);
@@ -889,6 +890,15 @@ public sealed partial class HtmlReader
                 s.Weight = int.TryParse(lv, out var nw) && nw is >= 1 and <= 1000 && nw != 400 && nw != 700 ? nw : 0;
                 break;
             case "font-style": s.Italic = lv is "italic" or "oblique"; break;
+            case "font-kerning": s.Kerning = lv != "none"; break;
+            case "hyphens" or "-webkit-hyphens" or "-ms-hyphens": s.Hyphens = lv switch { "auto" => 2, "none" => 0, _ => 1 }; break;
+            case "hyphenate-limit-chars":
+            {
+                var t = lv.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                int P(int i, int d) => i < t.Length && int.TryParse(t[i], out var x) ? x : d;
+                s.HyphenLimitChars = (P(0, 5), P(1, t.Length > 1 ? 2 : 2), P(2, t.Length > 2 ? 2 : P(1, 2)));
+                break;
+            }
             case "font": ApplyFontShorthand(s, parent, v); break;
             case "text-decoration" or "text-decoration-line":
                 if (lv.Contains("none")) { s.Underline = false; s.Strike = false; }
@@ -1206,6 +1216,9 @@ public sealed partial class HtmlReader
         Bold = s.Bold, Weight = s.Weight, Italic = s.Italic, Underline = s.Underline, Strike = s.Strike, Caps = s.Upper, SmallCaps = s.SmallCaps, LetterSpacing = s.LetterSpacing, WordSpacing = s.WordSpacing,
         Size = Math.Max(1, s.FontSize), Color = s.Color, Background = s.TextBackground, VertAlign = s.VertAlign, Link = s.Link,
         Box = s.InlineBox,
+        Kerning = s.Kerning,
+        Hyphens = s.Hyphens,
+        Lang = s.Lang,
     };
 
     Paragraph EnsureParagraph(Flow f, BlockCtx b)
@@ -1224,6 +1237,8 @@ public sealed partial class HtmlReader
             Clear = f.PendingClear,
             MarkStyle = ToTextStyle(o),
             WidowControl = true,
+            // Переносы как в Chromium: слово от 5 букв, не меньше 2 букв с каждой стороны (hyphenate-limit-chars)
+            HyphenMinWord = o.HyphenLimitChars.Word, HyphenMinLeft = o.HyphenLimitChars.Before, HyphenMinRight = o.HyphenLimitChars.After,
         };
         if (o.ExactLineHeight is double ex) { p.LineRule = "exact"; p.LineValue = ex; }
         else if (o.LineHeightFactor is double lf) { p.LineRule = "auto"; p.LineValue = 240 * lf / 1.15; }

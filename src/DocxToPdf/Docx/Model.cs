@@ -71,6 +71,10 @@ public sealed class RunProps
     public bool? Rtl, Cs;
     /// <summary>Знаки ударения w:em: dot, comma, circle, underDot.</summary>
     public string? Emphasis;
+    /// <summary>w:kern — кернинг для кеглей не меньше значения, pt (0 — выключен).</summary>
+    public double? Kern;
+    /// <summary>w:lang — язык текста.</summary>
+    public string? Lang;
 
     public RunProps Clone() => (RunProps)MemberwiseClone();
 
@@ -107,6 +111,7 @@ public sealed class RunProps
         SizeCs = o.SizeCs ?? SizeCs; BoldCs = o.BoldCs ?? BoldCs; ItalicCs = o.ItalicCs ?? ItalicCs;
         FontCs = o.FontCs ?? FontCs; Rtl = o.Rtl ?? Rtl; Cs = o.Cs ?? Cs;
         Emphasis = o.Emphasis ?? Emphasis;
+        Kern = o.Kern ?? Kern; Lang = o.Lang ?? Lang;
         if (o.StyleId != null) StyleId = o.StyleId;
     }
 }
@@ -136,7 +141,7 @@ public sealed class ParaProps
     public double? Line;          // pt (exact/atLeast) либо 240-е доли (auto)
     public string? LineRule;
     public int? NumId, Ilvl;
-    public bool? PageBreakBefore, KeepNext, KeepLines, ContextualSpacing, WidowControl, SnapToGrid, Bidi, SuppressLineNumbers;
+    public bool? PageBreakBefore, KeepNext, KeepLines, ContextualSpacing, WidowControl, SnapToGrid, Bidi, SuppressLineNumbers, SuppressHyphens;
     public int? DropLines;
     public double? DropGap;
     public List<TabStop>? Tabs;   // включая val="clear"
@@ -175,6 +180,7 @@ public sealed class ParaProps
         WidowControl = o.WidowControl ?? WidowControl;
         SnapToGrid = o.SnapToGrid ?? SnapToGrid;
         SuppressLineNumbers = o.SuppressLineNumbers ?? SuppressLineNumbers;
+        SuppressHyphens = o.SuppressHyphens ?? SuppressHyphens;
         Bidi = o.Bidi ?? Bidi;
         if (o.Tabs != null)
         {
@@ -278,6 +284,12 @@ public sealed record TextStyle
     public Rgb Color { get; init; } = Rgb.Black;
     public Rgb? Background { get; init; }
     public int VertAlign { get; init; }   // 0 — нет, 1 — superscript, -1 — subscript
+    /// <summary>Парный кернинг шрифта.</summary>
+    public bool Kerning { get; init; }
+    /// <summary>Переносы: 0 — нет (CSS hyphens: none), 1 — только мягкие (U+00AD), 2 — автоматические по словарю.</summary>
+    public int Hyphens { get; init; } = 1;
+    /// <summary>Язык текста (BCP 47: ru-RU, en-US …) — для словаря переносов.</summary>
+    public string? Lang { get; init; }
     public double Position { get; init; }
     public string? Link { get; init; }
     /// <summary>Строчный блок с рамкой/фоном/отступами (CSS border у span и т.п.); сравнивается по ссылке.</summary>
@@ -510,6 +522,16 @@ public sealed class Paragraph : Block
     public bool SnapToGrid = true;
     /// <summary>w:suppressLineNumbers — строки абзаца не нумеруются.</summary>
     public bool SuppressLineNumbers;
+    /// <summary>Запрет автоматических переносов в абзаце (w:suppressAutoHyphens, \\hyphpar0).</summary>
+    public bool NoHyphenation;
+    /// <summary>Зона переноса, pt: слово переносится, только если без переноса в конце строки осталось бы не меньше места.</summary>
+    public double HyphenZone;
+    /// <summary>Наибольшее число строк подряд, заканчивающихся переносом (0 — без ограничения).</summary>
+    public int HyphenLimit;
+    /// <summary>Наименьшее число букв до/после переноса (0 — по словарю) и наименьшая длина слова.</summary>
+    public int HyphenMinLeft, HyphenMinRight, HyphenMinWord;
+    /// <summary>Не переносить слова из прописных букв.</summary>
+    public bool HyphenNoCaps;
     /// <summary>Буквица (w:framePr dropCap): высота в строках, отступ до текста.</summary>
     public int DropLines;
     public double DropGap;

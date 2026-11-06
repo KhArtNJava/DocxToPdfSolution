@@ -572,8 +572,19 @@ public sealed partial class DocxReader
         var rv = x.Root.Element(W + "revisionView");
         _settingsMarkup = !(rv != null && ((string?)rv.Attribute(W + "markup") is "0" or "false" || (string?)rv.Attribute(W + "insDel") is "0" or "false"));
         _footPrDefault = x.Root.Element(W + "footnotePr");
+        // Автоматические переносы: зона (по умолчанию 0,25"), предел строк подряд, прописные
+        _autoHyphen = x.Root.Element(W + "autoHyphenation") is { } ah && IsOnVal(ah);
+        _hyphenZone = Twips(Val(x.Root.Element(W + "hyphenationZone"))) ?? 18;
+        _hyphenLimit = ParseInt(Val(x.Root.Element(W + "consecutiveHyphenLimit"))) ?? 0;
+        _hyphenNoCaps = x.Root.Element(W + "doNotHyphenateCaps") is { } nc && IsOnVal(nc);
+        _themeLang = (string?)x.Root.Element(W + "themeFontLang")?.Attribute(W + "val");
         _endPrDefault = x.Root.Element(W + "endnotePr");
     }
+
+    bool _autoHyphen, _hyphenNoCaps;
+    double _hyphenZone = 18;
+    int _hyphenLimit;
+    string? _themeLang;
 
     // Нумерация сносок: формат, начальный номер, перезапуск (w:footnotePr / w:endnotePr)
     XElement? _footPrDefault, _endPrDefault;
@@ -739,6 +750,8 @@ public sealed partial class DocxReader
         r.Shadow = OnOff(rPr.Element(W + "shadow"));
         if (rPr.Element(W + "bdr") is { } bdrEl) r.Border = ParseBorder(bdrEl);
         r.Spacing = Twips(Val(rPr.Element(W + "spacing")));
+        r.Kern = HalfPoints(Val(rPr.Element(W + "kern")));
+        r.Lang = (string?)rPr.Element(W + "lang")?.Attribute(W + "val");
         return r;
     }
 
@@ -814,6 +827,7 @@ public sealed partial class DocxReader
         p.MarkRunProps = ParseRPr(pPr.Element(W + "rPr"));
         p.SnapToGrid = OnOff(pPr.Element(W + "snapToGrid"));
         p.SuppressLineNumbers = OnOff(pPr.Element(W + "suppressLineNumbers"));
+        p.SuppressHyphens = OnOff(pPr.Element(W + "suppressAutoHyphens"));
         p.Bidi = OnOff(pPr.Element(W + "bidi"));
         if (pPr.Element(W + "framePr") is { } fp && (string?)fp.Attribute(W + "dropCap") is "drop" or "margin")
         {
@@ -919,6 +933,9 @@ public sealed partial class DocxReader
             Position = r.Position ?? 0,
             Link = link,
             Emphasis = r.Emphasis,
+            Kerning = r.Kern is > 0 && (r.Size ?? 10) >= r.Kern.Value,
+            Hyphens = _autoHyphen ? 2 : 1,
+            Lang = r.Lang ?? _themeLang,
         };
     }
 
@@ -1142,6 +1159,10 @@ public sealed partial class DocxReader
         if (lvl != null && para.Inlines.Count > 0 && lvl.Jc is "right" or "end" or "center") para.LabelAlign = lvl.Jc == "center" ? "center" : "right";
         para.SnapToGrid = pp.SnapToGrid ?? true;
         para.SuppressLineNumbers = pp.SuppressLineNumbers ?? false;
+        para.NoHyphenation = pp.SuppressHyphens ?? false;
+        para.HyphenZone = _hyphenZone;
+        para.HyphenLimit = _hyphenLimit;
+        para.HyphenNoCaps = _hyphenNoCaps;
         para.DropLines = direct?.DropLines ?? 0;
         para.DropGap = direct?.DropGap ?? 0;
         para.Rtl = pp.Bidi ?? false;
@@ -1559,6 +1580,7 @@ public sealed partial class DocxReader
             }
             else if (n == W + "cr") output.Add(new BreakInline(BreakKind.Line, style));
             else if (n == W + "noBreakHyphen") output.Add(new TextInline("-", style));
+            else if (n == W + "softHyphen") output.Add(new TextInline("\u00AD", style));
             else if (n == W + "sym")
             {
                 string? font = (string?)el.Attribute(W + "font");
