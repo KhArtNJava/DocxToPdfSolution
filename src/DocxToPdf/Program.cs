@@ -9,12 +9,13 @@ namespace DocxToPdf;
 
 public static class Converter
 {
-    /// <summary>Конвертирует DOCX-, ODT-, HTML- или MHTML-файл в PDF (формат определяется по содержимому).</summary>
+    /// <summary>Конвертирует DOCX-, ODT-, RTF-, HTML- или MHTML-файл в PDF (формат определяется по содержимому).</summary>
     public static int Convert(string input, string output, FontManager fonts, HtmlOptions? htmlOptions = null, DocxOptions? docxOptions = null)
     {
         if (IsZip(input) && Odt.OdtReader.OtherOdfKind(input) is { } kind)
             throw new NotSupportedException($"документ OpenDocument типа «{kind}» не поддерживается (поддерживаются текстовые документы .odt/.ott/.fodt)");
-        var doc = Odt.OdtReader.IsOdt(input) ? Odt.OdtReader.Read(input, docxOptions)
+        var doc = Rtf.RtfReader.IsRtf(input) ? Rtf.RtfReader.Read(input, docxOptions)
+            : Odt.OdtReader.IsOdt(input) ? Odt.OdtReader.Read(input, docxOptions)
             : IsZip(input) ? DocxReader.Read(input, docxOptions) : HtmlReader.Read(input, fonts, htmlOptions);
         var ctx = new LayoutContext(doc, fonts);
         // Объекты с обтеканием, привязанные к странице/полям, уточняются повторной вёрсткой (до 4 проходов)
@@ -111,17 +112,17 @@ public static class Program
     static void PrintUsage()
     {
         Console.WriteLine("""
-            docx2pdf — конвертер DOCX, ODT, HTML и MHTML в PDF без сторонних библиотек
+            docx2pdf — конвертер DOCX, ODT, RTF, HTML и MHTML в PDF без сторонних библиотек
 
             Использование:
-              docx2pdf <файл.docx|файл.odt|файл.html|файл.mht> [ещё ...] [-o <выход.pdf | каталог>] [опции]
+              docx2pdf <файл.docx|файл.odt|файл.rtf|файл.html|файл.mht> [ещё ...] [-o <выход.pdf | каталог>] [опции]
 
             Опции:
               -o, --output     Выходной PDF (или каталог для нескольких файлов).
                                По умолчанию — рядом с исходным файлом.
               --fonts <dir>    Дополнительный каталог со шрифтами TTF/OTF/TTC (можно несколько раз).
 
-            Только для DOCX и ODT:
+            Только для DOCX, ODT и RTF:
               --revisions <auto|final|markup>   Исправления: как в настройках документа (по умолчанию — с разметкой),
                                итоговый вид или с разметкой (вставки, удаления, черта на поле).
               --comments <auto|balloons|end|none>   Примечания: выноски на правом поле (если поле ≥ 2,5 см),

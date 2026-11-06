@@ -364,6 +364,8 @@ public sealed class Paginator(LayoutContext ctx)
                 "top" or "inside" => cy,
                 _ => cy + (a.Top ?? 0)
             };
+            // Объект от абзаца не уходит за нижний край страницы (как в Word и LibreOffice)
+            if (a.VRel is not ("page" or "margin") && y + h > sp.PageHeight) y = Math.Max(0, sp.PageHeight - h);
             return (x, y);
         }
         double ox, oy, cbW, cbH;
