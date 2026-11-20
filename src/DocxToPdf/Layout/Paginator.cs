@@ -317,17 +317,33 @@ public sealed class Paginator(LayoutContext ctx)
         else _lastTable = null;
     }
 
-    double ChainHeight(List<Frag> frags, int i, double firstSpace)
+    /// <summary>
+    /// Высота цепочки keepNext от фрагмента i (с firstSpace). Подсчёт прекращается, как только высота
+    /// превысила страницу: такая цепочка неосуществима. Тогда у абзаца держится вместе только его
+    /// собственный остаток (keepLines), без привязки к следующим абзацам — как в Word.
+    /// </summary>
+    double ChainHeight(List<Frag> frags, int i, double firstSpace, double areaH)
     {
         double h = firstSpace + frags[i].Height;
-        int count = 0;
-        while (frags[i].KeepWithNext && i + 1 < frags.Count && count++ < 40)
+        int j = i;
+        while (frags[j].KeepWithNext && j + 1 < frags.Count)
         {
-            h += frags[i].SpaceAfter + frags[i + 1].SpaceBefore + frags[i + 1].Height;
-            i++;
-            if (frags[i].PageBreakBefore) break;
+            h += frags[j].SpaceAfter + frags[j + 1].SpaceBefore + frags[j + 1].Height;
+            j++;
+            if (frags[j].PageBreakBefore) break;
+            if (h > areaH) break;   // цепочка не помещается даже на пустую страницу
         }
-        return h;
+        if (h <= areaH || frags[i] is not LineFrag start) return h;
+        // Запасной вариант: остаток своего абзаца (до строки другого абзаца)
+        double ph = firstSpace + frags[i].Height;
+        int k = i;
+        while (frags[k].KeepWithNext && k + 1 < frags.Count && frags[k + 1] is LineFrag next && ReferenceEquals(next.Para, start.Para))
+        {
+            ph += frags[k].SpaceAfter + frags[k + 1].SpaceBefore + frags[k + 1].Height;
+            k++;
+            if (ph > areaH) break;
+        }
+        return ph;
     }
 
     /// <summary>Положение абсолютного блока на странице.</summary>
@@ -451,7 +467,7 @@ public sealed class Paginator(LayoutContext ctx)
             // Не отрывать от следующего (keepNext, висячие строки)
             if (f.KeepWithNext && !PageEmpty)
             {
-                double ch = ChainHeight(frags, i, sb);
+                double ch = ChainHeight(frags, i, sb, areaH);
                 if (_y + ch > Bottom + 0.01 && ch <= areaH)
                 {
                     NextColumn(sp, natural: true);
