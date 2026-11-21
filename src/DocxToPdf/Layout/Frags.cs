@@ -34,7 +34,7 @@ public abstract class Frag
     public virtual (Frag First, Frag Remainder)? Split(double avail) => null;
 }
 
-public enum PieceKind { Text, Space, Tab, LineBreak, PageBreak, Image, Spacer }
+public enum PieceKind { Text, Space, Tab, LineBreak, PageBreak, Image, Spacer, Emoji }
 
 /// <summary>Элемент строки: однородный по шрифту кусок текста, пробел, табуляция, картинка или разрыв.</summary>
 public sealed class Piece
@@ -55,6 +55,8 @@ public sealed class Piece
     public double Ascent, Descent;
     public bool BreakBefore;
     public ImageInline? Image;
+    /// <summary>Цветной эмодзи (растр CBDT): шрифт, глиф и текст кластера для копирования.</summary>
+    public EmojiGlyph? Emoji;
     public TabStop? Tab;
     /// <summary>Позиционная табуляция (w:ptab), из которой строится позиция табуляции.</summary>
     public TabInline? PTab;
@@ -147,7 +149,8 @@ public sealed class LineFrag : Frag
             }
         }
 
-        // 2. Текст, сгруппированный по шрифту/цвету
+        // 2. Текст, сгруппированный по шрифту/цвету; эмодзи выводится после текста строки
+        // (в TJ на его месте — числовой сдвиг, поэтому текстовый слой непрерывен, как в LibreOffice)
         int k = 0;
         while (k < Pieces.Count)
         {
@@ -186,6 +189,14 @@ public sealed class LineFrag : Frag
             while (m < Pieces.Count)
             {
                 var q = Pieces[m];
+                // Эмодзи внутри текстового прогона: место в тексте занимает числовой сдвиг TJ,
+                // сам растр выводится после текста строки (как в LibreOffice)
+                if (q.Kind == PieceKind.Emoji)
+                {
+                    if (gids.Count > 0) { extra[^1] += q.Width; anyExtra = true; }
+                    m++;
+                    continue;
+                }
                 if (q.Kind is not (PieceKind.Text or PieceKind.Space) || q.Face != p.Face || q.Size != p.Size || q.Rise != p.Rise || q.Style.Color != p.Style.Color || q.Gids.Count == 0
                     || q.Field != null || q.Style.HScale != p.Style.HScale || q.Style.Outline != p.Style.Outline || q.Style.ShadowColor != p.Style.ShadowColor)
                     break;
@@ -215,11 +226,17 @@ public sealed class LineFrag : Frag
             k = m;
         }
 
-        // 3. Картинки, заполнители табуляции, подчёркивания, ссылки
+        // 3. Картинки, эмодзи, заполнители табуляции, подчёркивания, ссылки
         for (int i = 0; i < Pieces.Count; i++)
         {
             var p = Pieces[i];
             double px = lx + p.X;
+            if (p.Kind == PieceKind.Emoji && p.Emoji is { } em)
+            {
+                // Цветной растр выводится после текста строки: место в тексте занято сдвигом TJ
+                c.EmojiGlyph(em, p.Size, px, baseY - p.Rise, p.Style.Color);
+                continue;
+            }
             if (p.Kind == PieceKind.Image && p.Image is { } obj && (obj.Shape != null || obj.Content != null || obj.Children != null || obj.Chart != null || obj.Math != null))
             {
                 // Фигура, надпись или группа: рамка неповёрнутая, поворот вокруг центра

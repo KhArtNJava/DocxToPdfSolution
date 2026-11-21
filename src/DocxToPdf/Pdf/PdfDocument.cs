@@ -21,6 +21,25 @@ sealed class PdfImage(PdfImageData data, string name)
     public readonly string Name = name;
 }
 
+/// <summary>Цветной эмодзи-шрифт Type 3: каждому используемому глифу — код, PNG-глиф и текст кластера.</summary>
+sealed class PdfEmojiFont(ColorEmojiFont font, string name)
+{
+    public readonly ColorEmojiFont Font = font;
+    public readonly string Name = name;
+    public readonly Dictionary<ushort, byte> Codes = new();
+    public readonly List<(byte Code, ushort Gid, string Text)> Used = new();
+    public bool Full => Used.Count >= 255;
+
+    public byte Use(ushort gid, string text)
+    {
+        if (Codes.TryGetValue(gid, out var c)) return c;
+        byte code = (byte)(Used.Count + 1);
+        Used.Add((code, gid, text));
+        Codes[gid] = code;
+        return code;
+    }
+}
+
 sealed class PdfLink(double x1, double y1, double x2, double y2, string uri)
 {
     public double X1 = x1, Y1 = y1, X2 = x2, Y2 = y2;
@@ -77,6 +96,34 @@ public sealed class PdfDocument
         var img = new PdfImage(data, "Im" + (_images.Count + 1));
         _images[key] = img;
         return img;
+    }
+
+    readonly Dictionary<(ColorEmojiFont Font, int Gen), PdfEmojiFont> _emojiFonts = new();
+    readonly Dictionary<ColorEmojiFont, int> _emojiGen = new();
+
+    /// <summary>Шрифт Type 3 для цветного эмодзи (создаётся не более 255 глифов на шрифт).</summary>
+    internal PdfEmojiFont GetEmojiFont(ColorEmojiFont f)
+    {
+        int gen = _emojiGen.TryGetValue(f, out var g0) ? g0 : 0;
+        if (!_emojiFonts.TryGetValue((f, gen), out var ef))
+        {
+            ef = new PdfEmojiFont(f, "Emoji" + (_emojiFonts.Count + 1));
+            _emojiFonts[(f, gen)] = ef;
+        }
+        return ef;
+    }
+
+    /// <summary>Следующий шрифт Type 3, когда текущий заполнен (255 глифов).</summary>
+    internal PdfEmojiFont NextEmojiFont(ColorEmojiFont f)
+    {
+        int gen = (_emojiGen.TryGetValue(f, out var g0) ? g0 : 0) + 1;
+        _emojiGen[f] = gen;
+        if (!_emojiFonts.TryGetValue((f, gen), out var ef))
+        {
+            ef = new PdfEmojiFont(f, "Emoji" + (_emojiFonts.Count + 1));
+            _emojiFonts[(f, gen)] = ef;
+        }
+        return ef;
     }
 
     /// <summary>Оттенки серого (a:grayscl): RGB → яркость. JPEG (DCT) не перекодируется и остаётся цветным.</summary>
@@ -164,6 +211,7 @@ public sealed class PdfDocument
 
         var fontIds = _fonts.Values.ToDictionary(f => f, _ => w.Reserve());
         var imageIds = _images.Values.Where(i => i != null).ToDictionary(i => i!, _ => w.Reserve());
+        var emojiIds = _emojiFonts.Values.ToDictionary(f => f, _ => w.Reserve());
 
         // Номера объектов страниц резервируются заранее — на них ссылаются внутренние ссылки
         var pageIds = _pages.Select(_ => w.Reserve()).ToList();
@@ -178,6 +226,7 @@ public sealed class PdfDocument
             {
                 res.Append(" /Font <<");
                 foreach (var f in c.Fonts) res.Append($" /{f.Name} {fontIds[f]} 0 R");
+                foreach (var ef in c.EmojiFonts) res.Append($" /{ef.Name} {emojiIds[ef]} 0 R");
                 res.Append(" >>");
             }
             var formIds = c.Forms.Select(_ => w.Reserve()).ToList();
@@ -239,6 +288,7 @@ public sealed class PdfDocument
 
         foreach (var (img, id) in imageIds) WriteImage(w, img, id);
         foreach (var (font, id) in fontIds) WriteFont(w, font, id);
+        foreach (var (ef, id) in emojiIds) WriteEmojiFont(w, ef, id);
 
         w.Obj(pagesId, $"<< /Type /Pages /Kids [{string.Join(" ", pageIds.Select(p => p + " 0 R"))}] /Count {pageIds.Count} >>");
         w.Obj(catalog, $"<< /Type /Catalog /Pages {pagesId} 0 R >>");
@@ -342,6 +392,71 @@ public sealed class PdfDocument
         for (int i = 0; i < 6; i++) { sb.Append((char)('A' + h % 26)); h /= 26; }
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Цветной эмодзи-шрифт Type 3 (как в LibreOffice): каждый глиф — CharProc,
+    /// выводящий PNG-растр CBDT; текстовый слой — ToUnicode на всю ZWJ-последовательность.
+    /// </summary>
+    static void WriteEmojiFont(Writer w, PdfEmojiFont ef, int fontId)
+    {
+        var f = ef.Font;
+        double asc = f.AscentEm * 1000, desc = f.DescentEm * 1000;
+        int n = ef.Used.Count;
+        var procIds = new int[n];
+        var imgIds = new int[n];
+        for (int i = 0; i < n; i++) { procIds[i] = w.Reserve(); imgIds[i] = w.Reserve(); }
+        int toUniId = w.Reserve();
+
+        w.Obj(fontId, "<< /Type /Font /Subtype /Type3 /Name /" + ef.Name
+            + $" /FontBBox [0 {F(-desc)} {F(1300)} {F(asc)}]"
+            + " /FontMatrix [0.001 0 0 0.001 0 0]"
+            + $" /FirstChar 1 /LastChar {n}"
+            + $" /Widths [{string.Join(" ", ef.Used.Select(u => F(f.AdvanceEm(u.Gid) * 1000)))}]"
+            + " /CharProcs << " + string.Join(" ", ef.Used.Select((u, i) => $"/gp{u.Code} {procIds[i]} 0 R")) + " >>"
+            + " /Encoding << /Type /Encoding /Differences [1 " + string.Join(" ", ef.Used.Select(u => $"/gp{u.Code}")) + "] >>"
+            + " /Resources << /ProcSet [/PDF /ImageC] /XObject << " + string.Join(" ", ef.Used.Select((u, i) => $"/Im{u.Code} {imgIds[i]} 0 R")) + " >> >>"
+            + $" /ToUnicode {toUniId} 0 R >>");
+
+        double px = 1000.0 / f.PpemY;    // пиксель растра в per-mille
+        for (int i = 0; i < n; i++)
+        {
+            var (code, gid, _) = ef.Used[i];
+            var png = f.PngOf(gid);
+            if (png == null || f.BitmapMetrics(gid) is not { } m)
+            {
+                w.Stream(procIds[i], "", Encoding.ASCII.GetBytes($"{F(f.AdvanceEm(gid) * 1000)} 0 d0\n"));
+                continue;
+            }
+            // Растр: ширина/высота в per-mille; By — bearing от базовой линии до ВЕРХА растра,
+            // поэтому низ = By − H (как в LibreOffice: растр чуть перекрывает базовую линию снизу).
+            string proc = $"{F(f.AdvanceEm(gid) * 1000)} 0 d0\nq {F(m.W * px)} 0 0 {F(m.H * px)} 0 {F((m.By - m.H) * px)} cm /Im{code} Do Q";
+            w.Stream(procIds[i], "", Encoding.ASCII.GetBytes(proc));
+            var data = ImageDecoder.Decode(png!);
+            if (data == null) { w.Stream(imgIds[i], "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8", new byte[3]); continue; }
+            WriteImage(w, new PdfImage(data, "Im" + code), imgIds[i]);
+        }
+
+        // ToUnicode: код глифа → текст кластера (ZWJ-последовательность целиком)
+        var cm = new StringBuilder();
+        cm.Append("/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n");
+        cm.Append("/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n");
+        cm.Append("1 begincodespacerange\n<00> <FF>\nendcodespacerange\n");
+        var entries = ef.Used.Where(e => e.Text.Length > 0).ToList();
+        for (int i = 0; i < entries.Count; i += 100)
+        {
+            var chunk = entries.Skip(i).Take(100).ToList();
+            cm.Append(chunk.Count).Append(" beginbfchar\n");
+            foreach (var (code, _, text) in chunk)
+            {
+                cm.Append('<').Append(code.ToString("X2")).Append("> <");
+                foreach (var b in Encoding.BigEndianUnicode.GetBytes(text)) cm.Append(b.ToString("X2"));
+                cm.Append(">\n");
+            }
+            cm.Append("endbfchar\n");
+        }
+        cm.Append("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+        w.Stream(toUniId, "", Encoding.ASCII.GetBytes(cm.ToString()));
+    }
 }
 
 /// <summary>
@@ -355,6 +470,8 @@ public sealed class PdfCanvas
     StringBuilder _sb = new();
     /// <summary>Формы (Form XObject) страницы: содержимое, нарисованное один раз и используемое многократно.</summary>
     internal readonly List<(string Name, string Content, bool Unbounded)> Forms = [];
+    /// <summary>Цветные эмодзи-шрифты Type 3, используемые на странице.</summary>
+    internal readonly List<PdfEmojiFont> EmojiFonts = [];
     /// <summary>Мягкие маски (SMask) страницы: имя ExtGState → форма-маска, яркость или альфа.</summary>
     internal readonly List<(string Name, string Form, bool Alpha)> SoftMasks = [];
     /// <summary>Растровые картинки, построенные при вёрстке (фильтры SVG).</summary>
@@ -412,6 +529,28 @@ public sealed class PdfCanvas
         var img = _doc.AddImage("raster#" + GetHashCode() + "#" + (++_rasterCounter), data);
         if (!Images.Contains(img)) Images.Add(img);
         _sb.Append($"q {F(w)} 0 0 {F(h)} {F(x)} {F(Y(y + h))} cm /{img.Name} Do Q\n");
+    }
+
+    /// <summary>
+    /// Цветной эмодзи-глиф: растр CBDT через шрифт Type 3 (как LibreOffice). Текстовый слой —
+    /// код глифа с ToUnicode на весь ZWJ-кластер, поэтому копирование даёт исходную последовательность.
+    /// </summary>
+    public void EmojiGlyph(EmojiGlyph em, double size, double x, double baseline, Rgb color)
+    {
+        if (Collecting > 0) return;
+        var ef = _doc.GetEmojiFont(em.Font);
+        if (ef.Full) ef = _doc.NextEmojiFont(em.Font);
+        byte code = ef.Use(em.Gid, em.Text);
+        if (!EmojiFonts.Contains(ef)) EmojiFonts.Add(ef);
+        // Невидимый текстовый слой не дублируется при выводе растра
+        if (InvisibleTextOnly > 0) { }
+        if (SkipGraphics)
+        {
+            // Только текстовый слой: код без растра (Tr 3)
+            _sb.Append($"BT 3 Tr /{ef.Name} {F(size)} Tf 1 0 0 1 {F(x)} {F(Y(baseline))} Tm <{code:X2}> Tj 0 Tr ET\n");
+            return;
+        }
+        _sb.Append($"BT /{ef.Name} {F(size)} Tf 1 0 0 1 {F(x)} {F(Y(baseline))} Tm <{code:X2}> Tj ET\n");
     }
 
     // ---- Ресурсы страницы по имени (для растеризации записанных операторов) ----

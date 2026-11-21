@@ -12,6 +12,9 @@ public sealed class FontManager
     readonly Dictionary<string, List<FontFaceInfo>> _index = new(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<(string, int, string), TrueTypeFont?> _loaded = new();
     readonly Dictionary<(string, bool, bool, int), FontFace> _faceCache = new();
+    readonly Dictionary<(int, string, bool, bool, int), FontFace?> _glyphFallbackCache = new();
+    ColorEmojiFont? _emoji;
+    bool _emojiScanned;
 
     static readonly Dictionary<string, string[]> Substitutes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -157,6 +160,55 @@ public sealed class FontManager
     public bool HasFamily(string family) =>
         _index.ContainsKey(family) || (Substitutes.TryGetValue(family, out var subs) && subs.Any(_index.ContainsKey));
 
+    // ================================================================
+    //  Цветные эмодзи (CBDT/CBLC)
+    // ================================================================
+
+    /// <summary>Семейства, под которыми зарегистрирован цветной эмодзи-шрифт.</summary>
+    static readonly string[] EmojiFamilies = ["Noto Color Emoji", "Segoe UI Emoji", "Apple Color Emoji", "Twemoji", "OpenMoji Color", "EmojiOne Color"];
+
+    /// <summary>
+    /// Цветной эмодзи-шрифт системы (Noto Color Emoji / Segoe UI Emoji): PNG-растры CBDT,
+    /// кластеризация ZWJ-последовательностей. null — не найден.
+    /// </summary>
+    public ColorEmojiFont? EmojiFont
+    {
+        get
+        {
+            if (_emojiScanned) return _emoji;
+            _emojiScanned = true;
+            // Прямые пути типовых файлов
+            string[] tryPaths =
+            [
+                "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "seguiemj.ttf"),
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Fonts), "SegoeUIEmoji.ttf"),
+            ];
+            foreach (var p in tryPaths)
+                if (File.Exists(p) && ColorEmojiFont.TryLoad(p) is { } f0) { _emoji = f0; return _emoji; }
+            // Поиск по индексу семейств
+            foreach (var fam in EmojiFamilies)
+            {
+                if (!_index.TryGetValue(fam, out var faces) || faces.Count == 0) continue;
+                foreach (var info in faces)
+                {
+                    if (!ColorEmojiFont.HasCbdtTable(info.Path)) continue;
+                    if (ColorEmojiFont.TryLoad(info.Path) is { } f) { _emoji = f; return _emoji; }
+                }
+            }
+            return null;
+        }
+    }
+
+    /// <summary>Содержит ли эмодзи-шрифт глиф с кодом (для выбора между монохромным запасным и цветным растром).</summary>
+    public bool HasEmojiGlyph(int cp)
+    {
+        if (cp is >= 0x1F000 and <= 0x1FAFF or >= 0x2600 and <= 0x27BF or 0x231A or 0x231B or 0x2B50 or 0x2B55 or 0x3030 or 0x303D or 0x3297 or 0x3299
+            or >= 0x1F1E6 and <= 0x1F1FF or 0x200D or 0x20E3 or >= 0xFE0F and <= 0xFE0F)
+            return EmojiFont?.HasCode(cp) ?? false;
+        return false;
+    }
+
     /// <summary>Возвращает начертание для гарнитуры (с подбором замены).</summary>
     public FontFace Get(string family, bool bold, bool italic, int weight = 0)
     {
@@ -177,8 +229,6 @@ public sealed class FontManager
         _faceCache[key] = face ?? throw new InvalidOperationException("Не удалось загрузить ни один шрифт");
         return face;
     }
-
-    readonly Dictionary<(int, string, bool, bool, int), FontFace?> _glyphFallbackCache = new();
 
     /// <summary>
     /// Ищет шрифт, содержащий символ: сначала замены исходной гарнитуры,

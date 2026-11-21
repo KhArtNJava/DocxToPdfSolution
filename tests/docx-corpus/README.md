@@ -28,6 +28,7 @@
 | t23.docx | EMF и WMF (векторные, экспорт LibreOffice), TIFF: без сжатия, LZW, Deflate, PackBits, JPEG, G4, G3, 1 бит, палитра, серый, CMYK, RGBA (gen16.py; исходные файлы — в tests/images) |
 | t24.docx | EMF/WMF с растром, повёрнутым и жирным текстом (adv.svg → LibreOffice) |
 | t25_keepchain.docx | цепочка keepNext+keepLines длиннее страницы (ген17.py): цепочка выше страницы разрезается как обычный поток, а не дробится по строкам на пустые страницы (регрессия: было 72 страницы вместо 3) |
+| t26_emoji.docx | цветные эмодзи (ген18.py): ZWJ-последовательности (семья), флаги (региональные индикаторы), VS16, кейкапы, тона кожи, одиночные эмодзи в тексте; вывод растром CBDT через шрифт Type 3, текстовый слой — вся последовательность (эталон LibreOffice) |
 | t22_chart_*.docx | та же диаграмма как круговая, график, горизонтальные полосы с накоплением, области |
 
 Сгенерировать заново: `python3 gen.py && python3 gen2.py && python3 gen3.py && python3 gen4.py && python3 gen5.py && python3 gen6.py && python3 gen7.py && python3 gen8.py && python3 gen9.py && python3 gen10.py && python3 gen11.py && python3 gen12.py` (нужен python-docx).

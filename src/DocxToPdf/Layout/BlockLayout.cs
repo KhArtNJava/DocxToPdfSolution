@@ -512,6 +512,15 @@ public sealed class BlockLayout(LayoutContext ctx)
 
     static bool IsSpace(int cp) => cp is ' ' or 0x2002 or 0x2003 or 0x2009 or 0x3000;
 
+    /// <summary>Код в позиции pos (UTF-32) или -1.</summary>
+    static int Peek16(string text, int pos)
+    {
+        if (pos < 0 || pos >= text.Length) return -1;
+        return char.IsHighSurrogate(text[pos]) && pos + 1 < text.Length && char.IsLowSurrogate(text[pos + 1])
+            ? char.ConvertToUtf32(text[pos], text[pos + 1])
+            : text[pos];
+    }
+
     FontFace PrimaryFace(int cp, TextStyle st) =>
         _ctx.Fonts.Get(cp < 0x80 ? st.FontAscii : IsCjk(cp) ? st.FontEastAsia : st.FontHAnsi, st.Bold, st.Italic, st.Weight);
 
@@ -602,11 +611,12 @@ public sealed class BlockLayout(LayoutContext ctx)
             Piece? kernPrev = null;     // кусок с предыдущим глифом прогона (для кернинга пары)
             int pos = 0;
             var shaped = Bidi.ShapeArabic(text);
-            foreach (var rune in text.EnumerateRunes())
+            while (pos < text.Length)
             {
-                int cp = rune.Value;
+                int runeLen = char.IsHighSurrogate(text[pos]) && pos + 1 < text.Length && char.IsLowSurrogate(text[pos + 1]) ? 2 : 1;
+                int cp = runeLen == 2 ? char.ConvertToUtf32(text[pos], text[pos + 1]) : text[pos];
                 int at = pos;
-                pos += rune.Utf16SequenceLength;
+                pos += runeLen;
                 if (cp == 0xAD)
                 {
                     // Мягкий перенос не отображается; это допустимое место переноса (с дефисом)
@@ -625,11 +635,39 @@ public sealed class BlockLayout(LayoutContext ctx)
                 if (cp is '\n' or '\r') { pieces.Add(new Piece { Kind = PieceKind.LineBreak, Style = st, Src = src, Pos = [at] }); cur = null; continue; }
                 if (cp == 0x200B) { cur = null; breakNext = true; continue; } // нулевой пробел — точка переноса
 
+                // Цветной эмодзи (CBDT): ZWJ-последовательности, флаги, кейкапы — единым кластером.
+                // Текстовые по умолчанию символы (✈, ☀ и т. п.) идут в кластер только с FE0F.
+                if (_ctx.Fonts.EmojiFont is { } emf && ColorEmojiFont.IsEmojiStart(cp) && (ColorEmojiFont.IsEmojiPresentation(cp) || Peek16(text, pos) == 0xFE0F))
+                {
+                    var cluster = emf.ClusterAt(text, at);
+                    if (cluster != null && cluster.Value.Glyphs.All(g => g.Gid != 0))
+                    {
+                        var (glyphs, clen) = cluster.Value;
+                        int eat = at;
+                        foreach (var g in glyphs)
+                        {
+                            double eadv = emf.AdvanceEm(g.Gid) * size * st.HScale;
+                            var ep = new Piece
+                            {
+                                Kind = PieceKind.Emoji, Style = st, Size = size, Rise = rise, Src = src,
+                                Emoji = g, Width = eadv, Ascent = emf.AscentEm * size, Descent = emf.DescentEm * size
+                            };
+                            ep.Pos.Add(eat);
+                            pieces.Add(ep);
+                            cur = null; kernPrev = null; breakNext = true;
+                            eat += g.Text.Length;
+                        }
+                        // Позиции символов кластера учтены в Pos каждого глифа; курсор — за кластером
+                        pos = at + clen;
+                        continue;
+                    }
+                }
+
                 bool space = IsSpace(cp);
                 double gsize = size;
-                if (st.SmallCaps && !st.Caps && Rune.IsLower(rune))
+                if (st.SmallCaps && !st.Caps && cp > 0 && Rune.IsLower(new Rune(cp)))
                 {
-                    cp = Rune.ToUpperInvariant(rune).Value;
+                    cp = Rune.ToUpperInvariant(new Rune(cp)).Value;
                     gsize = size * 0.75;
                 }
                 // Арабские буквы — контекстная форма для глифа, исходная буква для копирования;
@@ -946,7 +984,7 @@ public sealed class BlockLayout(LayoutContext ctx)
         // Сдвиг плавающими блоками действует, только если они есть (отрицательные отступы сохраняются)
         double LineStart(bool first) => cur.OffL > 0 ? Math.Max(p.IndLeft + (first ? p.IndFirst : 0), cur.OffL) : p.IndLeft + (first ? p.IndFirst : 0);
         double Avail(bool first) => width - (cur.OffR > 0 ? Math.Max(p.IndRight, cur.OffR) : p.IndRight) - LineStart(first);
-        bool HasContent() => cur.Pieces.Any(q => q.Kind is PieceKind.Text or PieceKind.Image);
+        bool HasContent() => cur.Pieces.Any(q => q.Kind is PieceKind.Text or PieceKind.Image or PieceKind.Emoji);
 
         void Finish(PieceKind? endBreak)
         {
@@ -988,7 +1026,7 @@ public sealed class BlockLayout(LayoutContext ctx)
                     {
                         double seg = 0, tail = 0;
                         bool foundSep = false;
-                        for (int j = i + 1; j < pieces.Count && pieces[j].Kind is PieceKind.Text or PieceKind.Space or PieceKind.Image or PieceKind.Spacer && !foundSep; j++)
+                        for (int j = i + 1; j < pieces.Count && pieces[j].Kind is PieceKind.Text or PieceKind.Space or PieceKind.Image or PieceKind.Emoji or PieceKind.Spacer && !foundSep; j++)
                         {
                             if (stop.Align == "decimal" && pieces[j].Kind == PieceKind.Text)
                             {
@@ -1026,7 +1064,7 @@ public sealed class BlockLayout(LayoutContext ctx)
             // Слово = группа кусков без точек переноса между ними
             int end = i + 1;
             double gw = pc.Width;
-            while (end < pieces.Count && pieces[end].Kind is PieceKind.Text or PieceKind.Image or PieceKind.Spacer && !pieces[end].BreakBefore)
+            while (end < pieces.Count && pieces[end].Kind is PieceKind.Text or PieceKind.Image or PieceKind.Emoji or PieceKind.Spacer && !pieces[end].BreakBefore)
             {
                 gw += pieces[end].Width;
                 end++;
@@ -1070,9 +1108,9 @@ public sealed class BlockLayout(LayoutContext ctx)
             for (; j2 < end; j2++)
             {
                 var q = pieces[j2];
-                if (q.Kind is PieceKind.Image or PieceKind.Spacer || q.Width <= room)
+                if (q.Kind is PieceKind.Image or PieceKind.Spacer or PieceKind.Emoji || q.Width <= room)
                 {
-                    if (q.Kind is PieceKind.Image or PieceKind.Spacer && q.Width > room && placed) break;
+                    if (q.Kind is PieceKind.Image or PieceKind.Spacer or PieceKind.Emoji && q.Width > room && placed) break;
                     cur.Pieces.Add(q);
                     room -= q.Width;
                     placed = true;
