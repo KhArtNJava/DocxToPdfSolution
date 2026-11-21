@@ -662,6 +662,28 @@ public sealed class PdfCanvas
         _sb.Append($"{Color(color)} rg {F(x)} {F(Y(y + h))} {F(w)} {F(h)} re f\n");
     }
 
+    /// <summary>
+    /// Вывод глифов контурами как графику (без текстового слоя) — для заполнителей табуляции:
+    /// лидеры не должны попадать в текстовый слой PDF (ломают копирование и поиск, как у LibreOffice — там они линия).
+    /// </summary>
+    public void GlyphsAsPaths(FontFace face, double size, double x, double baseline, IReadOnlyList<ushort> gids,
+        IReadOnlyList<double>? extra, Rgb color)
+    {
+        if (Collecting > 0 || SkipGraphics || gids.Count == 0) return;
+        var font = face.Font;
+        double k = size / font.UnitsPerEm, skewK = face.SynthItalic ? 0.2126 : 0;
+        double gx = x;
+        _sb.Append($"q {Color(color)} rg ");
+        for (int i = 0; i < gids.Count; i++)
+        {
+            string path = font.GlyphPath(gids[i]);
+            if (path.Length > 0)
+                _sb.Append($"q {F(k)} 0 {F(k * skewK)} {F(k)} {F(gx)} {F(Y(baseline))} cm ").Append(path).Append("f Q ");
+            gx += font.Advance(gids[i]) * size + (extra != null && i < extra.Count ? extra[i] : 0);
+        }
+        _sb.Append("Q\n");
+    }
+
     public void Line(double x1, double y1, double x2, double y2, double width, Rgb color, bool dashed = false, bool dotted = false)
     {
         if (Collecting > 0) return;

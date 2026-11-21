@@ -484,12 +484,13 @@ public sealed class LineFrag : Frag
         // Точки выравниваются по сетке страницы, как в Word
         double start = Math.Ceiling((x + gw) / step) * step;
         double end = x + tab.Width - gw * 1.5;
-        var gids = new List<ushort>(); var texts = new List<string>(); var extra = new List<double>();
+        var gids = new List<ushort>(); var extra = new List<double>();
         for (double px = start; px <= end; px += step)
         {
-            gids.Add(gid); texts.Add(((char)ch).ToString()); extra.Add(step - gw);
+            gids.Add(gid); extra.Add(step - gw);
         }
-        if (gids.Count > 0) c.Glyphs(face, tab.Size, start, baseY, gids, texts, tab.Style.Color, extra);
+        // Контуром как графика: заполнители не попадают в текстовый слой PDF (как в LibreOffice)
+        if (gids.Count > 0) c.GlyphsAsPaths(face, tab.Size, start, baseY, gids, extra, tab.Style.Color);
     }
 }
 
