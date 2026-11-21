@@ -263,11 +263,12 @@ public static partial class Svg
         // Пустая область фильтра — элемент не выводится
         if (gx0 >= gx1 || gy0 >= gy1) return;
         double rw = gx1 - gx0, rh = gy1 - gy0;
-        // Разрешение: ~150 точек на дюйм итогового размера, не больше 4 млн пикселей
-        double k = Math.Max(0.05, ctx.Scale) * 150 / 72;
-        const double MaxPixels = 4e6;
+        // Разрешение: 600 точек на дюйм итогового размера (печатное качество),
+        // не больше 16 млн пикселей (иначе при больших областях не хватает памяти)
+        double k = Math.Max(0.05, ctx.Scale) * 600 / 72;
+        const double MaxPixels = 16e6;
         if (rw * k * rh * k > MaxPixels) k = Math.Sqrt(MaxPixels / (rw * rh));
-        int W = Math.Clamp((int)Math.Ceiling(rw * k), 1, 6000), H = Math.Clamp((int)Math.Ceiling(rh * k), 1, 6000);
+        int W = Math.Clamp((int)Math.Ceiling(rw * k), 1, 8000), H = Math.Clamp((int)Math.Ceiling(rh * k), 1, 8000);
         var grid = new FGrid { W = W, H = H, Rx = gx0, Ry = gy0, Rw = rw, Rh = rh, Sx = W / rw, Sy = H / rh, BBox = bbox };
 
         // Исходный рисунок элемента (без прозрачности opacity — она применяется к результату)
